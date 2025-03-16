@@ -2,6 +2,10 @@
 
 This document contains important information about the CSM (Conversational Speech Model) codebase, including common commands, code style guidelines, and project structure.
 
+⚠️ **IMPORTANT: Always run tests after making changes** ⚠️  
+Run `python -m pytest` to validate your changes before committing them.  
+This ensures code stability and prevents regressions.
+
 ## Project Structure
 
 ```
@@ -40,8 +44,14 @@ pip install -e ".[dev]"
 ## Development Commands
 
 ```bash
-# Run tests
-pytest tests/
+# Run tests with coverage (ALWAYS do this before committing changes)
+python -m pytest
+
+# Run specific tests
+python -m pytest tests/unit/test_model_args.py
+
+# View detailed coverage report
+open htmlcov/index.html
 
 # Format code with black and isort
 black src/ tests/

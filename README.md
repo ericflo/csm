@@ -21,9 +21,27 @@ pip install -e .
 # For Apple Silicon users (recommended for Mac)
 pip install -e ".[apple]"
 
+# For development and testing
+pip install -e ".[dev]"
+
 # You will need access to CSM-1B and Llama-3.2-1B
 huggingface-cli login
 ```
+
+### Run Tests
+
+```bash
+# Run tests with coverage reports
+python -m pytest
+
+# Run tests with verbose output
+python -m pytest -v
+
+# View HTML coverage report
+open htmlcov/index.html
+```
+
+See the [tests/README.md](tests/README.md) file for more details on writing and running tests.
 
 ### Generate Your First Audio
 
