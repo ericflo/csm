@@ -136,7 +136,7 @@ else:
             
             try:
                 # Load the model with the patches applied
-                torch_model = load_csm_1b(ckpt_path, device="cpu")
+                torch_model = load_csm_1b(device="cpu", model_path=ckpt_path)
             finally:
                 # Restore original functions
                 torch.cuda.is_available = original_is_available
