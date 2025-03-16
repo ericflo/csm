@@ -14,7 +14,7 @@ def test_check_device_compatibility():
     """Test check_device_compatibility function."""
     with patch.dict("sys.modules", {"mlx": None}):
         # Import the function
-        from csm.mlx.components.utils import check_device_compatibility
+        from csm.mlx_accel.components.utils import check_device_compatibility
         
         # Test that it doesn't raise an exception on mock mlx
         check_device_compatibility()
@@ -24,7 +24,7 @@ def test_check_device_compatibility():
 def test_measure_time():
     """Test measure_time function."""
     with patch.dict("sys.modules", {"mlx": None}):
-        from csm.mlx.components.utils import measure_time
+        from csm.mlx_accel.components.utils import measure_time
         
         # Create a test function that sleeps
         def test_function():
@@ -46,7 +46,7 @@ def test_measure_time():
 def test_measure_time_with_args():
     """Test measure_time function with arguments."""
     with patch.dict("sys.modules", {"mlx": None}):
-        from csm.mlx.components.utils import measure_time
+        from csm.mlx_accel.components.utils import measure_time
         
         # Create a test function that takes arguments
         def test_function(a, b, c=3):
@@ -68,7 +68,7 @@ def test_measure_time_with_args():
 def test_format_duration():
     """Test format_duration function."""
     with patch.dict("sys.modules", {"mlx": None}):
-        from csm.mlx.components.utils import format_duration
+        from csm.mlx_accel.components.utils import format_duration
         
         # Test various durations
         assert format_duration(0.0012) == "1.2ms"
@@ -85,7 +85,7 @@ def test_log_error():
     with patch.dict("sys.modules", {"mlx": None}), \
          patch("builtins.print") as mock_print:
         
-        from csm.mlx.components.utils import log_error
+        from csm.mlx_accel.components.utils import log_error
         
         # Test with a simple error message
         log_error("Test error")
@@ -109,7 +109,7 @@ def test_log_warning():
     with patch.dict("sys.modules", {"mlx": None}), \
          patch("builtins.print") as mock_print:
         
-        from csm.mlx.components.utils import log_warning
+        from csm.mlx_accel.components.utils import log_warning
         
         # Test with a simple warning message
         log_warning("Test warning")
@@ -122,7 +122,7 @@ def test_log_info():
     with patch.dict("sys.modules", {"mlx": None}), \
          patch("builtins.print") as mock_print:
         
-        from csm.mlx.components.utils import log_info
+        from csm.mlx_accel.components.utils import log_info
         
         # Test with a simple info message
         log_info("Test info")
@@ -135,7 +135,7 @@ def test_log_success():
     with patch.dict("sys.modules", {"mlx": None}), \
          patch("builtins.print") as mock_print:
         
-        from csm.mlx.components.utils import log_success
+        from csm.mlx_accel.components.utils import log_success
         
         # Test with a simple success message
         log_success("Test success")

@@ -10,7 +10,7 @@ import mlx.nn as nn
 import numpy as np
 import torch
 
-from csm.mlx.mlx_ops import torch_to_mlx, create_causal_mask, index_causal_mask
+from csm.mlx_accel.mlx_ops import torch_to_mlx, create_causal_mask, index_causal_mask
 
 class MLXTransformerLayer:
     """MLX implementation of a Llama 3.2 transformer layer."""

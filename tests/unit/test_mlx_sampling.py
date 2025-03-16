@@ -37,7 +37,7 @@ def test_sample_from_logits(mock_mlx):
     # Need to patch sys.modules to mock mlx
     with patch.dict("sys.modules", {"mlx": mock_mlx}):
         # Now we can safely import our module
-        from csm.mlx.components.sampling import sample_from_logits
+        from csm.mlx_accel.components.sampling import sample_from_logits
         
         # Create test logits
         logits = np.array([[1.0, 2.0, 3.0]])
@@ -64,7 +64,7 @@ def test_topk_sampling(mock_mlx):
     # Need to patch sys.modules to mock mlx
     with patch.dict("sys.modules", {"mlx": mock_mlx}):
         # Now we can safely import our module
-        from csm.mlx.components.sampling import sample_topk
+        from csm.mlx_accel.components.sampling import sample_topk
         
         # Create test logits
         logits = np.array([[1.0, 5.0, 3.0, 2.0, 4.0]])
@@ -76,7 +76,7 @@ def test_topk_sampling(mock_mlx):
         mock_mlx.array.return_value = np.array([[1, 4]])
         
         # Call the function
-        with patch("csm.mlx.components.sampling.sample_from_logits", return_value=1) as mock_sample:
+        with patch("csm.mlx_accel.components.sampling.sample_from_logits", return_value=1) as mock_sample:
             result = sample_topk(logits, k, temperature)
             
             # Verify sample_from_logits was called
@@ -93,7 +93,7 @@ def test_topk_with_temperature(mock_mlx):
     # Need to patch sys.modules to mock mlx
     with patch.dict("sys.modules", {"mlx": mock_mlx}):
         # Now we can safely import our module
-        from csm.mlx.components.sampling import sample_topk
+        from csm.mlx_accel.components.sampling import sample_topk
         
         # Create test logits
         logits = np.array([[1.0, 5.0, 3.0, 2.0, 4.0]])
@@ -106,7 +106,7 @@ def test_topk_with_temperature(mock_mlx):
         mock_mlx.array.return_value = np.array([[1, 4]])
         
         # Call the function
-        with patch("csm.mlx.components.sampling.sample_from_logits", return_value=1) as mock_sample:
+        with patch("csm.mlx_accel.components.sampling.sample_from_logits", return_value=1) as mock_sample:
             result_high_temp = sample_topk(logits, k, temperature)
             
             # Verify sample_from_logits was called with scaled logits

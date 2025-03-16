@@ -361,7 +361,7 @@ class MLXModelWrapper:
                     c0_logits_mlx = mx.matmul(last_h_mlx, self.codebook0_head.T)
                     
                     # Sample with MLX
-                    from csm.cli.mlx_components.sampling import mlx_categorical_sampling
+                    from csm.mlx_accel.components.sampling import mlx_categorical_sampling
                     c0_sample_mlx, success = mlx_categorical_sampling(c0_logits_mlx, temperature)
                     c0_sample = mlx_to_torch(c0_sample_mlx)
                     

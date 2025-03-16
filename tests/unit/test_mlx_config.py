@@ -11,7 +11,7 @@ pytestmark = pytest.mark.skip(reason="MLX modules moved to mlx_accel")
 def test_config_defaults():
     """Test default configuration values."""
     with patch.dict("sys.modules", {"mlx": None}):
-        from csm.mlx.components.config import DEFAULT_MAX_LENGTH, DEFAULT_TEMPERATURE, DEFAULT_TOP_K
+        from csm.mlx_accel.components.config import DEFAULT_MAX_LENGTH, DEFAULT_TEMPERATURE, DEFAULT_TOP_K
         
         # Verify default values are set and reasonable
         assert DEFAULT_MAX_LENGTH >= 100, "Default max length should be reasonable"
@@ -23,7 +23,7 @@ def test_config_defaults():
 def test_voice_presets():
     """Test voice preset configurations."""
     with patch.dict("sys.modules", {"mlx": None}):
-        from csm.mlx.components.config import VOICE_PRESETS
+        from csm.mlx_accel.components.config import VOICE_PRESETS
         
         # Verify each preset has the required keys
         required_keys = ['name', 'description']
@@ -50,7 +50,7 @@ def test_voice_presets():
 def test_speaker_range():
     """Test speaker ID range."""
     with patch.dict("sys.modules", {"mlx": None}):
-        from csm.mlx.components.config import VOICE_PRESETS
+        from csm.mlx_accel.components.config import VOICE_PRESETS
         
         # Check we have a reasonable number of speakers
         assert 0 in VOICE_PRESETS, "Speaker 0 should exist"
@@ -66,7 +66,7 @@ def test_speaker_range():
 def test_get_voice_preset():
     """Test get_voice_preset function."""
     with patch.dict("sys.modules", {"mlx": None}):
-        from csm.mlx.components.config import get_voice_preset, VOICE_PRESETS
+        from csm.mlx_accel.components.config import get_voice_preset, VOICE_PRESETS
         
         # Test with valid speaker ID
         speaker_id = 0

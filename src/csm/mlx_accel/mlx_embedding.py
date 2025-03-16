@@ -15,7 +15,7 @@ import mlx.core as mx
 import numpy as np
 import torch
 
-from csm.mlx.mlx_layers import torch_to_mlx, mlx_to_torch
+from csm.mlx_accel.mlx_layers import torch_to_mlx, mlx_to_torch
 
 class MLXEmbedding:
     """

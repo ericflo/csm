@@ -15,12 +15,12 @@ import torch
 
 from csm.models.model import sample_topk
 
-from csm.mlx.mlx_layers import (
+from csm.mlx_accel.mlx_layers import (
     MLXTransformer, torch_to_mlx, mlx_to_torch, create_causal_mask, index_causal_mask
 )
-from csm.mlx.mlx_embedding import MLXEmbedding
-from csm.mlx.mlx_sample_exact import mlx_sample_exact
-from csm.mlx.mlx_generation import MLXFrameGenerator
+from csm.mlx_accel.mlx_embedding import MLXEmbedding
+from csm.mlx_accel.mlx_sample_exact import mlx_sample_exact
+from csm.mlx_accel.mlx_generation import MLXFrameGenerator
 
 # MLX is already using the optimized implementation via mlx_sample_exact
 
