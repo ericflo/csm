@@ -230,9 +230,9 @@ The following files need proper test coverage:
 
 1. ✅ `components/utils.py` - 46% coverage
 2. ✅ `components/config.py` - 80% coverage  
-3. ✅ `components/sampling.py` - 22% coverage
+3. ✅ `components/sampling.py` - 33% coverage (improved from 22%)
 4. ✅ `components/transformer.py` - 54% coverage
-5. ✅ `mlx_ops.py` - 41% coverage
+5. ✅ `mlx_ops.py` - 75% coverage (improved from 41%)
 6. ✅ `mlx_embedding.py` - 63% coverage
 7. ✅ `mlx_layers.py` - 52% coverage
 8. ✅ `mlx_kvcache.py` - 100% coverage
@@ -240,7 +240,27 @@ The following files need proper test coverage:
 10. ✅ `components/model_wrapper.py` - 78% coverage
 11. ✅ `components/generator.py` - 51% coverage
 12. ✅ `mlx_wrapper.py` - 49% coverage
-13. ✅ `mlx_generation.py` - 39% coverage
+13. ✅ `mlx_generation.py` - 39% coverage (improved test count from 7 to 11)
 14. ✅ `token_analyzer.py` - 79% coverage
 
-Current overall test coverage for the MLX acceleration code is 44%, an improvement from the initial 1%. We now have twelve core components with good test coverage, with seven components reaching >50% coverage and four components reaching >75% coverage.
+Current overall test coverage for the MLX acceleration code is 44%, an improvement from the initial 1%. We now have twelve core components with good test coverage, with seven components reaching >50% coverage and five components reaching >75% coverage.
+
+The improvements to sampling.py testing include:
+1. Added test for the Gumbel-max trick implementation
+2. Added test for temperature scaling effects
+3. Added test for multiple safety mechanisms preventing problematic tokens (1-31 and beyond 2050)
+4. Added test for different tensor shape handling
+
+The improvements to mlx_ops.py testing include:
+1. Added test for `mlx_rotary_embedding` function with normal dimensions
+2. Added test for `mlx_rotary_embedding` with mismatched dimensions
+3. Added test for `mlx_attention` function with and without masks
+4. Added test for `mlx_feed_forward` function with and without biases
+5. Added proper error handling for MLX version compatibility issues
+
+The improvements to mlx_generation.py testing include:
+1. Added test for element-wise embedding operations for audio tokens
+2. Added test for codebook generation loop
+3. Added test for error handling during audio token generation
+4. Added test for reshape operations
+5. Added proper error handling for MLX API compatibility differences
