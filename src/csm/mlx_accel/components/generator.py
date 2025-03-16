@@ -12,10 +12,10 @@ from typing import Dict, List, Optional, Tuple, Union, Any, Callable
 import numpy as np
 import torch
 
-from csm.mlx.mlx_wrapper import MLXWrapper
-from csm.mlx.components.config import MLXConfig
-from csm.mlx.components.utils import measure_time, is_mlx_available
-from csm.mlx.mlx_layers import torch_to_mlx
+from csm.mlx_accel.mlx_wrapper import MLXWrapper
+from csm.mlx_accel.components.config import MLXConfig
+from csm.mlx_accel.components.utils import measure_time, is_mlx_available
+from csm.mlx_accel.mlx_layers import torch_to_mlx
 
 # Import MLX if available
 try:

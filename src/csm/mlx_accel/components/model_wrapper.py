@@ -9,10 +9,10 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 import numpy as np
 import torch
 
-from csm.mlx.mlx_ops import torch_to_mlx, mlx_to_torch, create_causal_mask, index_causal_mask
-from csm.mlx.mlx_embedding import MLXEmbedding
-from csm.mlx.mlx_generation import MLXFrameGenerator
-from csm.mlx.components.transformer import MLXTransformer
+from csm.mlx_accel.mlx_ops import torch_to_mlx, mlx_to_torch, create_causal_mask, index_causal_mask
+from csm.mlx_accel.mlx_embedding import MLXEmbedding
+from csm.mlx_accel.mlx_generation import MLXFrameGenerator
+from csm.mlx_accel.components.transformer import MLXTransformer
 
 # Import MLX if available
 try:
