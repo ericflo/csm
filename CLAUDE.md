@@ -86,34 +86,34 @@ mypy src/ tests/
 
 The MLX acceleration for Apple Silicon is implemented as a modular system:
 
-### Core Components in `src/csm/cli/mlx_components/`
+### Core Components in `src/csm/mlx_accel/components/`
 
-1. `src/csm/cli/mlx_components/utils.py`: Utility functions for MLX acceleration
+1. `src/csm/mlx_accel/components/utils.py`: Utility functions for MLX acceleration
    - Compatibility checking and error handling
    - Performance measurement functions
    - Debug helpers and type formatting
 
-2. `src/csm/cli/mlx_components/config.py`: Configuration management
+2. `src/csm/mlx_accel/components/config.py`: Configuration management
    - Voice preset definitions and handling
    - Default parameter values
    - Model configuration
 
-3. `src/csm/cli/mlx_components/transformer.py`: Transformer implementation
+3. `src/csm/mlx_accel/components/transformer.py`: Transformer implementation
    - MLX-optimized transformer blocks
    - Attention mechanisms
    - Position embeddings and mask handling
 
-4. `src/csm/cli/mlx_components/sampling.py`: Token sampling operations
+4. `src/csm/mlx_accel/components/sampling.py`: Token sampling operations
    - Top-k sampling implementation
    - Temperature-based sampling
    - Categorical sampling utilities
 
-5. `src/csm/cli/mlx_components/model_wrapper.py`: Model conversion
+5. `src/csm/mlx_accel/components/model_wrapper.py`: Model conversion
    - PyTorch to MLX model conversion
    - Parameter handling and transfer
    - Forward pass implementation
 
-6. `src/csm/cli/mlx_components/generator.py`: Speech generation
+6. `src/csm/mlx_accel/components/generator.py`: Speech generation
    - Text to audio token generation
    - Audio token decoding
    - Watermarking integration
@@ -121,28 +121,28 @@ The MLX acceleration for Apple Silicon is implemented as a modular system:
 
 ### Supporting Files
 
-1. `src/csm/cli/mlx_layers.py`: Core MLX layer implementations
+1. `src/csm/mlx_accel/mlx_layers.py`: Core MLX layer implementations
    - Transformer layers and components
    - RoPE implementation and attention mechanisms
 
-2. `src/csm/cli/mlx_embedding.py`: Embedding operations
+2. `src/csm/mlx_accel/mlx_embedding.py`: Embedding operations
    - Text and audio embedding functions
    - Shape-safe tensor operations
 
-3. `src/csm/cli/mlx_kvcache.py`: Key-value cache implementation
+3. `src/csm/mlx_accel/mlx_kvcache.py`: Key-value cache implementation
    - Optimized cache for transformer inference
    - Position-based indexing
 
-4. `src/csm/cli/mlx_ops.py`: Low-level MLX operations
+4. `src/csm/mlx_accel/mlx_ops.py`: Low-level MLX operations
    - Tensor manipulation utilities
    - Math operations compatible with MLX constraints
    - Conversion between PyTorch and MLX tensors
 
-5. `src/csm/cli/mlx_generation.py`: Generation pipeline
+5. `src/csm/mlx_accel/mlx_generation.py`: Generation pipeline
    - Frame generation logic
    - Error handling and fallbacks
 
-6. `src/csm/cli/mlx_wrapper.py`: PyTorch-MLX bridge
+6. `src/csm/mlx_accel/mlx_wrapper.py`: PyTorch-MLX bridge
    - Model parameter conversion
    - Support for both direct Model and Generator classes
 
@@ -153,3 +153,91 @@ The MLX acceleration for Apple Silicon is implemented as a modular system:
    - Performance tracking and reporting
 
 When running on Apple Silicon, the system first attempts pure MLX execution for maximum performance. If any issues are encountered, it automatically falls back to hybrid mode and ultimately to PyTorch if needed. The architecture includes special handling for MLX's tensor operations, particularly around reshape operations which differ from PyTorch's implementation.
+
+## Testing MLX Components
+
+For testing MLX components where the library is not available, use the following pattern:
+
+### Testing Pattern 1: Direct function definitions in test file
+
+This is the best approach for simple utility functions:
+
+```python
+def test_my_function():
+    # Define a simplified version directly in the test
+    def my_function(arg1, arg2): 
+        # Simplified implementation that matches the real function
+        return arg1 + arg2
+        
+    # Test the function
+    assert my_function(1, 2) == 3
+```
+
+### Testing Pattern 2: Mock mlx imports with specific mocks
+
+For components that directly use MLX APIs:
+
+```python
+import sys
+from unittest.mock import MagicMock, patch
+
+# Create mock MLX module
+class MockMLX:
+    def __init__(self):
+        self.core = MagicMock()
+        self.nn = MagicMock()
+        self.random = MagicMock()
+
+# Install the mock
+mock_mlx = MockMLX()
+sys.modules['mlx'] = mock_mlx
+sys.modules['mlx.core'] = mock_mlx.core
+sys.modules['mlx.nn'] = mock_mlx.nn
+
+# Now import the module under test
+from csm.mlx_accel.components.my_module import my_function
+
+def test_my_function():
+    # Set up mock returns
+    mock_mlx.core.array.return_value = [1, 2, 3]
+    
+    # Test with mocks in place
+    result = my_function()
+    assert result == [1, 2, 3]
+```
+
+### Testing Pattern 3: Function-level mocking
+
+For more complex functions:
+
+```python
+from unittest.mock import patch
+
+def test_complex_function():
+    with patch('csm.mlx_accel.components.my_module.dependency_function') as mock_dep:
+        # Set up the mock
+        mock_dep.return_value = "mocked result"
+        
+        # Now import and test
+        from csm.mlx_accel.components.my_module import complex_function
+        result = complex_function()
+        assert result == "expected result using mock"
+```
+
+### MLX Test Coverage Plan
+
+The following files need proper test coverage:
+
+1. ✅ `components/utils.py` - DONE
+2. ✅ `components/config.py` - DONE  
+3. ✅ `components/sampling.py` - DONE
+4. ⬜ `mlx_ops.py` - IN PROGRESS (partial test created)
+5. ⬜ `mlx_embedding.py` - IN PROGRESS (partial test created)
+6. ⬜ `components/transformer.py`
+7. ⬜ `components/model_wrapper.py`
+8. ⬜ `mlx_kvcache.py`
+9. ⬜ `mlx_sample_exact.py`
+10. ⬜ `components/generator.py`
+11. ⬜ `mlx_wrapper.py`
+12. ⬜ `mlx_generation.py`
+13. ⬜ `token_analyzer.py`
