@@ -239,11 +239,20 @@ The following files need proper test coverage:
 9. ✅ `mlx_sample_exact.py` - 94% coverage
 10. ✅ `components/model_wrapper.py` - 78% coverage
 11. ✅ `components/generator.py` - 51% coverage
-12. ✅ `mlx_wrapper.py` - 49% coverage
-13. ✅ `mlx_generation.py` - 39% coverage (improved test count from 7 to 11)
-14. ✅ `token_analyzer.py` - 79% coverage
+12. ✅ `mlx_generation.py` - 39% coverage (improved test count from 7 to 11)
+13. ✅ `token_analyzer.py` - 79% coverage
+14. ✅ `mlx_wrapper.py` - 69% coverage (improved from 49%)
 
-Current overall test coverage for the MLX acceleration code is 44%, an improvement from the initial 1%. We now have twelve core components with good test coverage, with seven components reaching >50% coverage and five components reaching >75% coverage.
+Current overall test coverage for the MLX acceleration code is 45%, an improvement from the initial 1%. We now have thirteen core components with good test coverage, with eight components reaching >50% coverage and six components reaching >75% coverage.
+
+The improvements to mlx_wrapper.py testing include:
+1. Added tests for error handling during parameter conversion
+2. Added tests for different audio_head structures (tensor-based vs. weight attribute)
+3. Added tests for BFloat16 parameter handling and conversion
+4. Added tests for MLX embedding and frame generator creation
+5. Added specific tests for MLX reshape error handling and workarounds
+6. Added tests for API compatibility differences between MLX versions
+7. Added hybrid PyTorch/MLX generation path testing for tensor conversion
 
 The improvements to sampling.py testing include:
 1. Added test for the Gumbel-max trick implementation
