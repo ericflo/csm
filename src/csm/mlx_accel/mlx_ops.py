@@ -31,8 +31,9 @@ def mlx_to_torch(array: mx.array) -> torch.Tensor:
     Returns:
         PyTorch tensor
     """
-    # More efficient conversion using numpy as an intermediate step
-    return torch.from_numpy(array.to_numpy()).to(dtype=torch.float32)
+    # MLX arrays can be converted to numpy arrays with tolist()
+    # Then we can convert the numpy array to a PyTorch tensor
+    return torch.tensor(array.tolist(), dtype=torch.float32)
 
 def create_causal_mask(seq_len: int):
     """

@@ -5,8 +5,15 @@ import torch
 import numpy as np
 from unittest.mock import patch, MagicMock
 
-# Skip all tests in this file since we've moved mlx to mlx_accel
-pytestmark = pytest.mark.skip(reason="MLX modules moved to mlx_accel")
+# Tests for MLX sampling in the new mlx_accel directory
+# Skip tests only if MLX is not available
+try:
+    import mlx
+    HAS_MLX = True
+except ImportError:
+    HAS_MLX = False
+    
+pytestmark = pytest.mark.skipif(not HAS_MLX, reason="MLX not available")
 
 # We need to mock mlx imports since we might not have MLX installed
 # for testing on all platforms
