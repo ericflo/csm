@@ -230,7 +230,7 @@ The following files need proper test coverage:
 
 1. ✅ `components/utils.py` - 46% coverage
 2. ✅ `components/config.py` - 80% coverage  
-3. ✅ `components/sampling.py` - 16% coverage
+3. ✅ `components/sampling.py` - 22% coverage
 4. ✅ `components/transformer.py` - 54% coverage
 5. ✅ `mlx_ops.py` - 41% coverage
 6. ✅ `mlx_embedding.py` - 63% coverage
