@@ -20,6 +20,9 @@ pip install -e .
 
 # For Apple Silicon users (recommended for Mac)
 pip install -e ".[apple]"
+
+# You will need access to CSM-1B and Llama-3.2-1B
+huggingface-cli login
 ```
 
 ### Generate Your First Audio
@@ -64,10 +67,18 @@ For integration into your Python applications:
 
 ```python
 from csm.generator import load_csm_1b, Segment
+import torch
 import torchaudio
 
+if torch.backends.mps.is_available():
+    device = "mps"
+elif torch.cuda.is_available():
+    device = "cuda"
+else:
+    device = "cpu"
+
 # Load the model (downloads automatically if needed)
-generator = load_csm_1b(model_path=None, device="cuda")  # or "cpu" or "mps"
+generator = load_csm_1b(device=device)
 
 # Generate speech
 audio = generator.generate(

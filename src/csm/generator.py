@@ -218,27 +218,33 @@ class Generator:
         return audio
 
 
-def load_csm_1b(ckpt_path: str = "ckpt.pt", device: str = "cuda") -> Generator:
+def load_csm_1b(device: str = "cuda", model_path: str = None) -> Generator:
     """
     Load the CSM 1B model.
     
     Args:
-        ckpt_path: Path to the checkpoint file
         device: Device to load the model on
+        model_path: Optional path to a local model file
         
     Returns:
         A generator instance
     """
-    model_args = ModelArgs(
-        backbone_flavor="llama-1B",
-        decoder_flavor="llama-100M",
-        text_vocab_size=128256,
-        audio_vocab_size=2051,
-        audio_num_codebooks=32,
-    )
-    model = Model(model_args).to(device=device, dtype=torch.bfloat16)
-    state_dict = torch.load(ckpt_path)
-    model.load_state_dict(state_dict)
+    if model_path:
+        # Load from local file
+        model_args = ModelArgs(
+            backbone_flavor="llama-1B",
+            decoder_flavor="llama-100M",
+            text_vocab_size=128256,
+            audio_vocab_size=2051,
+            audio_num_codebooks=32,
+        )
+        model = Model(model_args).to(device=device, dtype=torch.bfloat16)
+        state_dict = torch.load(model_path)
+        model.load_state_dict(state_dict)
+    else:
+        # Load from HuggingFace
+        model = Model.from_pretrained("sesame/csm-1b")
+        model.to(device=device, dtype=torch.bfloat16)
 
     generator = Generator(model)
     return generator
