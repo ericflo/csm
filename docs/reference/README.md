@@ -48,11 +48,16 @@ The documented systems enable:
 - **Moshi**: Full-duplex, real-time spoken dialogue with concurrent speech input and output
 - **CSM**: High-quality, context-aware speech generation with natural prosody and emotion
 
-## Contributing
+## Important Notice on Contributions
 
-To contribute to this documentation:
+**Contributions to this directory are not welcomed.**
 
-1. Follow the established file structure
-2. Use consistent formatting with existing documentation
-3. Include navigation links between related documents
-4. Commit changes with clear descriptions
+The `reference/` directory is exclusively for documentation provided by third-party providers and original authors. This documentation serves as reference material and should remain unchanged to preserve its accuracy and authority.
+
+If you wish to create new documentation:
+
+1. Place it outside the `reference/` directory in the main `docs/` folder
+2. Create appropriate subdirectories as needed for organization
+3. Only add content to the `reference/` directory if explicitly requested by project maintainers
+
+This policy ensures that reference documentation remains clearly distinguished from community contributions and maintains its integrity as authoritative source material.
