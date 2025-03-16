@@ -241,6 +241,6 @@ The following files need proper test coverage:
 11. ✅ `components/generator.py` - 51% coverage
 12. ✅ `mlx_wrapper.py` - 49% coverage
 13. ✅ `mlx_generation.py` - 39% coverage
-14. ⬜ `token_analyzer.py` - 0% coverage
+14. ✅ `token_analyzer.py` - 79% coverage
 
-Current overall test coverage for the MLX acceleration code is 40%, an improvement from the initial 1%. We now have eleven core components with good test coverage, with six components reaching >50% coverage and three components reaching >75% coverage.
+Current overall test coverage for the MLX acceleration code is 44%, an improvement from the initial 1%. We now have twelve core components with good test coverage, with seven components reaching >50% coverage and four components reaching >75% coverage.
