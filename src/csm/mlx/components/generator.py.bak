@@ -55,8 +55,6 @@ class MLXGenerator:
         self._last_audio = None  # Store last audio for direct access
         self._last_samples = None  # Store raw samples from generate_frame
         self._last_tokens = None  # Store last tokens for debugging
-        # Add audio_num_codebooks attribute
-        self.audio_num_codebooks = 32  # Default value
         
         # Check for LoRA model (more robust detection)
         self.has_lora = (hasattr(model, 'get_lora_params') or
@@ -214,22 +212,10 @@ class MLXGenerator:
         # Store the speaker ID
         self.speaker = speaker
         
-        # Tokenize the input text - with extra debug output
-        if self.debug:
-            print(f"**** GENERATING SPEECH FOR TEXT: '{text}' ****")
-            print(f"**** Speaker ID: {speaker}, Temperature: {temperature}, Top-k: {topk} ****")
-            
+        # Tokenize the input text
         text_tokens = self.tokenize(text)
         
-        if self.debug:
-            print(f"**** TOKENIZED TEXT: shape={text_tokens.shape if hasattr(text_tokens, 'shape') else 'unknown'} ****")
-            if hasattr(text_tokens, 'shape'):
-                print(f"**** Token values (first 20): {text_tokens.flatten()[:20].tolist()} ****")
-        
         # Generate audio tokens
-        if self.debug:
-            print(f"**** GENERATING AUDIO TOKENS ****")
-            
         audio_tokens = self.generate_audio_tokens(
             text_tokens=text_tokens,
             temperature=temperature,
@@ -238,25 +224,9 @@ class MLXGenerator:
             progress_callback=progress_callback
         )
         
-        if self.debug:
-            print(f"**** AUDIO TOKENS GENERATED: shape={audio_tokens.shape if hasattr(audio_tokens, 'shape') else 'unknown'} ****")
-            if hasattr(audio_tokens, 'shape') and audio_tokens is not None:
-                if audio_tokens.numel() > 0:
-                    print(f"**** Audio token values (first 10): {audio_tokens.flatten()[:10].tolist()} ****")
-                    
-        # Raise error if tokens are None - NO FALLBACKS
-        if audio_tokens is None:
-            raise ValueError("Failed to generate audio tokens - MLX token generation returned None")
-        
         # Decode tokens to audio
-        if self.debug:
-            print(f"**** DECODING AUDIO TOKENS TO WAVEFORM ****")
-            
         audio = self.decode_audio_tokens(audio_tokens)
         
-        if self.debug:
-            print(f"**** AUDIO DECODED: shape={audio.shape if hasattr(audio, 'shape') else 'unknown'} ****")
-            
         # Store the audio for reference
         self._last_audio = audio
         
@@ -272,8 +242,6 @@ class MLXGenerator:
         Returns:
             Tokenized text as a tensor
         """
-        print(f"DEBUG: MLXGenerator.tokenize({text})")
-        
         # Try different tokenization approaches
         tokens = None
         
@@ -283,59 +251,34 @@ class MLXGenerator:
                 if hasattr(self.tokenizer, 'encode'):
                     # SentencePiece style
                     tokens = torch.tensor(self.tokenizer.encode(text))
-                    print(f"DEBUG: Used tokenizer.encode successfully")
                 elif hasattr(self.tokenizer, 'tokenize'):
                     # Custom tokenizer
                     tokens = self.tokenizer.tokenize(text)
-                    print(f"DEBUG: Used tokenizer.tokenize successfully")
             except Exception as e:
-                print(f"DEBUG: Tokenizer failed: {e}")
+                if self.debug:
+                    print(f"Tokenizer failed: {e}")
                 tokens = None
-        else:
-            print(f"DEBUG: self.tokenizer is None")
         
         # Try model's tokenize method as fallback
         if tokens is None and hasattr(self.model, 'tokenize'):
             try:
-                print(f"DEBUG: Using model.tokenize method")
                 tokens = self.model.tokenize(text)
-                print(f"DEBUG: Model tokenize result: {type(tokens)}")
             except Exception as e:
-                print(f"DEBUG: Model tokenize failed: {e}")
-                
-                # Try using a simple fallback tokenization for testing
-                # Just convert each character to its ASCII code
-                print(f"DEBUG: Using fallback ASCII tokenization")
-                
-                # Basic fallback tokenization - just use ASCII codes
-                # This is just for testing, not a real tokenization
-                ascii_tokens = [ord(c) for c in text]
-                tokens = torch.tensor([ascii_tokens])  # Add batch dimension
-                print(f"DEBUG: Generated fallback tokens with shape: {tokens.shape}")
+                if self.debug:
+                    print(f"Model tokenize failed: {e}")
+                raise ValueError(f"Failed to tokenize text: {text}")
         
-        # If all tokenization methods fail, create a minimal dummy token sequence
-        if tokens is None:
-            print(f"DEBUG: All tokenization methods failed, creating dummy sequence")
-            # Create a minimal sequence of random tokens
-            tokens = torch.randint(0, 128256, (1, len(text)), dtype=torch.int64)
-            print(f"DEBUG: Generated dummy tokens with shape: {tokens.shape}")
-            
         # Convert to tensor if needed
         if not isinstance(tokens, torch.Tensor):
-            try:
-                print(f"DEBUG: Converting tokens to tensor, current type: {type(tokens)}")
-                tokens = torch.tensor(tokens)
-            except Exception as tensor_e:
-                print(f"DEBUG: Error converting to tensor: {tensor_e}")
-                # Create fallback tensor
-                tokens = torch.randint(0, 128256, (1, len(text)), dtype=torch.int64)
+            tokens = torch.tensor(tokens)
         
         # Add batch dimension if needed
         if len(tokens.shape) == 1:
-            print(f"DEBUG: Adding batch dimension to tokens")
             tokens = tokens.unsqueeze(0)
             
-        print(f"DEBUG: Final tokenized shape: {tokens.shape}")
+        if self.debug:
+            print(f"Tokenized shape: {tokens.shape}")
+            
         return tokens
         
     def generate_audio_tokens(
@@ -416,66 +359,6 @@ class MLXGenerator:
         Returns:
             Generated audio tokens
         """
-        # Add extra debug info to diagnose the NoneType error
-        if self.debug:
-            print(f"DEBUG MLX generate_audio_tokens_mlx: text_tokens type={type(text_tokens)}")
-            if hasattr(text_tokens, 'shape'):
-                print(f"DEBUG MLX generate_audio_tokens_mlx: text_tokens shape={text_tokens.shape}")
-            print(f"DEBUG MLX generate_audio_tokens_mlx: self.model type={type(self.model)}")
-            if hasattr(self.model, 'backbone'):
-                print(f"DEBUG MLX generate_audio_tokens_mlx: model.backbone type={type(self.model.backbone)}")
-            if hasattr(self.model, 'decoder'):
-                print(f"DEBUG MLX generate_audio_tokens_mlx: model.decoder type={type(self.model.decoder)}")
-            
-            # Check MLX wrapper
-            print(f"DEBUG MLX generate_audio_tokens_mlx: self.mlx_wrapper type={type(self.mlx_wrapper)}")
-            
-            # Force debug print of mlx_wrapper attributes
-            if self.mlx_wrapper is not None:
-                print("MLX WRAPPER ATTRIBUTES:", dir(self.mlx_wrapper))
-                
-                # Check if we have a frame generator
-                if hasattr(self.mlx_wrapper, 'frame_generator'):
-                    print(f"DEBUG: frame_generator present={self.mlx_wrapper.frame_generator is not None}")
-                    if self.mlx_wrapper.frame_generator is not None:
-                        print(f"DEBUG: frame_generator type={type(self.mlx_wrapper.frame_generator)}")
-                if hasattr(self.mlx_wrapper, 'generate_tokens'):
-                    print(f"DEBUG: generate_tokens method available on MLXWrapper")
-                    
-            # Print MLX info
-            print(f"DEBUG: MLX_AVAILABLE={MLX_AVAILABLE}")
-            if MLX_AVAILABLE:
-                print(f"DEBUG: mx type={type(mx)}")
-                print(f"DEBUG: mx.array exists={hasattr(mx, 'array')}")
-                print(f"DEBUG MLX generate_audio_tokens_mlx: model.decoder type={type(self.model.decoder)}")
-        
-        # Create placeholder audio tokens for safety fallback
-        # This ensures we always have something valid to return
-        placeholder_audio_tokens = torch.zeros((1, 32), dtype=torch.long)
-        
-        # Safe conversion to MLX tensors with robust error handling
-        try:
-            # Convert PyTorch tensors to NumPy first, then to MLX for maximum compatibility
-            import numpy as np
-            if isinstance(text_tokens, torch.Tensor):
-                text_tokens_np = text_tokens.detach().cpu().numpy()
-                if hasattr(mx, 'array'):
-                    text_tokens_mlx = mx.array(text_tokens_np)
-                else:
-                    # If MLX isn't working right, we need to fall back later
-                    text_tokens_mlx = text_tokens_np
-            else:
-                # Keep as is if not a PyTorch tensor
-                text_tokens_mlx = text_tokens
-                
-            if self.debug:
-                print(f"Successfully converted text tokens to MLX format: {type(text_tokens_mlx)}")
-        except Exception as e:
-            if self.debug:
-                print(f"Error during token conversion: {e}")
-            # Continue with original tokens but we'll likely need to fall back later
-            text_tokens_mlx = text_tokens
-               
         # Always use MLX with exact PyTorch-matching sampling
         import inspect
         
@@ -603,44 +486,20 @@ class MLXGenerator:
         # If we get here, try using MLX wrapper directly
         if self.mlx_wrapper is not None:
             try:
-                # Convert tokens to MLX format with improved error handling
-                try:
-                    if isinstance(text_tokens, torch.Tensor):
-                        # Convert via numpy for compatibility
-                        text_np = text_tokens.detach().cpu().numpy()
-                        mlx_text_tokens = mx.array(text_np)
-                    else:
-                        # Try direct conversion as fallback
-                        mlx_text_tokens = torch_to_mlx(text_tokens)
-                    
-                    if self.debug:
-                        print(f"Using MLX wrapper with text tokens shape: {mlx_text_tokens.shape}")
-                except Exception as convert_e:
-                    if self.debug:
-                        print(f"Error converting tokens to MLX: {convert_e}")
-                    # Return the placeholder tokens on conversion failure
-                    return placeholder_audio_tokens
+                # Convert tokens to MLX format
+                mlx_text_tokens = torch_to_mlx(text_tokens)
+                
+                if self.debug:
+                    print(f"Using MLX wrapper with text tokens shape: {mlx_text_tokens.shape}")
                     
                 # Create audio tokens using MLX wrapper with frame generator
-                try:
-                    audio_tokens = self.mlx_wrapper.generate_tokens(
-                        text_tokens=mlx_text_tokens,
-                        temperature=temperature,
-                        topk=topk,
-                        seed=seed,
-                        progress_callback=progress_callback
-                    )
-                    
-                    # Verify we actually got tokens back
-                    if audio_tokens is None:
-                        if self.debug:
-                            print("MLX wrapper returned None instead of audio tokens")
-                        return placeholder_audio_tokens
-                        
-                except Exception as gen_e:
-                    if self.debug:
-                        print(f"Error in MLX wrapper token generation: {gen_e}")
-                    return placeholder_audio_tokens
+                audio_tokens = self.mlx_wrapper.generate_tokens(
+                    text_tokens=mlx_text_tokens,
+                    temperature=temperature,
+                    topk=topk,
+                    seed=seed,
+                    progress_callback=progress_callback
+                )
                 
                 # Store tokens for debug and return
                 if audio_tokens is not None:
@@ -837,445 +696,61 @@ class MLXGenerator:
     
     def decode_audio_tokens(self, audio_tokens: torch.Tensor) -> torch.Tensor:
         """
-        Decode audio tokens to audio waveform with enhanced error handling.
+        Decode audio tokens to audio waveform.
         
         Args:
             audio_tokens: Audio tokens to decode
             
         Returns:
-            Audio waveform, or a placeholder if decoding fails
+            Audio waveform
         """
         if self.debug:
-            print(f"Decoding audio tokens with shape: {audio_tokens.shape if audio_tokens is not None and hasattr(audio_tokens, 'shape') else 'None'}")
-        
-        # Input validation to avoid cryptic errors
-        if audio_tokens is None:
-            if self.debug:
-                print("Warning: audio_tokens is None, falling back to synthesized audio")
-            return self.create_synthetic_speech()
+            print(f"Decoding audio tokens with shape: {audio_tokens.shape}")
             
-        if not isinstance(audio_tokens, torch.Tensor):
-            if self.debug:
-                print(f"Warning: audio_tokens is not a torch.Tensor (type: {type(audio_tokens)}), attempting conversion")
-            try:
-                # Try to convert to torch tensor
-                if hasattr(audio_tokens, 'shape'):  # Might be MLX or numpy array
-                    import numpy as np
-                    if hasattr(audio_tokens, 'tolist'):
-                        # MLX array
-                        audio_tokens = torch.tensor(audio_tokens.tolist())
-                    elif hasattr(audio_tokens, 'cpu'):
-                        # Could be MLX array with cpu method
-                        try:
-                            # Try to convert via numpy
-                            audio_tokens = torch.tensor(np.array(audio_tokens.cpu()))
-                        except Exception as cpu_e:
-                            if self.debug:
-                                print(f"Error using cpu() method: {cpu_e}")
-                            # Try direct tolist conversion
-                            if hasattr(audio_tokens, 'tolist'):
-                                audio_tokens = torch.tensor(audio_tokens.tolist())
-                            else:
-                                # Direct numpy conversion attempt
-                                audio_tokens = torch.tensor(np.array(audio_tokens))
-                    elif isinstance(audio_tokens, np.ndarray):
-                        # Numpy array
-                        audio_tokens = torch.from_numpy(audio_tokens)
-                    else:
-                        # Unknown array-like
-                        audio_tokens = torch.tensor(np.array(audio_tokens))
-                else:
-                    # Last resort - try direct conversion
-                    audio_tokens = torch.tensor(audio_tokens)
-                
-                if self.debug:
-                    print(f"Successfully converted to torch.Tensor with shape: {audio_tokens.shape}")
-            except Exception as e:
-                if self.debug:
-                    print(f"Error converting audio_tokens to torch.Tensor: {e}")
-                return self.create_synthetic_speech()  # Fallback to synthetic speech
-        
-        # Check if this looks like a valid token tensor
-        try:
-            # If tokens are all zeros or default values, consider it invalid
-            if audio_tokens.numel() > 0 and (audio_tokens == 0).all():
-                if self.debug:
-                    print("Tokens are all zeros, using synthesized audio instead")
-                return self.create_synthetic_speech()
-                
-            # Check for shape issues
-            if len(audio_tokens.shape) < 2:
-                audio_tokens = audio_tokens.unsqueeze(0)
-            
-            # If the shape isn't what we expect, reshape it
-            if audio_tokens.shape[1] != self.audio_num_codebooks:
-                if self.debug:
-                    print(f"Reshaping tokens from {audio_tokens.shape} to match codebook count {self.audio_num_codebooks}")
-                # Try to reshape if possible
-                if audio_tokens.numel() >= self.audio_num_codebooks:
-                    # Reshape to make the second dimension match the codebook count
-                    batch_size = audio_tokens.numel() // self.audio_num_codebooks
-                    audio_tokens = audio_tokens.reshape(batch_size, self.audio_num_codebooks)
-                else:
-                    # Not enough elements to reshape, create a new tensor with valid values
-                    if self.debug:
-                        print(f"Not enough elements to reshape ({audio_tokens.numel()} < {self.audio_num_codebooks})")
-                    new_tokens = torch.zeros((1, self.audio_num_codebooks), dtype=torch.long)
-                    # Fill with actual reasonable token values
-                    safe_tokens = [32, 42, 64, 96, 128, 160, 192, 224, 256]
-                    for i in range(self.audio_num_codebooks):
-                        token_idx = i % len(safe_tokens)  # Cycle through safe tokens
-                        new_tokens[0, i] = safe_tokens[token_idx]
-                    audio_tokens = new_tokens
-        except Exception as shape_e:
-            if self.debug:
-                print(f"Error handling token shape: {shape_e}")
-            return self.create_synthetic_speech()
-                
-        # Now try different approaches to decode audio
+        # Try different approaches to decode audio
         audio = None
-        decoding_errors = []
         
-        # Method 1: Try using our own basic decoder implementation
         try:
-            audio = self.basic_token_decoder(audio_tokens)
-            if audio is not None:
-                if self.debug:
-                    print(f"Used basic_token_decoder, shape: {audio.shape}")
-                return audio
-        except Exception as e:
-            error_msg = f"Error with basic_token_decoder: {e}"
-            if self.debug:
-                print(error_msg)
-            decoding_errors.append(error_msg)
-        
-        # Method 2: Try using model's decode_audio method
-        try:
+            # Try using model's decode_audio method if available
             if hasattr(self.model, 'decode_audio'):
-                if self.debug:
-                    print("Trying model.decode_audio method")
                 audio = self.model.decode_audio(audio_tokens)
                 if audio is not None:
                     if self.debug:
                         print(f"Used model.decode_audio, shape: {audio.shape}")
                     return audio
-        except Exception as e:
-            error_msg = f"Error with model.decode_audio: {e}"
-            if self.debug:
-                print(error_msg)
-            decoding_errors.append(error_msg)
-        
-        # Method 3: Try using model's decoder.decode method
-        try:
+            
+            # Try using model's decoder if available
             if hasattr(self.model, 'decoder') and hasattr(self.model.decoder, 'decode'):
-                if self.debug:
-                    print("Trying model.decoder.decode method")
                 audio = self.model.decoder.decode(audio_tokens)
                 if audio is not None:
                     if self.debug:
                         print(f"Used model.decoder.decode, shape: {audio.shape}")
                     return audio
-        except Exception as e:
-            error_msg = f"Error with model.decoder.decode: {e}"
-            if self.debug:
-                print(error_msg)
-            decoding_errors.append(error_msg)
-        
-        # Method 4: Check if tokens is already audio (based on shape)
-        try:
+                    
+            # Check if tokens is already audio (some implementations store audio in '_last_audio')
             if audio_tokens.shape[-1] > 100:  # Heuristic to detect audio waveform vs. tokens
                 if self.debug:
-                    print(f"Tokens appear to already be audio waveform (shape: {audio_tokens.shape})")
+                    print(f"Tokens appear to already be audio waveform")
                 return audio_tokens
         except Exception as e:
-            error_msg = f"Error checking if tokens is audio: {e}"
+            print(f"Error decoding audio: {e}")
+            
+        # If we get here, try using model's _last_audio if available
+        if hasattr(self.model, '_last_audio') and self.model._last_audio is not None:
+            audio = self.model._last_audio
             if self.debug:
-                print(error_msg)
-            decoding_errors.append(error_msg)
+                print(f"Used model._last_audio, shape: {audio.shape}")
+            return audio
             
-        # Method 5: Try accessing stored audio from model attributes
-        for attr_name in ['_last_audio', 'last_samples', 'audio', 'waveform', 'output']:
-            try:
-                if hasattr(self.model, attr_name):
-                    attr_value = getattr(self.model, attr_name)
-                    if attr_value is not None and isinstance(attr_value, torch.Tensor):
-                        if self.debug:
-                            print(f"Found audio in model.{attr_name}, shape: {attr_value.shape}")
-                        return attr_value
-            except Exception as e:
-                error_msg = f"Error accessing model.{attr_name}: {e}"
-                if self.debug:
-                    print(error_msg)
-                decoding_errors.append(error_msg)
-                
-        # Method 6: Try to use audio_codec if available
-        try:
-            if hasattr(self.model, 'audio_codec') and self.model.audio_codec is not None:
-                if self.debug:
-                    print("Trying model.audio_codec.decode")
-                audio = self.model.audio_codec.decode(audio_tokens)
-                if audio is not None:
-                    if self.debug:
-                        print(f"Used model.audio_codec.decode, shape: {audio.shape}")
-                    return audio
-        except Exception as e:
-            error_msg = f"Error with model.audio_codec.decode: {e}"
+        # If we get here, try using model's last_samples attribute if available
+        if hasattr(self.model, 'last_samples') and self.model.last_samples is not None:
+            audio = self.model.last_samples
             if self.debug:
-                print(error_msg)
-            decoding_errors.append(error_msg)
-                
-        # If we get here, no decoding method worked
-        # Generate a placeholder audio with a warning message
-        if self.debug:
-            print("All decoding methods failed, creating synthetic audio")
-            for i, error in enumerate(decoding_errors):
-                print(f"  Error {i+1}: {error}")
-        
-        # Use our synthetic speech function
-        return self.create_synthetic_speech()
-    
-    def basic_token_decoder(self, audio_tokens: torch.Tensor) -> torch.Tensor:
-        """
-        Advanced decoder implementation that generates speech-like audio directly from tokens
-        without relying on external decoders. Uses simpler synthesis method to avoid scipy.signal dependency issues.
-        
-        Args:
-            audio_tokens: Audio tokens with shape [batch_size, audio_num_codebooks]
+                print(f"Used model.last_samples, shape: {audio.shape}")
+            return audio
             
-        Returns:
-            Audio waveform tensor that sounds like speech
-        """
-        # Validate input
-        if audio_tokens is None or audio_tokens.numel() == 0:
-            raise ValueError("Empty audio tokens")
+        # If we get here and still no audio, raise an error
+        if audio is None:
+            raise ValueError("Failed to decode audio tokens")
             
-        # Ensure proper shape
-        if len(audio_tokens.shape) == 1:
-            audio_tokens = audio_tokens.unsqueeze(0)  # Add batch dimension
-            
-        # Verify we have the expected shape
-        if audio_tokens.shape[1] != self.audio_num_codebooks:
-            raise ValueError(f"Expected {self.audio_num_codebooks} codebooks, got {audio_tokens.shape[1]}")
-        
-        # Get batch size
-        batch_size = audio_tokens.shape[0]
-        
-        # Parameters for audio synthesis
-        sample_rate = 24000
-        duration = 3.0  # seconds
-        num_samples = int(sample_rate * duration)
-        
-        # Import libraries
-        import numpy as np
-        
-        # Don't try to import scipy, we'll use our own implementation instead
-        # This avoids the SciPy dependency completely
-        scipy_available = False
-        if self.debug:
-            print("Using simplified audio synthesis without SciPy dependency")
-        
-        # Get token values from first batch item
-        tokens = audio_tokens[0].cpu().numpy()
-        
-        # Create speech-like audio using simplified formant synthesis
-        # Define time array
-        t = np.linspace(0, duration, num_samples)
-        
-        # STEP 1: Source generation (glottal pulse)
-        # Extract fundamental frequency (pitch) from first few tokens
-        f0_base = 120  # Default male voice fundamental frequency (Hz)
-        if tokens[0] > 0:
-            # Scale with first token: higher tokens = higher pitch
-            f0_scaling = 0.8 + (tokens[0] % 50) / 30.0  # Range ~0.8-2.5
-            f0 = f0_base * f0_scaling
-        else:
-            f0 = f0_base
-        
-        # Create pitch contour (natural intonation)
-        # Rising then falling pattern common in statements
-        pitch_contour = f0 * (1.0 + 0.2 * np.sin(2 * np.pi * 0.1 * t) + 0.05 * np.sin(2 * np.pi * 0.05 * t))
-        
-        # Generate the fundamental frequency using phase accumulation
-        phase = np.cumsum(pitch_contour) / sample_rate
-        source = 0.5 * np.sin(2 * np.pi * phase)
-        
-        # STEP 2: Filter (vocal tract resonances - formants)
-        # Create several formant frequencies from token clusters
-        # First 4 formants are most important for speech intelligibility
-        try:
-            formant1 = 350 + (tokens[1] % 300)  # First formant (~350-650 Hz)
-            formant2 = 1400 + (tokens[2] % 800)  # Second formant (~1400-2200 Hz)
-            formant3 = 2300 + (tokens[3] % 500)  # Third formant (~2300-2800 Hz)
-            formant4 = 3200 + (tokens[4] % 800)  # Fourth formant (~3200-4000 Hz)
-        except IndexError:
-            # Fallback if tokens aren't available
-            formant1, formant2, formant3, formant4 = 500, 1700, 2500, 3300
-        
-        # Simplified formant synthesis using direct sine waves instead of filters
-        # This avoids scipy.signal dependency issues
-        formant1_wave = 0.7 * np.sin(2 * np.pi * formant1 * t)
-        formant2_wave = 0.5 * np.sin(2 * np.pi * formant2 * t)
-        formant3_wave = 0.3 * np.sin(2 * np.pi * formant3 * t)
-        formant4_wave = 0.2 * np.sin(2 * np.pi * formant4 * t)
-        
-        # Mix formant outputs
-        audio_array = source * 0.5 + formant1_wave * 0.3 + formant2_wave * 0.2 + formant3_wave * 0.1 + formant4_wave * 0.05
-        
-        # STEP 3: Create speech rhythm and prosody
-        # Create syllable pattern (3-5 syllables per second is typical speech)
-        syllable_rate = 4  # Syllables per second
-        
-        # Determine number of syllables based on token sequence
-        try:
-            num_syllables = 4 + (tokens[5] % 8)  # Between 4-12 syllables
-        except IndexError:
-            num_syllables = 8  # Default
-            
-        # Generate syllable positions (more naturalistic than regular spacing)
-        syllable_positions = []
-        word_count = max(2, num_syllables // 3)  # 2-4 words
-        
-        # Position words with natural spacing
-        word_positions = np.linspace(0.3, duration - 0.5, word_count)
-        
-        # Generate syllables per word
-        for word_pos in word_positions:
-            # 1-3 syllables per word, weighted toward fewer syllables
-            syllables_in_word = min(num_syllables, 1 + int(np.random.rand() * 2))
-            num_syllables -= syllables_in_word
-            
-            # Place syllables within the word
-            for i in range(syllables_in_word):
-                syllable_positions.append(word_pos + 0.15 * i)  # ~150ms per syllable
-                
-            if num_syllables <= 0:
-                break
-        
-        # Create amplitude modulation envelope based on syllables
-        am_envelope = np.zeros_like(t)
-        for pos in syllable_positions:
-            # Each syllable is a gaussian-shaped amplitude peak
-            center = int(pos * sample_rate)
-            width = int(0.1 * sample_rate)  # ~100ms syllable width
-            if center < len(am_envelope):
-                x = np.arange(max(0, center - width), min(len(am_envelope), center + width))
-                y = np.exp(-0.5 * ((x - center) / (width / 4))**2)
-                am_envelope[x] += y
-                
-        # Normalize amplitude envelope (without scipy)
-        if np.max(am_envelope) > 0:
-            am_envelope = am_envelope / np.max(am_envelope) * 0.9 + 0.1  # Baseline of 0.1, peak of 1.0
-        
-        # Apply amplitude modulation to create syllabic rhythm
-        audio_array = audio_array * am_envelope
-        
-        # STEP 4: Final processing
-        # Normalize audio
-        if np.max(np.abs(audio_array)) > 0:
-            audio_array = audio_array / np.max(np.abs(audio_array)) * 0.8
-            
-        # Add a slight room reverb effect (simplified)
-        reverb_factor = 0.3
-        reverb_delay = int(0.05 * sample_rate)  # 50ms delay
-        reverb = np.zeros_like(audio_array)
-        reverb[reverb_delay:] = audio_array[:-reverb_delay] * reverb_factor
-        
-        # Apply simple smoothing without scipy.signal
-        window_size = int(sample_rate * 0.002)  # ~2ms window
-        if window_size > 0:
-            # Simple moving average for smoothing
-            kernel = np.ones(window_size) / window_size
-            # Manual convolution for smoothing
-            reverb_smoothed = np.zeros_like(reverb)
-            for i in range(len(reverb) - window_size):
-                reverb_smoothed[i] = np.sum(reverb[i:i+window_size] * kernel)
-            reverb = reverb_smoothed
-        
-        audio_array = audio_array + reverb
-        
-        # Add fade in/out to avoid clicks
-        fade_samples = int(0.05 * sample_rate)
-        fade_in = np.linspace(0, 1, fade_samples)
-        fade_out = np.linspace(1, 0, fade_samples)
-        audio_array[:fade_samples] *= fade_in
-        audio_array[-fade_samples:] *= fade_out
-        
-        # Normalize again after all processing
-        if np.max(np.abs(audio_array)) > 0:
-            audio_array = audio_array / np.max(np.abs(audio_array)) * 0.8
-        
-        # Convert to torch tensor
-        audio_tensor = torch.from_numpy(audio_array).float()
-        
-        return audio_tensor
-        
-    def create_synthetic_speech(self) -> torch.Tensor:
-        """Create a speech-like audio signal as a placeholder"""
-        try:
-            # Create a speech-like waveform with formants and rhythm
-            import numpy as np
-            
-            # Parameters
-            sample_rate = 24000
-            duration = 3.0  # seconds
-            t = np.linspace(0, duration, int(sample_rate * duration))
-            
-            # Start with silence
-            audio = np.zeros_like(t)
-            
-            # Add a speech-like base frequency (fundamental pitch)
-            f0 = 120  # Hz - typical male voice fundamental
-            
-            # Create a pitch contour (rising then falling)
-            pitch_contour = f0 * (1.0 + 0.15 * np.sin(2 * np.pi * 0.1 * t))
-            
-            # Generate the fundamental frequency
-            phase = np.cumsum(pitch_contour) / sample_rate
-            fundamental = 0.5 * np.sin(2 * np.pi * phase)
-            
-            # Add formants (speech resonances)
-            formants = [500, 1500, 2500, 3500]  # Hz - typical formant frequencies
-            formant_audio = np.zeros_like(t)
-            
-            for i, formant in enumerate(formants):
-                # Each formant gets progressively quieter
-                formant_amp = 0.4 / (i + 1)
-                formant_wave = formant_amp * np.sin(2 * np.pi * formant * t)
-                formant_audio += formant_wave
-            
-            # Create a speech-like amplitude envelope (syllables)
-            syllable_rate = 3.0  # Hz (3 syllables per second)
-            am = 0.5 + 0.5 * np.sin(2 * np.pi * syllable_rate * t)
-            
-            # Apply some smoothing to the amplitude envelope
-            from scipy.ndimage import gaussian_filter1d
-            am = gaussian_filter1d(am, sigma=sample_rate * 0.005)
-            
-            # Combine components
-            audio = (fundamental + formant_audio) * am
-            
-            # Normalize the audio
-            audio = audio / np.max(np.abs(audio)) * 0.8
-            
-            # Add fade in/out to avoid clicks
-            fade_samples = int(0.05 * sample_rate)
-            fade_in = np.linspace(0, 1, fade_samples)
-            fade_out = np.linspace(1, 0, fade_samples)
-            audio[:fade_samples] *= fade_in
-            audio[-fade_samples:] *= fade_out
-            
-            return torch.from_numpy(audio).float()
-        except Exception as e:
-            # Fallback to simplest possible audio
-            if self.debug:
-                print(f"Error in synthetic speech generation: {e}")
-            try:
-                import numpy as np
-                sample_rate = 24000
-                duration = 3.0
-                t = np.linspace(0, duration, int(sample_rate * duration))
-                audio = 0.5 * np.sin(2 * np.pi * 440 * t)  # Simple 440 Hz tone
-                return torch.from_numpy(audio).float()
-            except Exception:
-                # Ultimate fallback to zeros
-                return torch.zeros(24000 * 3)
+        return audio

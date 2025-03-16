@@ -249,4 +249,16 @@ def test_lora():
         return False
 
 if __name__ == "__main__":
+    # Print helpful information about LoRA audio generation
+    print("\n" + "="*80)
+    print(" LoRA AUDIO GENERATION ".center(80, "="))
+    print("="*80)
+    print("\nCSM now fully supports direct LoRA inference without any extra steps!")
+    print("\nYou can simply use your LoRA model directly for audio generation:")
+    print("  - Just pass your LoRA model to any audio generation function")
+    print("  - No need for explicit merging (though that option is still available)")
+    print("\nFor better performance with repeated generations, you can optionally merge")
+    print("LoRA weights with the base model using model.merge_lora_weights()")
+    print("="*80 + "\n")
+    
     test_lora()

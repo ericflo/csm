@@ -1,0 +1,36 @@
+2025-03-16 03:17:03,851 - csm_lora_trainer - INFO - Loading MLX model from /Users/ericflo/.cache/csm/models--sesame--csm-1b/snapshots/bf27c9b04fa0131aa912fb15860765db56e5ad1b/ckpt.pt and applying LoRA
+2025-03-16 03:17:03,859 - csm_lora_trainer - INFO - Creating MLX model
+2025-03-16 03:17:03,859 - csm_lora_trainer - INFO - Loading PyTorch weights from /Users/ericflo/.cache/csm/models--sesame--csm-1b/snapshots/bf27c9b04fa0131aa912fb15860765db56e5ad1b/ckpt.pt
+2025-03-16 03:17:27,171 - csm_lora_trainer - INFO - Converting PyTorch model to MLX format
+2025-03-16 03:17:32,012 - csm_lora_trainer - INFO - Successfully converted PyTorch model to MLX
+2025-03-16 03:17:32,013 - csm_lora_trainer - INFO - Applying LoRA to the model
+2025-03-16 03:17:32,018 - csm_lora_trainer - INFO - Successfully applied LoRA (r=4, alpha=16.0)
+2025-03-16 03:17:32,018 - csm_lora_trainer - INFO - Using default LoRA target modules: ['q_proj', 'v_proj']
+2025-03-16 03:17:32,018 - csm_lora_trainer - INFO - Using all layers for LoRA
+2025-03-16 03:19:24,099 - csm_lora_trainer - INFO - Loading MLX model from /Users/ericflo/.cache/csm/models--sesame--csm-1b/snapshots/bf27c9b04fa0131aa912fb15860765db56e5ad1b/ckpt.pt and applying LoRA
+2025-03-16 03:19:24,104 - csm_lora_trainer - INFO - Creating MLX model
+2025-03-16 03:19:24,104 - csm_lora_trainer - INFO - Loading PyTorch weights from /Users/ericflo/.cache/csm/models--sesame--csm-1b/snapshots/bf27c9b04fa0131aa912fb15860765db56e5ad1b/ckpt.pt
+2025-03-16 03:19:45,556 - csm_lora_trainer - INFO - Converting PyTorch model to MLX format
+2025-03-16 03:19:50,557 - csm_lora_trainer - INFO - Successfully converted PyTorch model to MLX
+2025-03-16 03:19:50,558 - csm_lora_trainer - INFO - Applying LoRA to the model
+2025-03-16 03:19:50,572 - csm_lora_trainer - INFO - Successfully applied LoRA (r=4, alpha=16.0)
+2025-03-16 03:19:50,572 - csm_lora_trainer - INFO - Using default LoRA target modules: ['q_proj', 'v_proj']
+2025-03-16 03:19:50,572 - csm_lora_trainer - INFO - Using all layers for LoRA
+2025-03-16 03:38:48,431 - csm_lora_trainer - INFO - Loading MLX model from /Users/ericflo/.cache/csm/models--sesame--csm-1b/snapshots/bf27c9b04fa0131aa912fb15860765db56e5ad1b/ckpt.pt and applying LoRA
+2025-03-16 03:38:48,437 - csm_lora_trainer - INFO - Creating MLX model
+2025-03-16 03:38:48,437 - csm_lora_trainer - INFO - Loading PyTorch weights from /Users/ericflo/.cache/csm/models--sesame--csm-1b/snapshots/bf27c9b04fa0131aa912fb15860765db56e5ad1b/ckpt.pt
+2025-03-16 03:39:13,355 - csm_lora_trainer - INFO - Converting PyTorch model to MLX format
+2025-03-16 03:39:18,531 - csm_lora_trainer - INFO - Successfully converted PyTorch model to MLX
+2025-03-16 03:39:18,534 - csm_lora_trainer - INFO - Applying LoRA to the model
+2025-03-16 03:39:18,542 - csm_lora_trainer - INFO - Successfully applied LoRA (r=4, alpha=16.0)
+2025-03-16 03:39:18,542 - csm_lora_trainer - INFO - Using default LoRA target modules: ['q_proj', 'v_proj']
+2025-03-16 03:39:18,543 - csm_lora_trainer - INFO - Using all layers for LoRA
+2025-03-16 03:40:30,391 - csm_lora_trainer - INFO - Loading MLX model from /Users/ericflo/.cache/csm/models--sesame--csm-1b/snapshots/bf27c9b04fa0131aa912fb15860765db56e5ad1b/ckpt.pt and applying LoRA
+2025-03-16 03:40:30,396 - csm_lora_trainer - INFO - Creating MLX model
+2025-03-16 03:40:30,396 - csm_lora_trainer - INFO - Loading PyTorch weights from /Users/ericflo/.cache/csm/models--sesame--csm-1b/snapshots/bf27c9b04fa0131aa912fb15860765db56e5ad1b/ckpt.pt
+2025-03-16 03:40:52,152 - csm_lora_trainer - INFO - Converting PyTorch model to MLX format
+2025-03-16 03:41:39,724 - csm_lora_trainer - INFO - Successfully converted PyTorch model to MLX
+2025-03-16 03:41:39,742 - csm_lora_trainer - INFO - Applying LoRA to the model
+2025-03-16 03:41:39,750 - csm_lora_trainer - INFO - Successfully applied LoRA (r=4, alpha=16.0)
+2025-03-16 03:41:39,750 - csm_lora_trainer - INFO - Using default LoRA target modules: ['q_proj', 'v_proj']
+2025-03-16 03:41:39,750 - csm_lora_trainer - INFO - Using all layers for LoRA

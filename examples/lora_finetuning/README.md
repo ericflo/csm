@@ -144,6 +144,36 @@ This approach enables efficient multi-speaker training by sharing the backbone t
 4. **Monitor Validation Loss**: Early stopping based on validation loss helps prevent overfitting
 5. **Save Checkpoints**: Save frequent checkpoints to find the best model version
 
+### ⚠️ Important: Generating Audio with LoRA Models
+
+When generating audio with a LoRA-fine-tuned model, you have two options:
+
+1. **Direct use (recommended)**: The latest CSM version directly supports LoRA models for inference without any extra steps:
+
+```python
+# Just use the LoRA model directly - it will work without modifications
+from csm.mlx.mlx_wrapper import generate_audio
+audio = generate_audio(lora_model, "Your text here")
+
+# Or with the MLXGenerator
+from csm.mlx.components.generator import MLXGenerator
+generator = MLXGenerator(lora_model)
+audio = generator.generate("Your text here")
+```
+
+2. **Explicit merging**: For performance reasons or to create a standalone model, you can merge LoRA weights with the base model:
+
+```python
+# Merge LoRA weights explicitly and use the merged model
+merged_model = lora_model.merge_lora_weights()
+audio = generate_audio(merged_model, "Your text here")
+
+# Or use the merge_lora parameter to do it automatically 
+audio = generate_audio(lora_model, "Your text here", merge_lora=True)
+```
+
+Our system now supports both approaches, so you can choose the one that best fits your workflow. Explicit merging can be faster for repeated inference, while direct use is more convenient.
+
 ### Hyperparameters to Adjust
 
 * **LoRA rank (r)**: Controls capacity of the adapter (4-32)

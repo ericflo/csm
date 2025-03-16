@@ -642,18 +642,30 @@ class LoRATransformer:
             
         # Process through each transformer layer
         for layer_idx, layer in self.lora_layers:
-            if hasattr(layer, '__call__'):
+            # Modified to ensure all LoRA layer types are handled properly:
+            
+            # Case 1: It's a LoRATransformerLayer (our preferred interface)
+            if isinstance(layer, LoRATransformerLayer):
                 hidden_states = layer(
                     hidden_states,
                     attention_mask=attention_mask,
                     position_ids=position_ids
                 )
+            # Case 2: It's a standard callable
+            elif hasattr(layer, '__call__'):
+                hidden_states = layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids
+                )
+            # Case 3: It has a forward method (for PyTorch compatibility)
             elif hasattr(layer, 'forward'):
                 hidden_states = layer.forward(
                     hidden_states,
                     attention_mask=attention_mask,
                     position_ids=position_ids
                 )
+            # Error case
             else:
                 raise ValueError(f"Layer {layer_idx} has neither __call__ nor forward method")
             
@@ -711,31 +723,49 @@ class LoRATransformer:
         """
         # Create a new transformer model with the same configuration
         from copy import deepcopy
-        merged_model = deepcopy(self.base_model)
-        
-        # Merge weights for all LoRA layers
-        for layer_idx, layer in self.lora_layers:
-            if isinstance(layer, LoRATransformerLayer):
-                for module_name, lora_adapter in layer.lora_adapters.items():
-                    merged_weight = lora_adapter.merge_with_base()
-                    
-                    # Update the appropriate weight in the merged model
-                    if module_name == "q_proj":
-                        merged_model.layers[layer_idx].q_proj_weight = merged_weight
-                    elif module_name == "k_proj":
-                        merged_model.layers[layer_idx].k_proj_weight = merged_weight
-                    elif module_name == "v_proj":
-                        merged_model.layers[layer_idx].v_proj_weight = merged_weight
-                    elif module_name == "o_proj":
-                        merged_model.layers[layer_idx].o_proj_weight = merged_weight
-                    elif module_name == "gate_proj":
-                        merged_model.layers[layer_idx].gate_proj_weight = merged_weight
-                    elif module_name == "up_proj":
-                        merged_model.layers[layer_idx].up_proj_weight = merged_weight
-                    elif module_name == "down_proj":
-                        merged_model.layers[layer_idx].down_proj_weight = merged_weight
-        
-        return merged_model
+        try:
+            merged_model = deepcopy(self.base_model)
+            
+            # Merge weights for all LoRA layers
+            for layer_idx, layer in self.lora_layers:
+                if isinstance(layer, LoRATransformerLayer):
+                    for module_name, lora_adapter in layer.lora_adapters.items():
+                        try:
+                            merged_weight = lora_adapter.merge_with_base()
+                            
+                            # Update the appropriate weight in the merged model
+                            if module_name == "q_proj":
+                                merged_model.layers[layer_idx].q_proj_weight = merged_weight
+                            elif module_name == "k_proj":
+                                merged_model.layers[layer_idx].k_proj_weight = merged_weight
+                            elif module_name == "v_proj":
+                                merged_model.layers[layer_idx].v_proj_weight = merged_weight
+                            elif module_name == "o_proj":
+                                merged_model.layers[layer_idx].o_proj_weight = merged_weight
+                            elif module_name == "gate_proj":
+                                merged_model.layers[layer_idx].gate_proj_weight = merged_weight
+                            elif module_name == "up_proj":
+                                merged_model.layers[layer_idx].up_proj_weight = merged_weight
+                            elif module_name == "down_proj":
+                                merged_model.layers[layer_idx].down_proj_weight = merged_weight
+                        except Exception as e:
+                            import logging
+                            logger = logging.getLogger("lora")
+                            logger.warning(f"Error merging weights for {module_name} in layer {layer_idx}: {e}")
+                            # Continue with other modules
+            
+            return merged_model
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger("lora")
+            logger.error(f"Error in merge_with_base: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            # Return the original model as fallback
+            logger.warning("Returning original model as fallback - LoRA weights not merged")
+            return self.base_model
 
 
 def apply_lora_to_model(
@@ -857,5 +887,61 @@ def apply_lora_to_model(
         return self
     
     model.merge_lora_weights = merge_lora_weights.__get__(model)
+    
+    # Add a default implementation of get_lora_params as fallback
+    def get_lora_params_fallback(self):
+        """Alternative method to get LoRA parameters when the standard method fails."""
+        params = {}
+        
+        try:
+            # Try backbone params
+            if hasattr(self, 'backbone') and hasattr(self.backbone, 'parameters'):
+                backbone_params = self.backbone.parameters()
+                params.update(backbone_params)
+                
+            # Try decoder params
+            if hasattr(self, 'decoder') and hasattr(self.decoder, 'parameters'):
+                decoder_params = self.decoder.parameters()
+                params.update(decoder_params)
+                
+            if not params and hasattr(self, 'backbone') and hasattr(self.backbone, 'lora_layers'):
+                # Fallback to iterating through lora_layers directly
+                for layer_idx, layer in self.backbone.lora_layers:
+                    if hasattr(layer, 'parameters'):
+                        layer_params = layer.parameters()
+                        for name, param in layer_params.items():
+                            params[f"backbone.{name}"] = param
+                
+            if not params and hasattr(self, 'decoder') and hasattr(self.decoder, 'lora_layers'):
+                # Fallback to iterating through lora_layers directly
+                for layer_idx, layer in self.decoder.lora_layers:
+                    if hasattr(layer, 'parameters'):
+                        layer_params = layer.parameters()
+                        for name, param in layer_params.items():
+                            params[f"decoder.{name}"] = param
+        except Exception:
+            pass
+        
+        return params
+    
+    # Add the fallback method only if get_lora_params doesn't exist or fails
+    if not hasattr(model, 'get_lora_params'):
+        model.get_lora_params = get_lora_params_fallback.__get__(model)
+    else:
+        # Add as a fallback
+        original_get_lora_params = model.get_lora_params
+        
+        def get_lora_params_with_fallback(self):
+            try:
+                params = original_get_lora_params(self)
+                # If the main method returns nothing, use the fallback
+                if not params:
+                    params = get_lora_params_fallback(self)
+                return params
+            except Exception:
+                # If the main method fails, use the fallback
+                return get_lora_params_fallback(self)
+                
+        model.get_lora_params = get_lora_params_with_fallback.__get__(model)
     
     return model

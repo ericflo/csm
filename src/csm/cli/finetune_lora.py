@@ -464,12 +464,20 @@ def main():
             logger.info("Generating sample audio")
             sample_path = os.path.join(args.output_dir, "sample.wav")
             try:
+                # Generate sample with debug mode based on args.debug flag
                 trainer.generate_sample(
                     text=args.sample_prompt,
                     speaker_id=args.speaker_id,
-                    output_path=sample_path
+                    output_path=sample_path,
+                    debug_mode=args.debug
                 )
                 logger.info(f"Sample audio saved to {sample_path}")
+                
+                # Check for error file and warn if present
+                error_file = sample_path.replace(".wav", ".error.txt")
+                if os.path.exists(error_file):
+                    logger.warning("Audio generation encountered errors. Check the .error.txt file for details.")
+                    logger.warning(f"Error details in: {error_file}")
             except Exception as e:
                 logger.error(f"Error generating sample: {e}")
         

@@ -87,25 +87,34 @@ class MLXEmbedding:
             
         return params
         
-    def embed_tokens(self, tokens: mx.array) -> mx.array:
+    def embed_tokens(self, text_tokens: mx.array, audio_tokens: mx.array = None) -> mx.array:
         """
         Embed tokens with both text and audio channels.
-        This function determines how to interpret the token tensor based on its shape.
+        This function takes separate text and audio tokens and combines their embeddings.
         
         Args:
-            tokens: Tokens with shape [batch_size, seq_len, total_codebooks]
-                where total_codebooks = audio_num_codebooks + 1 (for text)
+            text_tokens: Text tokens with shape [batch_size, seq_len]
+            audio_tokens: Optional audio tokens with shape [batch_size, seq_len, audio_num_codebooks]
+                If None, only text tokens will be embedded
                 
         Returns:
             Embeddings with shape [batch_size, seq_len, embed_dim]
         """
         if self.debug:
             print(f"\n==== EMBED_TOKENS DEBUG ====")
-            print(f"Input token shape: {tokens.shape}")
+            print(f"Input text token shape: {text_tokens.shape}")
+            if audio_tokens is not None:
+                print(f"Input audio token shape: {audio_tokens.shape}")
+            else:
+                print("No audio tokens provided")
             
         try:
-            # Get batch size and sequence length
-            batch_size, seq_len, total_codebooks = tokens.shape
+            # Get batch size and sequence length from text tokens
+            if len(text_tokens.shape) == 1:
+                batch_size, seq_len = 1, text_tokens.shape[0]
+                text_tokens = mx.expand_dims(text_tokens, axis=0)
+            else:
+                batch_size, seq_len = text_tokens.shape
             
             # Initialize embeddings tensor
             embeddings = mx.zeros((batch_size, seq_len, self.embed_dim))
@@ -113,42 +122,130 @@ class MLXEmbedding:
             # Track which dimensions have been set
             embedding_mask = mx.zeros((batch_size, seq_len), dtype=mx.bool_)
             
-            # First handle the text tokens (last codebook)
-            text_tokens = tokens[:, :, -1]
+            # First handle the text tokens
             text_embeddings = self.embed_text(text_tokens)
             
             # Initial text mask - where there are text tokens (non-zero)
             text_mask = text_tokens != 0
             
-            # Set embeddings for text tokens
+            # Set embeddings for text tokens - copy full embedding vectors at once
             for b in range(batch_size):
                 for s in range(seq_len):
                     if text_mask[b, s]:
+                        # Create a new copy by adding the embedding values
+                        # This uses whole-tensor operations to avoid 'set' method issues
+                        embedding_vec = text_embeddings[b, s]
+                        
+                        # Create single-hot mask tensor for this position
+                        position_mask = mx.zeros((batch_size, seq_len), dtype=mx.bool_)
+                        # Use a different approach that doesn't rely on array.at.set
+                        # Create the mask for this position using element-wise comparison
+                        b_indices = mx.arange(batch_size) == b
+                        s_indices = mx.arange(seq_len) == s
+                        # Broadcast to create a 2D mask
+                        b_mask = mx.reshape(b_indices, (batch_size, 1))
+                        s_mask = mx.reshape(s_indices, (1, seq_len))
+                        position_mask = b_mask & s_mask
+                        
+                        # Expand to match embedding dimensions
+                        position_mask_3d = mx.reshape(position_mask, (batch_size, seq_len, 1))
+                        position_mask_3d = mx.broadcast_to(
+                            position_mask_3d, 
+                            (batch_size, seq_len, self.embed_dim)
+                        )
+                        
+                        # Prepare the embedding vector for broadcasting
+                        broadcast_vec = mx.zeros((batch_size, seq_len, self.embed_dim))
+                        # We need a different approach to set values in the specific position
+                        # Instead, create a new tensor and use where to combine them
                         for i in range(self.embed_dim):
-                            embeddings = embeddings.at[b, s, i].set(text_embeddings[b, s, i])
-                        embedding_mask = embedding_mask.at[b, s].set(True)
+                            if i < len(embedding_vec):
+                                value = embedding_vec[i]
+                                # Update entire broadcast_vec at this location
+                                broadcast_vec = mx.where(
+                                    position_mask_3d & (mx.arange(self.embed_dim) == i),
+                                    value,
+                                    broadcast_vec
+                                )
+                        
+                        # Combine with the main embedding tensor
+                        embeddings = mx.where(position_mask_3d, broadcast_vec, embeddings)
+                        
+                        # Update the mask without using at[] operations
+                        embedding_mask = mx.where(position_mask, True, embedding_mask)
             
-            # Handle audio tokens for each codebook (all but the last one)
-            for codebook in range(min(total_codebooks - 1, self.audio_num_codebooks)):
-                audio_tokens = tokens[:, :, codebook]
+            # If we have audio tokens, process them
+            if audio_tokens is not None and hasattr(audio_tokens, 'shape'):
+                # Get the number of codebooks
+                if len(audio_tokens.shape) == 3:
+                    total_codebooks = audio_tokens.shape[2]
+                else:
+                    # Handle case where audio_tokens is just a list of tokens without codebook dim
+                    total_codebooks = 1
+                    audio_tokens = mx.expand_dims(audio_tokens, axis=2)
                 
-                # Only process non-zero audio tokens
-                audio_mask = audio_tokens != 0
-                
-                # Skip if no non-zero tokens in this codebook
-                if not mx.any(audio_mask):
-                    continue
-                    
-                # Get embeddings for this codebook
-                audio_embeddings = self.embed_audio(audio_tokens, codebook)
-                
-                # Apply audio embeddings where there are tokens
-                for b in range(batch_size):
-                    for s in range(seq_len):
-                        if audio_mask[b, s] and not embedding_mask[b, s]:
-                            for i in range(self.embed_dim):
-                                embeddings = embeddings.at[b, s, i].set(audio_embeddings[b, s, i])
-                            embedding_mask = embedding_mask.at[b, s].set(True)
+                # Handle audio tokens for each codebook
+                for codebook in range(min(total_codebooks, self.audio_num_codebooks)):
+                    try:
+                        # Extract tokens for this codebook
+                        if total_codebooks == 1:
+                            codebook_tokens = audio_tokens[:, :, 0]
+                        else:
+                            codebook_tokens = audio_tokens[:, :, codebook]
+                        
+                        # Only process non-zero audio tokens
+                        audio_mask = codebook_tokens != 0
+                        
+                        # Skip if no non-zero tokens in this codebook
+                        if not mx.any(audio_mask):
+                            continue
+                            
+                        # Get embeddings for this codebook
+                        audio_embeddings = self.embed_audio(codebook_tokens, codebook)
+                        
+                        # Apply audio embeddings where there are tokens
+                        for b in range(batch_size):
+                            for s in range(seq_len):
+                                if audio_mask[b, s] and not embedding_mask[b, s]:
+                                    # Get the embedding vector for this position
+                                    embedding_vec = audio_embeddings[b, s]
+                                    
+                                    # Create single-hot mask tensor for this position
+                                    position_mask = mx.zeros((batch_size, seq_len), dtype=mx.bool_)
+                                    # Use element-wise comparison to create the mask
+                                    b_indices = mx.arange(batch_size) == b
+                                    s_indices = mx.arange(seq_len) == s
+                                    # Broadcast to create a 2D mask
+                                    b_mask = mx.reshape(b_indices, (batch_size, 1))
+                                    s_mask = mx.reshape(s_indices, (1, seq_len))
+                                    position_mask = b_mask & s_mask
+                                    
+                                    # Expand mask to match embedding dimensions
+                                    position_mask_3d = mx.reshape(position_mask, (batch_size, seq_len, 1))
+                                    position_mask_3d = mx.broadcast_to(
+                                        position_mask_3d, 
+                                        (batch_size, seq_len, self.embed_dim)
+                                    )
+                                    
+                                    # Create a broadcast vector with the embedding values
+                                    broadcast_vec = mx.zeros((batch_size, seq_len, self.embed_dim))
+                                    for i in range(self.embed_dim):
+                                        if i < len(embedding_vec):
+                                            value = embedding_vec[i]
+                                            # Update the broadcast vector
+                                            i_indices = mx.arange(self.embed_dim) == i
+                                            i_mask = mx.reshape(i_indices, (1, 1, self.embed_dim))
+                                            combined_mask = position_mask_3d & i_mask
+                                            broadcast_vec = mx.where(combined_mask, value, broadcast_vec)
+                                    
+                                    # Combine with the main embedding tensor
+                                    embeddings = mx.where(position_mask_3d, broadcast_vec, embeddings)
+                                    
+                                    # Update the mask
+                                    embedding_mask = mx.where(position_mask, True, embedding_mask)
+                    except Exception as e:
+                        if self.debug:
+                            print(f"Error processing audio codebook {codebook}: {e}")
             
             return embeddings
         except Exception as e:
@@ -249,11 +346,18 @@ class MLXEmbedding:
                                 # Get the embedding vector for this token
                                 token_embedding = self.text_embeddings[token_id]
                                 
-                                # Copy values one by one - never reshape
+                                # Process each embedding dimension
                                 for i in range(self.embed_dim):
                                     if i < len(token_embedding):
-                                        # Set each value individually using .at[] operator
-                                        embeddings = embeddings.at[b, s, i].set(token_embedding[i])
+                                        value = token_embedding[i]
+                                        # Use where to update array values
+                                        embeddings = mx.where(
+                                            (mx.arange(embeddings.shape[0])[:,None,None] == b) & 
+                                            (mx.arange(embeddings.shape[1])[None,:,None] == s) & 
+                                            (mx.arange(embeddings.shape[2])[None,None,:] == i),
+                                            value, 
+                                            embeddings
+                                        )
                         except Exception as e:
                             if self.debug:
                                 print(f"Error embedding token at position ({b},{s}): {e}")
@@ -367,11 +471,18 @@ class MLXEmbedding:
                                 # Get the embedding vector for this token
                                 token_embedding = self.audio_embeddings[token_id_with_offset]
                                 
-                                # Copy values one by one - never reshape
+                                # Process each embedding dimension
                                 for i in range(self.embed_dim):
                                     if i < len(token_embedding):
-                                        # Set each value individually using .at[] operator
-                                        embeddings = embeddings.at[b, s, i].set(token_embedding[i])
+                                        value = token_embedding[i]
+                                        # Use where to update array values
+                                        embeddings = mx.where(
+                                            (mx.arange(embeddings.shape[0])[:,None,None] == b) & 
+                                            (mx.arange(embeddings.shape[1])[None,:,None] == s) & 
+                                            (mx.arange(embeddings.shape[2])[None,None,:] == i),
+                                            value, 
+                                            embeddings
+                                        )
                         except Exception as e:
                             if self.debug:
                                 print(f"Error embedding audio token at position ({b},{s}) for codebook {codebook}: {e}")

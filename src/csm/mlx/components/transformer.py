@@ -431,13 +431,26 @@ class MLXTransformer:
         
         Args:
             config: Model configuration with parameters like hidden_size, num_layers, etc.
+            Can be an object with attributes or a dictionary.
         """
-        self.hidden_size = config.hidden_size
-        self.num_layers = config.num_layers
-        self.num_heads = config.num_attention_heads
-        self.intermediate_size = config.intermediate_size
-        self.max_seq_len = getattr(config, 'max_position_embeddings', 2048)
-        self.num_kv_heads = getattr(config, 'num_key_value_heads', self.num_heads)
+        # Handle both object and dictionary config formats
+        if isinstance(config, dict):
+            # Convert dict to object-like with attribute access
+            self.hidden_size = config.get('hidden_size', 768)
+            self.num_layers = config.get('num_layers', 12)
+            self.num_heads = config.get('num_attention_heads', 12)
+            self.intermediate_size = config.get('intermediate_size', 3072)
+            self.max_seq_len = config.get('max_position_embeddings', 2048)
+            self.num_kv_heads = config.get('num_key_value_heads', self.num_heads)
+        else:
+            # Config is an object with attributes
+            self.hidden_size = config.hidden_size
+            self.num_layers = config.num_layers
+            self.num_heads = config.num_attention_heads
+            self.intermediate_size = config.intermediate_size
+            self.max_seq_len = getattr(config, 'max_position_embeddings', 2048)
+            self.num_kv_heads = getattr(config, 'num_key_value_heads', self.num_heads)
+        
         self.head_dim = self.hidden_size // self.num_heads
         self.use_cache = True
         
@@ -639,6 +652,13 @@ class MLXTransformer:
         
         if 'norm.bias' in params_dict:
             self.final_layernorm_bias = params_dict['norm.bias']
+
+    def __call__(self, *args, **kwargs):
+        """
+        Make the model callable. This is an alias for forward().
+        Delegates to forward() method with any args and kwargs.
+        """
+        return self.forward(*args, **kwargs)
 
     def forward(self, hidden_states, attention_mask=None, position_ids=None, input_pos=None, mask=None):
         """

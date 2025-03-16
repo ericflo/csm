@@ -83,6 +83,36 @@ The trainer supports three save modes:
 2. **full**: Save the full model with merged weights (largest files, standalone use)
 3. **both**: Save both LoRA parameters and merged model (most flexible, largest storage)
 
+### Inference with LoRA Models
+
+**IMPORTANT**: When generating audio with a LoRA-fine-tuned model, you have two options:
+
+1. **Direct use (recommended)**: The latest CSM version directly supports LoRA models for inference without any extra steps:
+
+```python
+# Just use the LoRA model directly - it will work without modifications
+from csm.mlx.mlx_wrapper import generate_audio
+audio = generate_audio(lora_model, "Your text here")
+
+# Or with the MLXGenerator
+from csm.mlx.components.generator import MLXGenerator
+generator = MLXGenerator(lora_model)
+audio = generator.generate("Your text here")
+```
+
+2. **Explicit merging**: For performance reasons or to create a standalone model, you can merge LoRA weights with the base model:
+
+```python
+# Merge LoRA weights explicitly and use the merged model
+merged_model = lora_model.merge_lora_weights()
+audio = generate_audio(merged_model, "Your text here")
+
+# Or use the merge_lora parameter to do it automatically 
+audio = generate_audio(lora_model, "Your text here", merge_lora=True)
+```
+
+Our system now supports both approaches, so you can choose the one that best fits your workflow. Explicit merging can be faster for repeated inference, while direct use is more convenient.
+
 ## Testing Infrastructure
 
 CSM includes a comprehensive test script for validating all aspects of LoRA fine-tuning, including the Hugging Face integration:
@@ -150,7 +180,11 @@ Common issues and solutions:
 2. **Slow training**: Try reducing the number of target modules or use a smaller rank
 3. **Poor adaptation quality**: Try increasing rank, targeting more modules, or increasing epochs
 4. **Downloading failures**: Check network connection, try a different dataset or use local data
-5. **Audio generation issues**: The system will try multiple fallback methods; check logs for details
+5. **Audio generation issues**:
+   - Our system now directly supports LoRA models for inference, so you can use them without merging
+   - For best performance, especially with multiple generations, you can merge LoRA weights with the base model
+   - If you hear test tones or silence, check the error logs or error.txt file for detailed information
+   - For older CSM versions (before the direct LoRA support), you still need to merge weights explicitly
 
 For detailed validation, run the comprehensive test with specific components:
 

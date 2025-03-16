@@ -88,7 +88,18 @@ class Generator:
         frame_tokens = []
         frame_masks = []
 
+        # Add a check to ensure text isn't empty
+        if not text or len(text.strip()) == 0:
+            # Use a space character as minimum input if text is empty
+            text = " "
+            
         text_tokens = self._text_tokenizer.encode(f"[{speaker}]{text}")
+        
+        # Ensure we have actual tokens
+        if not text_tokens or len(text_tokens) == 0:
+            # Use basic token if tokenization failed
+            text_tokens = [1]  # Most tokenizers use 1 as a default token
+        
         text_frame = torch.zeros(len(text_tokens), 33).long()
         text_frame_mask = torch.zeros(len(text_tokens), 33).bool()
         text_frame[:, -1] = torch.tensor(text_tokens)

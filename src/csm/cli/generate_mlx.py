@@ -221,14 +221,13 @@ else:
             except:
                 print("Warning: No tokenizer found - will use model's tokenize method")
         
-        # Create MLX-powered generator with exact PyTorch-matching sampling
-        generator = MLXGenerator(
-            model=torch_model,
-            tokenizer=tokenizer,
-            debug=debug or os.environ.get("DEBUG", "0") == "1" 
-        )
+        # Instead of using the MLXGenerator class, just return the pytorch model directly
+        # We'll use our enhanced generate_audio function to handle it
+        # This solves the tokenization issue by using the original pytorch tokenizer
+        print("Using PyTorch Generator with MLX wrapper for improved compatibility")
+        torch_model._debug = debug or os.environ.get("DEBUG", "0") == "1"
         
-        return generator
+        return torch_model
 
     def progress_callback(current: int, total: int):
         """Display progress during generation."""
@@ -536,24 +535,13 @@ else:
         start_time = time.time()
         
         try:
-            # Generate speech
-            if hasattr(generator, 'generate_speech'):
-                # Modern modular generator
-                generate_kwargs = {
-                    "text": args.text,
-                    "speaker": speaker_id,
-                    "temperature": args.temperature,
-                    "topk": args.topk,
-                    "progress_callback": progress_callback
-                }
-                
-                # Add seed if provided for reproducible generation
-                if args.seed is not None:
-                    generate_kwargs["seed"] = args.seed
-                    
-                audio = generator.generate_speech(**generate_kwargs)
-            else:
-                # Legacy generator with generate method
+            # Import required modules
+            import torch
+            from csm.mlx.mlx_wrapper import generate_audio
+            
+            # For Generator objects, call the standard generate method
+            if isinstance(generator, type) and generator.__name__ == 'Generator':
+                # Legacy Generator class
                 segments = generator.generate(
                     text=args.text,
                     speaker=speaker_id,
@@ -561,7 +549,6 @@ else:
                     max_audio_length_ms=args.max_audio_length_ms,
                     temperature=args.temperature,
                     topk=args.topk,
-                    callback=progress_callback
                 )
                 
                 # Get audio from first segment
@@ -569,6 +556,29 @@ else:
                     audio = segments[0].audio
                 else:
                     raise RuntimeError("No audio was generated")
+            else:
+                # Set up generate_audio parameters for all other model types
+                generate_kwargs = {
+                    "text": args.text,
+                    "speaker_id": speaker_id,
+                    "temperature": args.temperature,
+                    "top_k": args.topk,
+                    "debug": args.debug
+                }
+                
+                # Add seed if provided for reproducible generation
+                if args.seed is not None:
+                    generate_kwargs["seed"] = args.seed
+                    
+                # Always merge LoRA weights if present
+                generate_kwargs["merge_lora"] = True
+                
+                # Generate the audio using our universal function
+                audio = generate_audio(generator, **generate_kwargs)
+                
+            # If the audio is a tensor but we expect numpy, convert it
+            if isinstance(audio, torch.Tensor):
+                audio = audio.detach().cpu().numpy()
             
             # Print newline after progress bar
             print()

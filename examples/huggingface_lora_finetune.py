@@ -262,7 +262,8 @@ def run_lora_finetuning(
     batch_size: int = 2,
     epochs: int = 5,
     save_mode: str = "both",
-    logger: logging.Logger = None
+    logger: logging.Logger = None,
+    **kwargs
 ):
     """
     Run LoRA fine-tuning on the prepared dataset.
@@ -338,12 +339,28 @@ def run_lora_finetuning(
         logger.info("Generating sample with fine-tuned model")
         sample_path = output_dir / "sample.wav"
         try:
+            # Use debug mode for debugging, but not for production
+            debug_mode = kwargs.get('debug', False)
             trainer.generate_sample(
                 text="This is an example of fine-tuned speech using LoRA adaptation.",
                 speaker_id=speaker_id,
-                output_path=str(sample_path)
+                output_path=str(sample_path),
+                debug_mode=debug_mode
             )
             logger.info(f"Sample generated at {sample_path}")
+            
+            # Check for error file and warn if present
+            error_file = sample_path.with_suffix('.error.txt')
+            if error_file.exists():
+                logger.warning("Audio generation encountered errors. Check the .error.txt file for details.")
+                logger.warning(f"Error details in: {error_file}")
+                # Read the first few lines of the error file to give a hint
+                try:
+                    with open(error_file, 'r') as f:
+                        error_content = f.read(500)  # First 500 chars
+                        logger.warning(f"Error preview: {error_content[:200]}...")
+                except Exception:
+                    pass
         except Exception as e:
             logger.error(f"Error generating sample: {e}")
         
@@ -481,7 +498,8 @@ def main():
             batch_size=args.batch_size,
             epochs=args.epochs,
             save_mode=args.save_mode,
-            logger=logger
+            logger=logger,
+            debug=args.log_level.lower() == "debug"  # Pass debug flag based on log level
         )
         
         # Clean up temporary data if not keeping

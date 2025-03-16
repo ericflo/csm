@@ -92,6 +92,12 @@ def parse_args():
         help="Keep downloaded data after training"
     )
     
+    parser.add_argument(
+        "--debug-audio",
+        action="store_true",
+        help="Use test tone for audio generation in case of errors (for debugging)"
+    )
+    
     return parser.parse_args()
 
 def check_dependencies():
@@ -171,6 +177,11 @@ def run_finetune_process(args, script_path, output_dir):
     
     # Add detailed logging and save mode
     cmd.extend(["--log-level", "info", "--save-mode", "lora"])  # Use info level and only save LoRA parameters
+    
+    # Add debug-audio flag if requested
+    if args.debug_audio:
+        cmd.append("--log-level")
+        cmd.append("debug")  # Set log level to debug to enable test tones
     
     logger.info(f"Running command: {' '.join(cmd)}")
     logger.info("Starting fine-tuning process - this may take several minutes")

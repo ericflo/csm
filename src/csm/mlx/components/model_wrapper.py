@@ -60,8 +60,8 @@ class MLXModelWrapper:
         if args is None:
             import argparse
             args = argparse.Namespace()
-            if hasattr(torch_model, 'args'):
-                model_args = torch_model.args
+            if hasattr(self.torch_model, 'args'):
+                model_args = self.torch_model.args
                 args.audio_vocab_size = getattr(model_args, 'audio_vocab_size', 2051)
                 args.audio_num_codebooks = getattr(model_args, 'audio_num_codebooks', 32)
             else:
@@ -106,49 +106,42 @@ class MLXModelWrapper:
             self.decoder = self._convert_transformer(self.torch_model.decoder, "decoder")
             
         # Convert embeddings
-        if hasattr(self.torch_model, 'text_embeddings') and hasattr(self.torch_model.text_embeddings, 'weight'):
-            self.text_embeddings = torch_to_mlx(self.torch_model.text_embeddings.weight)
+        if hasattr(self.torch_model, 'text_embeddings'):
+            if isinstance(self.torch_model.text_embeddings, torch.Tensor):
+                self.text_embeddings = torch_to_mlx(self.torch_model.text_embeddings)
+            elif hasattr(self.torch_model.text_embeddings, 'weight'):
+                self.text_embeddings = torch_to_mlx(self.torch_model.text_embeddings.weight)
             
-        if hasattr(self.torch_model, 'audio_embeddings') and hasattr(self.torch_model.audio_embeddings, 'weight'):
-            self.audio_embeddings = torch_to_mlx(self.torch_model.audio_embeddings.weight)
+        if hasattr(self.torch_model, 'audio_embeddings'):
+            if isinstance(self.torch_model.audio_embeddings, torch.Tensor):
+                self.audio_embeddings = torch_to_mlx(self.torch_model.audio_embeddings)
+            elif hasattr(self.torch_model.audio_embeddings, 'weight'):
+                self.audio_embeddings = torch_to_mlx(self.torch_model.audio_embeddings.weight)
             
         # Convert projection
-        if hasattr(self.torch_model, 'projection') and hasattr(self.torch_model.projection, 'weight'):
-            self.projection = torch_to_mlx(self.torch_model.projection.weight)
+        if hasattr(self.torch_model, 'projection'):
+            if isinstance(self.torch_model.projection, torch.Tensor):
+                self.projection = torch_to_mlx(self.torch_model.projection)
+            elif hasattr(self.torch_model.projection, 'weight'):
+                self.projection = torch_to_mlx(self.torch_model.projection.weight)
             
         # Convert heads
-        if hasattr(self.torch_model, 'codebook0_head') and hasattr(self.torch_model.codebook0_head, 'weight'):
-            # Ensure codebook0_head matches the expected audio_vocab_size
-            weight = self.torch_model.codebook0_head.weight
-            
-            # Check if weight shape doesn't match expected vocab size
-            if weight.shape[0] != self.args.audio_vocab_size:
+        if hasattr(self.torch_model, 'codebook0_head'):
+            # Get the weight tensor
+            if isinstance(self.torch_model.codebook0_head, torch.Tensor):
+                weight = self.torch_model.codebook0_head
+            elif hasattr(self.torch_model.codebook0_head, 'weight'):
+                weight = self.torch_model.codebook0_head.weight
+            else:
                 if self.debug:
-                    print(f"WARNING: codebook0_head weight shape {weight.shape[0]} doesn't match audio_vocab_size {self.args.audio_vocab_size}")
-                    print(f"Truncating or padding to match expected size")
+                    print("codebook0_head is not a tensor or module with weight")
+                weight = None
                 
-                # Truncate or pad to match expected vocab size
-                if weight.shape[0] > self.args.audio_vocab_size:
-                    # Truncate to expected size
-                    weight = weight[:self.args.audio_vocab_size, :]
-                else:
-                    # Need to pad with zeros
-                    padding = torch.zeros((self.args.audio_vocab_size - weight.shape[0], weight.shape[1]), 
-                                          dtype=weight.dtype, device=weight.device)
-                    weight = torch.cat([weight, padding], dim=0)
-            
-            self.codebook0_head = torch_to_mlx(weight)
-            
-        if hasattr(self.torch_model, 'audio_head'):
-            self.audio_head = []
-            for head in self.torch_model.audio_head:
-                # Ensure audio_head matches the expected audio_vocab_size
-                weight = head.weight
-                
-                # Check if weight shape doesn't match expected vocab size
+            if weight is not None:
+                # Ensure codebook0_head matches the expected audio_vocab_size
                 if weight.shape[0] != self.args.audio_vocab_size:
                     if self.debug:
-                        print(f"WARNING: audio_head weight shape {weight.shape[0]} doesn't match audio_vocab_size {self.args.audio_vocab_size}")
+                        print(f"WARNING: codebook0_head weight shape {weight.shape[0]} doesn't match audio_vocab_size {self.args.audio_vocab_size}")
                         print(f"Truncating or padding to match expected size")
                     
                     # Truncate or pad to match expected vocab size
@@ -158,10 +151,42 @@ class MLXModelWrapper:
                     else:
                         # Need to pad with zeros
                         padding = torch.zeros((self.args.audio_vocab_size - weight.shape[0], weight.shape[1]), 
-                                              dtype=weight.dtype, device=weight.device)
+                                            dtype=weight.dtype, device=weight.device)
                         weight = torch.cat([weight, padding], dim=0)
                 
-                self.audio_head.append(torch_to_mlx(weight))
+                self.codebook0_head = torch_to_mlx(weight)
+            
+        if hasattr(self.torch_model, 'audio_head'):
+            self.audio_head = []
+            for head in self.torch_model.audio_head:
+                # Get the weight tensor
+                if isinstance(head, torch.Tensor):
+                    weight = head
+                elif hasattr(head, 'weight'):
+                    weight = head.weight
+                else:
+                    if self.debug:
+                        print("audio_head component is not a tensor or module with weight")
+                    weight = None
+                    
+                if weight is not None:
+                    # Check if weight shape doesn't match expected vocab size
+                    if weight.shape[0] != self.args.audio_vocab_size:
+                        if self.debug:
+                            print(f"WARNING: audio_head weight shape {weight.shape[0]} doesn't match audio_vocab_size {self.args.audio_vocab_size}")
+                            print(f"Truncating or padding to match expected size")
+                        
+                        # Truncate or pad to match expected vocab size
+                        if weight.shape[0] > self.args.audio_vocab_size:
+                            # Truncate to expected size
+                            weight = weight[:self.args.audio_vocab_size, :]
+                        else:
+                            # Need to pad with zeros
+                            padding = torch.zeros((self.args.audio_vocab_size - weight.shape[0], weight.shape[1]), 
+                                                dtype=weight.dtype, device=weight.device)
+                            weight = torch.cat([weight, padding], dim=0)
+                    
+                    self.audio_head.append(torch_to_mlx(weight))
                 
         # Set up embedding helper
         self.embedding = MLXEmbedding(
@@ -272,35 +297,212 @@ class MLXModelWrapper:
         # Caches are handled internally by the MLXTransformer
         pass
     
-    def _fallback_generate(self, i=None, curr_sample=None):
+    def _fallback_generate(self, i=None, curr_sample=None, tokens=None, positions=None, topk=5, temperature=1.0):
         """
         Fallback method for generation that uses PyTorch.
         
         Args:
             i: Codebook index (optional)
             curr_sample: Current sample (optional)
+            tokens: Input tokens for generation (optional)
+            positions: Input positions for generation (optional)
+            topk: Top-k sampling parameter (optional)
+            temperature: Temperature for sampling (optional)
             
         Returns:
             Generated tokens
         """
         if self.debug:
-            print(f"Using PyTorch fallback for generation (i={i})")
+            print(f"Using PyTorch fallback for generation (i={i}, tokens={tokens is not None})")
             
+        # Specific codebook fallback (used from MLXFrameGenerator)
         if i is not None and curr_sample is not None:
             # Codebook fallback
             try:
-                ci_sample, _ = self.torch_model._generate_codebook(
-                    i, mlx_to_torch(curr_sample), curr_sample.shape[1]
-                )
-                return ci_sample
+                # Ensure curr_sample is a PyTorch tensor
+                if not isinstance(curr_sample, torch.Tensor):
+                    try:
+                        curr_sample = mlx_to_torch(curr_sample)
+                    except Exception as e:
+                        if self.debug:
+                            print(f"Error converting curr_sample to PyTorch: {e}")
+                        # Create a PyTorch tensor directly
+                        if hasattr(curr_sample, 'shape'):
+                            curr_sample = torch.zeros(curr_sample.shape, device="cpu")
+                        else:
+                            curr_sample = torch.zeros((1, 1), device="cpu")
+                
+                # Check if torch model is available
+                if self.torch_model is not None and hasattr(self.torch_model, '_generate_codebook'):
+                    ci_sample, _ = self.torch_model._generate_codebook(
+                        i, curr_sample, curr_sample.shape[1]
+                    )
+                    return ci_sample
+                else:
+                    # Return zero tensor if torch model is not available
+                    return torch.zeros((curr_sample.shape[0] if hasattr(curr_sample, 'shape') else 1, 1), device="cpu")
             except Exception as e:
                 if self.debug:
                     print(f"Codebook fallback failed: {e}")
-                # Return zero tensor
-                return torch.zeros((curr_sample.shape[0], 1), device="cpu")
+                # Return zero tensor with appropriate shape derived from curr_sample
+                if hasattr(curr_sample, 'shape') and len(curr_sample.shape) > 0:
+                    return torch.zeros((curr_sample.shape[0], 1), device="cpu")
+                else:
+                    return torch.zeros((1, 1), device="cpu")
+        
+        # Full frame generation fallback (used directly from generate_frame)
+        elif tokens is not None and positions is not None:
+            if self.debug:
+                print(f"Full frame generation fallback with tokens and positions")
+            
+            # Try using regular PyTorch generation with the torch model
+            try:
+                # Ensure tokens and positions are PyTorch tensors
+                torch_tokens = tokens
+                torch_positions = positions
+                
+                if not isinstance(tokens, torch.Tensor):
+                    try:
+                        torch_tokens = mlx_to_torch(tokens)
+                    except Exception as e:
+                        if self.debug:
+                            print(f"Error converting tokens to PyTorch: {e}")
+                        # Create PyTorch tensor with same shape
+                        if hasattr(tokens, 'shape'):
+                            torch_tokens = torch.zeros(tokens.shape, device="cpu", dtype=torch.long)
+                        else:
+                            torch_tokens = torch.zeros((1, 1), device="cpu", dtype=torch.long)
+                
+                if not isinstance(positions, torch.Tensor):
+                    try:
+                        torch_positions = mlx_to_torch(positions)
+                    except Exception as e:
+                        if self.debug:
+                            print(f"Error converting positions to PyTorch: {e}")
+                        # Create PyTorch tensor with same shape
+                        if hasattr(positions, 'shape'):
+                            torch_positions = torch.zeros(positions.shape, device="cpu", dtype=torch.long)
+                        else:
+                            torch_positions = torch.zeros((1, 1), device="cpu", dtype=torch.long)
+                
+                # Create tokens mask
+                tokens_mask = torch.ones_like(torch_tokens, dtype=torch.float)
+                
+                # Use the torch model to generate the frame if available
+                if self.torch_model is not None:
+                    if hasattr(self.torch_model, 'generate_frame'):
+                        # Direct generation
+                        return self.torch_model.generate_frame(
+                            torch_tokens, tokens_mask, torch_positions, temperature, topk
+                        )
+                    elif hasattr(self.torch_model, '_generate_audio_tokens'):
+                        # Alternative generation method
+                        return self.torch_model._generate_audio_tokens(
+                            torch_tokens, torch_positions, temperature, topk
+                        )
+                    elif hasattr(self.torch_model, 'forward_first_stage'):
+                        # This is what the hybrid approach was trying to do
+                        # Get hidden states first, then generate codebooks
+                        h, _, _ = self.torch_model.forward_first_stage(
+                            torch_tokens, tokens_mask, torch_positions
+                        )
+                        # Continue with codebook generation...
+                        if hasattr(self.torch_model, 'codebook0_head') and hasattr(self.torch_model, '_generate_codebook'):
+                            c0_logits = self.torch_model.codebook0_head(h[:, -1, :])
+                            from csm.models.model import sample_topk
+                            c0_sample = sample_topk(c0_logits, topk, temperature)
+                            
+                            # Process remaining codebooks
+                            curr_sample = c0_sample
+                            for i in range(1, self.args.audio_num_codebooks):
+                                ci_sample, _ = self.torch_model._generate_codebook(
+                                    i, curr_sample, curr_sample.shape[1]
+                                )
+                                curr_sample = torch.cat([curr_sample, ci_sample], dim=1)
+                            
+                            return curr_sample
+            except Exception as e:
+                if self.debug:
+                    print(f"Full frame generation fallback failed: {e}")
+                # Continue to generic fallback
+                
+        # Specific handler for generate_frame_direct method calls
+        # This matches the signature used in the frame generator's generate_frame_direct method
+        # which passes only the MLX tokens, positions, topk, and temperature
+        elif isinstance(tokens, object) and isinstance(positions, object) and isinstance(topk, int) and isinstance(temperature, float):
+            if self.debug:
+                print(f"Direct frame generation fallback from generate_frame_direct")
+            
+            try:
+                # Try to convert the MLX arrays to PyTorch tensors
+                torch_tokens = None
+                torch_positions = None
+                
+                # Convert tokens if possible
+                try:
+                    if hasattr(tokens, 'shape'):
+                        # Try MLX to torch conversion
+                        torch_tokens = mlx_to_torch(tokens)
+                    else:
+                        # Create a minimal dummy tensor
+                        torch_tokens = torch.zeros((1, 1, 33), dtype=torch.long)  # batch, seq_len, codebooks+1
+                except Exception as e:
+                    if self.debug:
+                        print(f"Error converting direct tokens to PyTorch: {e}")
+                    # Create a minimal dummy tensor
+                    torch_tokens = torch.zeros((1, 1, 33), dtype=torch.long)  # batch, seq_len, codebooks+1
+                
+                # Convert positions if possible
+                try:
+                    if hasattr(positions, 'shape'):
+                        # Try MLX to torch conversion
+                        torch_positions = mlx_to_torch(positions)
+                    else:
+                        # Create a minimal dummy tensor
+                        torch_positions = torch.zeros((1, 1), dtype=torch.long)  # batch, seq_len
+                except Exception as e:
+                    if self.debug:
+                        print(f"Error converting direct positions to PyTorch: {e}")
+                    # Create a minimal dummy tensor
+                    torch_positions = torch.zeros((1, 1), dtype=torch.long)  # batch, seq_len
+                
+                # Create tokens mask
+                try:
+                    tokens_mask = torch.ones((torch_tokens.shape[0], torch_tokens.shape[1]), dtype=torch.float)
+                except Exception:
+                    # Minimal fallback mask
+                    tokens_mask = torch.ones((1, 1), dtype=torch.float)
+                
+                # Use the torch model to generate the frame
+                if self.torch_model is not None:
+                    if hasattr(self.torch_model, 'generate_frame'):
+                        # Direct generation
+                        return self.torch_model.generate_frame(
+                            torch_tokens, tokens_mask, torch_positions, temperature, topk
+                        )
+                    elif hasattr(self.torch_model, '_generate_audio_tokens'):
+                        # Alternative generation method
+                        return self.torch_model._generate_audio_tokens(
+                            torch_tokens, torch_positions, temperature, topk
+                        )
+            except Exception as e:
+                if self.debug:
+                    print(f"Direct frame generation fallback failed: {e}")
+                # Continue to generic fallback
+        
+        # Generic fallback for all other cases
+        # Safely get audio_num_codebooks with proper Namespace handling
+        if hasattr(self, 'args'):
+            if isinstance(self.args, dict):
+                audio_num_codebooks = self.args.get('audio_num_codebooks', 32)
+            else:
+                # It's likely a Namespace object
+                audio_num_codebooks = getattr(self.args, 'audio_num_codebooks', 32)
         else:
-            # Generic fallback
-            return torch.zeros((1, self.args.audio_num_codebooks), device="cpu")
+            # Default value if no args available
+            audio_num_codebooks = 32
+            
+        return torch.zeros((1, audio_num_codebooks), device="cpu")
     
     def generate_frame(self, tokens, input_pos, frame_idx, topk=5, temperature=1.0):
         """

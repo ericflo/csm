@@ -60,7 +60,13 @@ def mlx_topk_sampling(
         if i < vocab_size:
             # Apply an extreme penalty to these tokens to prevent selection
             for b in range(batch_size):
-                logits = logits.at[b, i].set(-1e9)  # Very large negative value
+                # Update logits with mx.where
+                logits = mx.where(
+                    (mx.arange(logits.shape[0])[:,None] == b) & 
+                    (mx.arange(logits.shape[1])[None,:] == i),
+                    -1e9,
+                    logits
+                )
     
     # Apply temperature
     scaled_logits = logits / temperature
@@ -87,7 +93,12 @@ def mlx_topk_sampling(
         
         # Set values below threshold to negative infinity
         batch_filtered = mx.where(below_threshold, mx.array(-float('inf')), batch_logits)
-        filtered_logits = filtered_logits.at[b].set(batch_filtered)
+        # Update filtered_logits with mx.where
+        filtered_logits = mx.where(
+            mx.arange(filtered_logits.shape[0])[:,None] == b,
+            batch_filtered[None,:],
+            filtered_logits
+        )
     
     # Apply softmax to filtered logits
     probs = mx.softmax(filtered_logits, axis=-1)
@@ -114,14 +125,24 @@ def mlx_topk_sampling(
         # ADDITIONAL SAFETY: Explicitly zero out problematic tokens 1-31
         for i in range(1, 32):
             if i < gumbel_probs.shape[0]:
-                gumbel_probs = gumbel_probs.at[i].set(0.0)
+                # Update with mx.where
+                gumbel_probs = mx.where(
+                    mx.arange(gumbel_probs.shape[0]) == i,
+                    0.0,
+                    gumbel_probs
+                )
         
         # ADDITIONAL SAFETY: Check for invalid token ranges
         vocab_size = probs.shape[-1]  # Get vocab size from probs tensor
         if vocab_size > 2051:  # Standard CSM audio vocab size is 2051
             # Any value beyond 2050 is likely invalid for the MIMI codec
             for i in range(2051, vocab_size):
-                gumbel_probs = gumbel_probs.at[i].set(0.0)
+                # Update with mx.where
+                gumbel_probs = mx.where(
+                    mx.arange(gumbel_probs.shape[0]) == i,
+                    0.0,
+                    gumbel_probs
+                )
         
         # Get argmax (sample with highest probability)
         sample_idx = mx.argmax(gumbel_probs)
@@ -134,7 +155,13 @@ def mlx_topk_sampling(
             sample_idx = mx.array(2050)  # Use max valid token instead
         
         # Store the result
-        samples = samples.at[b, 0].set(sample_idx)
+        # Update samples with mx.where
+        samples = mx.where(
+            (mx.arange(samples.shape[0])[:,None] == b) &
+            (mx.arange(samples.shape[1])[None,:] == 0),
+            sample_idx.item(),
+            samples
+        )
     
     return samples
 
