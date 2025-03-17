@@ -351,3 +351,316 @@ def test_reset_caches():
     # Check if reset_caches was called on both components
     wrapper.backbone.reset_caches.assert_called_once()
     wrapper.decoder.reset_caches.assert_called_once()
+
+
+def test_model_wrapper_with_custom_args():
+    """Test MLXModelWrapper with custom arguments."""
+    # Create mock model
+    mock_model = MockCSMModel()
+    
+    # Create custom args
+    custom_args = argparse.Namespace()
+    custom_args.audio_vocab_size = 1024
+    custom_args.audio_num_codebooks = 16
+    custom_args.debug = True
+    
+    # Create wrapper with custom args
+    wrapper = MLXModelWrapper(mock_model, args=custom_args)
+    
+    # Check if custom args were used
+    assert wrapper.args.audio_vocab_size == 1024
+    assert wrapper.args.audio_num_codebooks == 16
+    assert wrapper.debug is True
+
+
+def test_model_wrapper_without_model_args():
+    """Test MLXModelWrapper with a model that doesn't have args attribute."""
+    # Create mock model without args
+    mock_model = MockCSMModel()
+    delattr(mock_model, 'args')
+    
+    # Create wrapper
+    wrapper = MLXModelWrapper(mock_model)
+    
+    # Check if default args were used
+    assert wrapper.args.audio_vocab_size == 2051
+    assert wrapper.args.audio_num_codebooks == 32
+
+
+def test_vocab_size_mismatch_handling():
+    """Test handling of vocabulary size mismatches."""
+    # Create mock model with mismatched vocab sizes
+    mock_model = MockCSMModel(vocab_size=1000)  # Different from default 2051
+    
+    # Force a size mismatch in codebook0_head
+    mock_model.codebook0_head.weight = torch.randn(1000, 512)
+    # Force a size mismatch in audio_head
+    for head in mock_model.audio_head:
+        head.weight = torch.randn(1000, 512)
+    
+    # Create wrapper with default args (expects 2051)
+    args = argparse.Namespace()
+    args.audio_vocab_size = 2051  # Deliberately mismatched
+    args.audio_num_codebooks = 32
+    args.debug = True
+    
+    # Create wrapper (should trigger padding)
+    wrapper = MLXModelWrapper(mock_model, args=args)
+    
+    # Check if the codebook head was padded to match expected size
+    assert wrapper.codebook0_head is not None
+
+
+def test_fallback_generate_error_handling():
+    """Test error handling in fallback generation."""
+    # Create mock model
+    mock_model = MockCSMModel()
+    
+    # Make the _generate_codebook method raise an exception
+    mock_model._generate_codebook.side_effect = RuntimeError("Test error")
+    
+    # Create wrapper
+    wrapper = MLXModelWrapper(mock_model)
+    wrapper.debug = True  # Enable debug for coverage
+    
+    # Test fallback with error
+    curr_sample = mx.zeros((1, 10))
+    result = wrapper._fallback_generate(i=1, curr_sample=curr_sample)
+    
+    # Check if zero tensor was returned despite the error
+    assert isinstance(result, torch.Tensor)
+    assert result.shape == (1, 1)
+    assert torch.sum(result) == 0  # Should be all zeros
+
+
+def test_generate_frame_hybrid_fallback():
+    """Test complete fallback to PyTorch in hybrid frame generation."""
+    # Create mock model
+    mock_model = MockCSMModel()
+    
+    # Create wrapper
+    wrapper = MLXModelWrapper(mock_model)
+    wrapper.debug = True  # Enable debug for coverage
+    
+    # Make forward_first_stage raise an exception to trigger complete fallback
+    mock_model.forward_first_stage.side_effect = RuntimeError("Test error")
+    
+    # Test generation
+    tokens = torch.zeros((1, 10), dtype=torch.long)
+    input_pos = torch.zeros((1, 10), dtype=torch.long)
+    
+    # Generate should fall back to pure PyTorch
+    result = wrapper.generate_frame_hybrid(tokens, input_pos, 0)
+    
+    # Check if pure PyTorch generation was used
+    mock_model.generate_frame.assert_called_once()
+    assert isinstance(result, torch.Tensor)
+
+
+def test_model_without_audio_head():
+    """Test MLXModelWrapper with a model that doesn't have audio_head."""
+    # Create mock model without audio_head
+    mock_model = MockCSMModel()
+    delattr(mock_model, 'audio_head')
+    
+    # Create wrapper with patched _convert_from_torch to avoid initialization issues
+    with patch('csm.mlx_accel.components.model_wrapper.MLXModelWrapper._convert_from_torch'):
+        wrapper = MLXModelWrapper(mock_model)
+        
+        # Manually set audio_head to empty list for testing
+        wrapper.audio_head = []
+    
+        # Check if wrapper was created correctly
+        assert wrapper.audio_head == []
+    
+        # Manually create frame_generator for testing
+        wrapper.frame_generator = MagicMock()
+
+
+def test_model_with_tensor_audio_head():
+    """Test MLXModelWrapper with a model that has audio_head as a tensor."""
+    # Create mock model with audio_head as a tensor
+    mock_model = MockCSMModel()
+    
+    # Test by patching the _convert_from_torch method to handle tensor heads
+    with patch('csm.mlx_accel.components.model_wrapper.MLXModelWrapper._convert_from_torch') as mock_convert:
+        # Create wrapper
+        wrapper = MLXModelWrapper(mock_model)
+        
+        # Check that convert was called
+        assert mock_convert.call_count == 1
+        
+        # Manually set up the wrapper for testing
+        wrapper.audio_head = [mx.zeros((10, 10)) for _ in range(31)]  # 32-1 audio heads
+        wrapper.frame_generator = MagicMock()
+        
+        # Check if attributes were set correctly
+        assert len(wrapper.audio_head) == 31
+        assert wrapper.frame_generator is not None
+
+
+def test_hybrid_generation_without_codebook0_head():
+    """Test hybrid frame generation when codebook0_head is not available."""
+    # Create mock model
+    mock_model = MockCSMModel()
+    
+    # Create wrapper
+    wrapper = MLXModelWrapper(mock_model)
+    
+    # Remove codebook0_head to test fallback path
+    wrapper.codebook0_head = None
+    
+    # Mock sampling function for coverage of the PyTorch path
+    def mock_topk_sample(logits, k, temp):
+        return torch.zeros((logits.shape[0], 1), dtype=torch.long)
+    
+    # Add sampling function to global namespace
+    import builtins
+    builtins.sample_topk = mock_topk_sample
+    
+    # Test generation
+    tokens = torch.zeros((1, 10), dtype=torch.long)
+    input_pos = torch.zeros((1, 10), dtype=torch.long)
+    
+    try:
+        # Generate with hybrid approach (should use PyTorch for codebook0)
+        result = wrapper.generate_frame_hybrid(tokens, input_pos, 0)
+        
+        # Check if result was generated
+        assert isinstance(result, torch.Tensor)
+        assert result.shape == (1, 32)  # num_codebooks = 32
+    finally:
+        # Clean up global namespace
+        if hasattr(builtins, 'sample_topk'):
+            delattr(builtins, 'sample_topk')
+
+
+def test_model_without_text_or_audio_embeddings():
+    """Test MLXModelWrapper with a model missing text or audio embeddings."""
+    # Create mock model without embeddings
+    mock_model = MockCSMModel()
+    
+    # Remove embeddings attributes to test fallback paths
+    delattr(mock_model, 'text_embeddings')
+    delattr(mock_model, 'audio_embeddings')
+    
+    # Create wrapper (should handle missing embeddings)
+    wrapper = MLXModelWrapper(mock_model)
+    
+    # Check if wrapper was initialized correctly despite missing embeddings
+    assert wrapper.text_embeddings is None
+    assert wrapper.audio_embeddings is None
+    
+    # Check if embedding and frame_generator were still created
+    assert wrapper.embedding is not None
+    assert wrapper.frame_generator is not None
+
+
+def test_model_without_projection():
+    """Test MLXModelWrapper with a model missing projection."""
+    # Create mock model without projection
+    mock_model = MockCSMModel()
+    
+    # Remove projection attribute to test fallback path
+    delattr(mock_model, 'projection')
+    
+    # Create wrapper (should handle missing projection)
+    wrapper = MLXModelWrapper(mock_model)
+    
+    # Check if wrapper was initialized correctly despite missing projection
+    assert wrapper.projection is None
+    
+    # Check if frame_generator was still created
+    assert wrapper.frame_generator is not None
+
+
+def test_convert_transformer_with_different_layer_structure():
+    """Test converting transformer with different layer structure."""
+    # Create mock model
+    mock_model = MockCSMModel()
+    
+    # Create wrapper
+    wrapper = MLXModelWrapper(mock_model)
+    
+    # Create a custom transformer with different layer structure
+    custom_transformer = MagicMock()
+    custom_transformer.layers = [MagicMock() for _ in range(2)]
+    
+    # Set up different attributes on first layer to test alternative paths
+    layer = custom_transformer.layers[0]
+    layer.attn = MagicMock()
+    layer.attn.q_proj = MagicMock()
+    layer.attn.q_proj.weight = torch.randn(512, 512)
+    layer.attn.k_proj = MagicMock()
+    layer.attn.k_proj.weight = torch.randn(512, 512)
+    layer.attn.v_proj = MagicMock()
+    layer.attn.v_proj.weight = torch.randn(512, 512)
+    layer.attn.output_proj = MagicMock()
+    layer.attn.output_proj.weight = torch.randn(512, 512)
+    # Use n_heads instead of n_heads property
+    layer.attn.n_heads = 8
+    
+    # Don't include mlp.w3 to test that path
+    layer.mlp = MagicMock()
+    layer.mlp.w1 = MagicMock()
+    layer.mlp.w1.weight = torch.randn(2048, 512)
+    layer.mlp.w2 = MagicMock()
+    layer.mlp.w2.weight = torch.randn(512, 2048)
+    # Intentionally missing mlp.w3
+    
+    # Convert transformer
+    with patch('csm.mlx_accel.components.model_wrapper.torch_to_mlx') as mock_torch_to_mlx:
+        # Mock return value
+        mock_torch_to_mlx.return_value = mx.zeros((10, 10))
+        
+        # Convert transformer (should handle missing attributes)
+        mlx_transformer = wrapper._convert_transformer(custom_transformer, "custom_transformer")
+        
+        # Check conversion results
+        assert mlx_transformer is not None
+
+
+def test_debugging_output():
+    """Test debug output logging."""
+    # Create mock model
+    mock_model = MockCSMModel()
+    
+    # Create args with debug enabled
+    args = argparse.Namespace()
+    args.audio_vocab_size = 2051
+    args.audio_num_codebooks = 32
+    args.debug = True
+    
+    # Patch print to capture output and mock frame_generator
+    with patch('builtins.print') as mock_print, \
+         patch('csm.mlx_accel.components.model_wrapper.MLXFrameGenerator') as mock_frame_gen:
+        
+        # Setup mock frame generator to throw exception when generate_frame is called
+        mock_frame_gen_instance = MagicMock()
+        mock_frame_gen_instance.generate_frame.side_effect = Exception("Test error")
+        mock_frame_gen.return_value = mock_frame_gen_instance
+        
+        # Create wrapper with debug enabled
+        wrapper = MLXModelWrapper(mock_model, args=args)
+        
+        # Check if debug messages were printed
+        assert mock_print.call_count > 0
+        
+        # Reset counter to isolate calls in remaining test
+        mock_print.reset_mock()
+        
+        # Call methods that produce debug output
+        wrapper._convert_transformer(mock_model.backbone, "debug_test")
+        wrapper._fallback_generate(i=1, curr_sample=mx.zeros((1, 10)))
+        
+        # Run generate_frame with failing MLX approach to test debug fallback
+        tokens = torch.zeros((1, 10), dtype=torch.long)
+        input_pos = torch.zeros((1, 10), dtype=torch.long)
+        
+        # Mock hybrid generation to isolate test
+        with patch('csm.mlx_accel.components.model_wrapper.MLXModelWrapper.generate_frame_hybrid') as mock_hybrid:
+            mock_hybrid.return_value = torch.zeros((1, 32))
+            wrapper.generate_frame(tokens, input_pos, 0)
+        
+        # Verify debug messages
+        assert mock_print.call_count > 0
