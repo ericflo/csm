@@ -111,12 +111,12 @@ jobs:
         pip install matplotlib soundfile librosa pydub
         
         # Verify MLX is installed
-        python ../.github/workflows/check_mlx.py
+        python $GITHUB_WORKSPACE/.github/workflows/check_mlx.py
         
     - name: Run MLX tests
       run: |
         # Print MLX version info if available
-        python ../.github/workflows/check_mlx.py
+        python $GITHUB_WORKSPACE/.github/workflows/check_mlx.py
         # Run tests with error handling for MLX version issues
         python -m pytest || (echo "MLX tests failed but we're continuing the workflow" && exit 0)
         
