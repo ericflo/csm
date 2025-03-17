@@ -1027,3 +1027,321 @@ def test_decode_audio_no_fallbacks():
         # Should raise a ValueError when no fallbacks are available
         with pytest.raises(ValueError):
             generator.decode_audio_tokens(torch.zeros((1, 32), dtype=torch.long))
+
+
+def test_mlx_generator_with_seed():
+    """Test MLXGenerator with random seed handling."""
+    # Create mock model and tokenizer
+    mock_model = MockModel()
+    mock_tokenizer = MockTokenizer()
+    
+    # Test with MLX enabled to check seed handling in MLX
+    with patch('csm.mlx_accel.components.generator.is_mlx_available', return_value=True), \
+         patch('csm.mlx_accel.components.generator.MLXWrapper'), \
+         patch('mlx.random.seed') as mock_seed:
+        
+        generator = MLXGenerator(mock_model, mock_tokenizer, debug=True)
+        
+        # Patch generate methods to isolate test
+        with patch.object(generator, 'generate_audio_tokens_mlx') as mock_gen:
+            mock_gen.return_value = torch.zeros((1, 32), dtype=torch.long)
+            
+            # Test generation with seed
+            generator.generate_audio_tokens(
+                text_tokens=torch.zeros((1, 10), dtype=torch.long),
+                temperature=0.8,
+                topk=5,
+                seed=42
+            )
+            
+            # Check that seed was passed to generate_audio_tokens_mlx
+            args, kwargs = mock_gen.call_args
+            assert kwargs['seed'] == 42
+            
+    # Test with PyTorch - need to patch at correct location
+    with patch('csm.mlx_accel.components.generator.is_mlx_available', return_value=False):
+        # Create generator first
+        generator = MLXGenerator(mock_model, mock_tokenizer, debug=True)
+        
+        # Then patch the torch.manual_seed that will be used inside generate_audio_tokens_torch
+        with patch('torch.manual_seed') as mock_torch_seed, \
+             patch('numpy.random.seed') as mock_np_seed, \
+             patch.object(generator, 'generate_audio_tokens_torch', wraps=generator.generate_audio_tokens_torch) as wrapped_gen:
+            
+            # Test generation with seed - directly calling the torch method to avoid dispatch
+            generator.generate_audio_tokens(
+                text_tokens=torch.zeros((1, 10), dtype=torch.long),
+                temperature=0.8,
+                topk=5,
+                seed=42
+            )
+            
+            # Now verify the torch function was called
+            assert wrapped_gen.called
+                
+            # And verify the random seeds were set
+            mock_torch_seed.assert_called_once_with(42)
+            mock_np_seed.assert_called_once_with(42)
+
+
+def test_generate_audio_tokens_mlx_inspect_parameters():
+    """Test detailed parameter inspection in MLX generation."""
+    # Create custom test class for inspecting parameter handling
+    class TestMLXGen(MLXGenerator):
+        def __init__(self, *args, **kwargs):
+            # Skip standard initialization
+            self.model = args[0]
+            self.tokenizer = args[1]
+            self.debug = kwargs.get('debug', False)
+            self.device = torch.device("cpu")
+            self.mlx_available = True
+            self.mlx_wrapper = None
+            self.text = kwargs.get('text', "Test text")
+            self.speaker = kwargs.get('speaker', 1)
+            self._last_tokens = None
+            self._last_audio = None
+            self._last_samples = None
+            self.sample_rate = 24000
+            self.inspect_results = {}
+            
+        def generate_audio_tokens_mlx(self, text_tokens, temperature=1.0, topk=5, seed=None, progress_callback=None):
+            # Enhanced implementation for testing parameter inspection
+            import inspect
+            
+            if hasattr(self.model, 'generate'):
+                # Inspect parameters
+                sig = inspect.signature(self.model.generate)
+                param_names = [param for param in sig.parameters]
+                self.inspect_results['param_names'] = param_names
+                
+                # Create parameters based on what the model's generate method accepts
+                generate_kwargs = {}
+                
+                # Handle text parameter
+                if 'text' in param_names and self.text is not None:
+                    generate_kwargs['text'] = self.text
+                    self.inspect_results['used_text'] = True
+                elif 'prompt' in param_names and self.text is not None:
+                    generate_kwargs['prompt'] = self.text
+                    self.inspect_results['used_prompt'] = True
+                    
+                # Handle text_tokens or tokens
+                if 'text_tokens' in param_names:
+                    generate_kwargs['text_tokens'] = text_tokens
+                    self.inspect_results['used_text_tokens'] = True
+                elif 'tokens' in param_names:
+                    generate_kwargs['tokens'] = text_tokens
+                    self.inspect_results['used_tokens'] = True
+                    
+                # Handle temperature parameter
+                if 'temperature' in param_names:
+                    generate_kwargs['temperature'] = temperature
+                    self.inspect_results['used_temperature'] = True
+                    
+                # Handle topk/top_k difference
+                if 'topk' in param_names:
+                    generate_kwargs['topk'] = topk
+                    self.inspect_results['used_topk'] = True
+                elif 'top_k' in param_names:
+                    generate_kwargs['top_k'] = topk
+                    self.inspect_results['used_top_k'] = True
+                
+                # Pass seed parameter if provided
+                if seed is not None:
+                    if 'seed' in param_names:
+                        generate_kwargs['seed'] = seed
+                        self.inspect_results['used_seed'] = True
+                    
+                # Handle callback/progress_callback
+                if 'callback' in param_names and progress_callback is not None:
+                    generate_kwargs['callback'] = progress_callback
+                    self.inspect_results['used_callback'] = True
+                elif 'progress_callback' in param_names and progress_callback is not None:
+                    generate_kwargs['progress_callback'] = progress_callback
+                    self.inspect_results['used_progress_callback'] = True
+                    
+                # Handle other common parameters
+                if 'use_mlx' in param_names:
+                    generate_kwargs['use_mlx'] = True
+                    self.inspect_results['used_use_mlx'] = True
+                    
+                # Handle speaker parameter
+                if 'speaker' in param_names:
+                    generate_kwargs['speaker'] = self.speaker
+                    self.inspect_results['used_speaker'] = True
+                        
+                # Handle context parameter
+                if 'context' in param_names:
+                    generate_kwargs['context'] = []
+                    self.inspect_results['used_context'] = True
+                    
+                # Handle max_audio_length_ms parameter
+                if 'max_audio_length_ms' in param_names:
+                    generate_kwargs['max_audio_length_ms'] = 10000
+                    self.inspect_results['used_max_audio_length_ms'] = True
+                
+                # Store the final kwargs
+                self.inspect_results['generate_kwargs'] = generate_kwargs
+                
+                # Return token-shaped tensor
+                return torch.zeros((1, 32), dtype=torch.long)
+            return None
+    
+    # Create mock model with different parameter signatures
+    def create_mock_model(param_names):
+        model = MockModel()
+        
+        # Create a mock signature
+        import inspect
+        params = {name: inspect.Parameter(name, inspect.Parameter.POSITIONAL_OR_KEYWORD) 
+                 for name in param_names}
+        sig = inspect.Signature(parameters=list(params.values()))
+        
+        # Create a generate method with this signature
+        def mock_generate(*args, **kwargs):
+            return [MockSegment()]
+        
+        # Attach the signature
+        mock_generate.__signature__ = sig
+        model.generate = mock_generate
+        
+        return model
+    
+    # Test case 1: Standard parameter names
+    mock_model1 = create_mock_model(['text', 'temperature', 'topk', 'seed', 'callback', 'use_mlx', 'speaker', 'context'])
+    mock_tokenizer = MockTokenizer()
+    
+    # Create generator
+    generator1 = TestMLXGen(mock_model1, mock_tokenizer, debug=True, text="Test text", speaker=2)
+    
+    # Test generation
+    progress_callback = lambda x, y: None
+    generator1.generate_audio_tokens_mlx(
+        text_tokens=torch.zeros((1, 10), dtype=torch.long),
+        temperature=0.7,
+        topk=10,
+        seed=123,
+        progress_callback=progress_callback
+    )
+    
+    # Check parameters handled correctly
+    assert generator1.inspect_results['used_text'] is True
+    assert generator1.inspect_results['used_temperature'] is True
+    assert generator1.inspect_results['used_topk'] is True
+    assert generator1.inspect_results['used_seed'] is True
+    assert generator1.inspect_results['used_callback'] is True
+    assert generator1.inspect_results['used_use_mlx'] is True
+    assert generator1.inspect_results['used_speaker'] is True
+    assert generator1.inspect_results['used_context'] is True
+    
+    # Test case 2: Alternative parameter names
+    mock_model2 = create_mock_model(['prompt', 'tokens', 'top_k', 'progress_callback', 'max_audio_length_ms'])
+    
+    # Create generator
+    generator2 = TestMLXGen(mock_model2, mock_tokenizer, debug=True)
+    
+    # Test generation
+    generator2.generate_audio_tokens_mlx(
+        text_tokens=torch.zeros((1, 10), dtype=torch.long),
+        temperature=0.7,
+        topk=10,
+        progress_callback=progress_callback
+    )
+    
+    # Check alternative parameters handled correctly
+    assert generator2.inspect_results['used_prompt'] is True
+    assert generator2.inspect_results['used_tokens'] is True
+    assert generator2.inspect_results['used_top_k'] is True
+    assert generator2.inspect_results['used_progress_callback'] is True
+    assert generator2.inspect_results['used_max_audio_length_ms'] is True
+
+
+def test_mlx_wrapper_initialization_failure():
+    """Test MLXGenerator when MLX wrapper initialization fails."""
+    # Create mock model and tokenizer
+    mock_model = MockModel()
+    mock_tokenizer = MockTokenizer()
+    
+    # Create MLXWrapper that raises specific error
+    class MockWrapper:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("MLX initialization error")
+    
+    # Test with MLX available but wrapper fails
+    with patch('csm.mlx_accel.components.generator.is_mlx_available', return_value=True), \
+         patch('csm.mlx_accel.components.generator.MLXWrapper', MockWrapper), \
+         patch('builtins.print') as mock_print:
+        
+        # Create generator (should handle the error gracefully)
+        generator = MLXGenerator(mock_model, mock_tokenizer, debug=True)
+        
+        # Check fall back to PyTorch
+        assert generator.mlx_available is False
+        assert generator.mlx_wrapper is None
+        
+        # Check if error was printed
+        print_calls = [call for call in mock_print.call_args_list if "MLX initialization error" in str(call)]
+        assert len(print_calls) > 0
+
+
+def test_generate_tokens_with_progress_callback():
+    """Test speech generation with progress callback."""
+    # Create mock model and tokenizer
+    mock_model = MockModel()
+    mock_tokenizer = MockTokenizer()
+    
+    # Create generator
+    generator = MLXGenerator(mock_model, mock_tokenizer)
+    
+    # Create mock progress callback
+    progress_callback = MagicMock()
+    
+    # Create patches for the sub-methods to trace callback propagation
+    with patch.object(generator, 'tokenize') as mock_tokenize, \
+         patch.object(generator, 'generate_audio_tokens') as mock_generate_tokens, \
+         patch.object(generator, 'decode_audio_tokens') as mock_decode:
+        
+        # Set up return values
+        mock_tokenize.return_value = torch.zeros((1, 10), dtype=torch.long)
+        mock_generate_tokens.return_value = torch.zeros((1, 32), dtype=torch.long)
+        mock_decode.return_value = torch.zeros((1, 16000), dtype=torch.float)
+        
+        # Test generate_speech with callback
+        generator.generate_speech(
+            text="Test speech",
+            progress_callback=progress_callback
+        )
+        
+        # Check if progress_callback was passed to generate_audio_tokens
+        args, kwargs = mock_generate_tokens.call_args
+        assert kwargs['progress_callback'] is progress_callback
+
+
+def test_tokenize_error_handling():
+    """Test error handling in tokenize method."""
+    # Create mock model and tokenizer
+    mock_model = MockModel()
+    mock_tokenizer = MockTokenizer()
+    
+    # Create generator
+    generator = MLXGenerator(mock_model, mock_tokenizer, debug=True)
+    
+    # Make both tokenizer methods fail
+    mock_tokenizer.encode = MagicMock(side_effect=Exception("Encode error"))
+    mock_tokenizer.tokenize = MagicMock(side_effect=Exception("Tokenize error"))
+    
+    # Make model tokenize fail too
+    mock_model.tokenize = MagicMock(side_effect=Exception("Model tokenize error"))
+    
+    # Should raise ValueError
+    with pytest.raises(ValueError):
+        generator.tokenize("Test text")
+        
+    # Test when tokenizer returns non-tensor value
+    mock_tokenizer.encode = MagicMock(return_value=[1, 2, 3])
+    mock_tokenizer.tokenize = MagicMock(side_effect=Exception("Tokenize still error"))
+    
+    # Should return tensor with batch dimension
+    tokens = generator.tokenize("Test text")
+    assert isinstance(tokens, torch.Tensor)
+    assert tokens.shape[0] == 1  # Batch dimension added

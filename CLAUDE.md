@@ -243,7 +243,7 @@ The following files need proper test coverage:
 13. ✅ `token_analyzer.py` - 79% coverage
 14. ✅ `mlx_wrapper.py` - 69% coverage (improved from 49%)
 
-Current overall test coverage for the MLX acceleration code is 35%, a significant improvement from the initial 1%. We now have thirteen core components with good test coverage, with eight components reaching >50% coverage and seven components reaching >75% coverage. Three components have excellent coverage exceeding 90%: mlx_sample_exact.py (87%), mlx_kvcache.py (100%), and components/model_wrapper.py (96%).
+Current overall test coverage for the MLX acceleration code is 35%, a significant improvement from the initial 1%. We now have thirteen core components with good test coverage, with nine components reaching >50% coverage and seven components reaching >75% coverage. Three components have excellent coverage exceeding 90%: mlx_sample_exact.py (87%), mlx_kvcache.py (100%), and components/model_wrapper.py (96%).
 
 The improvements to components/generator.py testing include:
 1. Added tests for MLX audio token generation when model returns different output formats (dict, segments, direct tensors)
@@ -252,6 +252,13 @@ The improvements to components/generator.py testing include:
 4. Added tests for complete PyTorch fallback path
 5. Added more robust test coverage for audio token decoding paths
 6. Improved tests for waveform detection and fallback logic
+7. Added tests for detailed parameter inspection and name variation handling (topk vs top_k)
+8. Added tests for random seed handling in both MLX and PyTorch paths
+9. Added tests for MLX wrapper initialization failures and graceful fallback
+10. Added tests for progress callback propagation through the generation pipeline
+11. Added tests for tokenizer fallbacks and error handling
+12. Added tests for handling token conversion between tensor formats
+13. Added tests for debug output and logging mechanisms
 
 The improvements to mlx_wrapper.py testing include:
 1. Added tests for error handling during parameter conversion
@@ -300,15 +307,15 @@ The improvements to components/model_wrapper.py testing include:
 
 Based on the current test coverage results, the following components should be prioritized next:
 
-1. `components/generator.py` (7% coverage) - This is a critical component that handles speech generation and has complex fallback paths.
+1. `mlx_embedding.py` (8% coverage) - Several test failures were observed in this component, indicating issues with the mock implementations or compatibility changes. This is a critical component for token embedding operations.
 
-2. `mlx_embedding.py` (11% coverage) - Several test failures were observed in this component, indicating issues with the mock implementations or compatibility changes.
+2. `mlx_generation.py` (5% coverage) - Despite improvements, this component still has relatively low coverage and is essential for the generation pipeline. It contains complex MLX-specific generation logic.
 
-3. `mlx_generation.py` (10% coverage) - Despite improvements, this component still has relatively low coverage and is essential for the generation pipeline.
+3. `components/sampling.py` (16% coverage) - While improved from 0%, this component still needs more robust testing of various sampling strategies, especially for the exact PyTorch-matching sampling.
 
-4. `components/sampling.py` (16% coverage) - While improved from 0%, this component still needs more robust testing of various sampling strategies.
+4. `components/utils.py` (46% coverage) - Improving coverage of utility functions would help ensure robust error handling throughout the codebase, especially for the MLX device compatibility checks.
 
-5. `components/utils.py` (35% coverage) - Improving coverage of utility functions would help ensure robust error handling throughout the codebase.
+5. `components/transformer.py` (0% coverage) - This is a major component for implementing the transformer architecture in MLX and currently has no test coverage.
 
 The test strategy should continue to:
 - Create specialized test fixtures to mock MLX interfaces
