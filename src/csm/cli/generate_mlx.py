@@ -250,7 +250,19 @@ else:
         
         # Print MLX information
         if MLX_AVAILABLE:
-            print(f"MLX version: {mx.__version__ if hasattr(mx, '__version__') else 'unknown'}")
+            mlx_version = "unknown"
+            try:
+                # Try different ways to get MLX version
+                if hasattr(mx, '__version__'):
+                    mlx_version = mx.__version__
+                elif hasattr(mx, 'version'):
+                    mlx_version = mx.version
+                elif importlib.util.find_spec('mlx') and hasattr(sys.modules.get('mlx', None), '__version__'):
+                    mlx_version = sys.modules['mlx'].__version__
+            except Exception:
+                pass
+                
+            print(f"MLX version: {mlx_version}")
             print(f"MLX backend: {mx.default_device()}")
         
         parser = argparse.ArgumentParser(description="Generate speech with CSM (MLX-accelerated for Apple Silicon)")
