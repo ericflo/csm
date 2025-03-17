@@ -104,9 +104,14 @@ jobs:
         brew install ffmpeg
         
         # Install Python dependencies
-        pip install -e ".[dev,apple]"
+        pip install -e ".[dev]"
+        # Explicitly install MLX
+        pip install mlx>=0.3.0
         # Additional dependencies for testing
         pip install matplotlib
+        
+        # Verify MLX is installed
+        python -c "import mlx; print(f'MLX version: {mlx.__version__}')"
         
     - name: Run MLX tests
       run: |
