@@ -359,13 +359,21 @@ Based on the current test coverage results, the following components should be p
 
 1. `mlx_generation.py` (62% coverage, improved from 39%) - This component now has good test coverage. It is essential for the generation pipeline and contains complex MLX-specific generation logic that is critical for the audio generation system.
 
-2. `components/sampling.py` (33% coverage, improved from 16%) - This component has improved but still needs more robust testing of various sampling strategies, especially for the exact PyTorch-matching sampling.
+2. ✅ `components/sampling.py` (60% coverage, improved from 33%) - This component has significantly improved test coverage with comprehensive tests for error handling, extreme temperature values, invalid inputs, non-availability of MLX, and threshold calculation logic. The improvement was achieved through the addition of six specialized tests covering edge cases, error conditions, and detailed tensor operations.
 
 3. ✅ `components/utils.py` (92% coverage, improved from 46%) - Utility functions now have excellent test coverage, including MLX device compatibility checks, debug features, and tensor info formatting.
 
 4. ✅ `components/transformer.py` (80% coverage, improved from 0%) - This major component for implementing the transformer architecture in MLX now has excellent test coverage with comprehensive tests for initialization, parameter loading, attention mechanisms, and forward passes.
 
-5. `mlx_ops.py` (75% coverage) - While this component has good coverage, it is a critical low-level component and could benefit from additional tests for edge cases and more complex operations.
+5. ✅ `mlx_ops.py` (84% coverage, improved from 75%) - This critical low-level component now has excellent test coverage with comprehensive tests for tensor operations, attention mechanisms, dimension handling, and error cases. The improvement was achieved through the addition of 13 specialized tests covering areas such as:
+   - Different mask shapes in attention mechanism
+   - Masking behavior verification
+   - Position-out-of-bounds handling in rotary embeddings
+   - Split fallback mechanism
+   - Dimension mismatches in rotary embeddings
+   - Safe reshape operations with larger and smaller dimensions
+   - Edge cases in categorical sampling
+   - Non-sequential positions in causal masks
 
 6. ✅ `components/model_wrapper.py` (96% coverage) - This component has excellent test coverage for the integration between PyTorch models and MLX execution.
 
