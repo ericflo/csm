@@ -239,7 +239,7 @@ The following files need proper test coverage:
 9. ✅ `mlx_sample_exact.py` - 94% coverage
 10. ✅ `components/model_wrapper.py` - 96% coverage (improved from 78%)
 11. ✅ `components/generator.py` - 54% coverage (improved from 51%)
-12. ✅ `mlx_generation.py` - 39% coverage (improved test count from 7 to 11)
+12. ✅ `mlx_generation.py` - 39% coverage (improved from 5%)
 13. ✅ `token_analyzer.py` - 79% coverage
 14. ✅ `mlx_wrapper.py` - 69% coverage (improved from 49%)
 
@@ -288,6 +288,11 @@ The improvements to mlx_generation.py testing include:
 3. Added test for error handling during audio token generation
 4. Added test for reshape operations
 5. Added proper error handling for MLX API compatibility differences
+6. Added test for tensor shape handling with various input dimensions
+7. Added test for sampling with different temperatures and topk values
+8. Added test for input token processing and token extraction logic
+9. Added test for matrix operations and transformer integration
+10. Added test for fallback integration and recovery mechanisms
 
 The improvements to components/model_wrapper.py testing include:
 1. Added tests for model initialization with default and custom args
