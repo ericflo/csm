@@ -108,27 +108,29 @@ jobs:
         # Explicitly install MLX
         pip install mlx>=0.3.0
         # Additional dependencies for testing
-        pip install matplotlib
+        pip install matplotlib soundfile librosa pydub
         
         # Verify MLX is installed
-        echo 'import sys
+        python - <<EOF
+import sys
 try:
     import mlx
-    print(f"MLX version: {getattr(mlx, "__version__", "not available")}")
+    print(f"MLX version: {getattr(mlx, '__version__', 'not available')}")
 except ImportError:
-    print("MLX not found")' > check_mlx.py
-        python check_mlx.py
+    print("MLX not found")
+EOF
         
     - name: Run MLX tests
       run: |
         # Print MLX version info if available
-        echo 'import sys
+        python - <<EOF
+import sys
 try:
     import mlx
-    print(f"MLX version: {getattr(mlx, "__version__", "not available")}")
+    print(f"MLX version: {getattr(mlx, '__version__', 'not available')}")
 except ImportError:
-    print("MLX not found")' > check_mlx.py
-        python check_mlx.py
+    print("MLX not found")
+EOF
         # Run tests with error handling for MLX version issues
         python -m pytest || (echo "MLX tests failed but we're continuing the workflow" && exit 0)
         
