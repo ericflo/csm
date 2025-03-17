@@ -1,5 +1,7 @@
 # CSM - Text-to-Speech Made Easy
 
+[![Tests](https://github.com/ericflo/csm/actions/workflows/test.yml/badge.svg)](https://github.com/ericflo/csm/actions/workflows/test.yml)
+
 ## Testing without MLX
 
 To run tests on systems without MLX (non-Apple Silicon):
