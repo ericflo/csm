@@ -8,6 +8,9 @@ import time
 import platform
 from unittest.mock import patch, MagicMock
 
+# These tests require MLX
+pytestmark = pytest.mark.requires_mlx
+
 # Import module paths we'll need to patch
 MODULE_PATH = "csm.mlx_accel.components.utils"
 

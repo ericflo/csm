@@ -32,5 +32,6 @@ To run MLX tests on a pull request, add the "run-mlx-tests" label to the PR.
 ## Notes
 
 - The tests use the `SKIP_MLX_TESTS=1` environment variable to skip MLX tests on non-Apple hardware
+- The workflow will continue even if some tests fail, to ensure we get coverage reports
 - Coverage reports are generated in both XML and HTML formats
 - The workflows use caching to speed up dependency installation
