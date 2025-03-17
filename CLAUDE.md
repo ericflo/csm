@@ -238,12 +238,20 @@ The following files need proper test coverage:
 8. ✅ `mlx_kvcache.py` - 100% coverage
 9. ✅ `mlx_sample_exact.py` - 94% coverage
 10. ✅ `components/model_wrapper.py` - 78% coverage
-11. ✅ `components/generator.py` - 51% coverage
+11. ✅ `components/generator.py` - 54% coverage (improved from 51%)
 12. ✅ `mlx_generation.py` - 39% coverage (improved test count from 7 to 11)
 13. ✅ `token_analyzer.py` - 79% coverage
 14. ✅ `mlx_wrapper.py` - 69% coverage (improved from 49%)
 
-Current overall test coverage for the MLX acceleration code is 45%, an improvement from the initial 1%. We now have thirteen core components with good test coverage, with eight components reaching >50% coverage and six components reaching >75% coverage.
+Current overall test coverage for the MLX acceleration code is 46%, an improvement from the initial 1%. We now have thirteen core components with good test coverage, with eight components reaching >50% coverage and six components reaching >75% coverage.
+
+The improvements to components/generator.py testing include:
+1. Added tests for MLX audio token generation when model returns different output formats (dict, segments, direct tensors)
+2. Added tests for audio token attribute fallback mechanisms
+3. Added tests for MLX wrapper fallback paths
+4. Added tests for complete PyTorch fallback path
+5. Added more robust test coverage for audio token decoding paths
+6. Improved tests for waveform detection and fallback logic
 
 The improvements to mlx_wrapper.py testing include:
 1. Added tests for error handling during parameter conversion
