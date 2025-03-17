@@ -1,5 +1,13 @@
 # CSM - Text-to-Speech Made Easy
 
+## Testing without MLX
+
+To run tests on systems without MLX (non-Apple Silicon):
+
+```bash
+SKIP_MLX_TESTS=1 python -m pytest
+```
+
 CSM (Conversational Speech Model) is a powerful text-to-speech system that generates natural-sounding voices from text. This fork adds enhanced user experience, improved performance, and Apple Silicon acceleration.
 
 ## 🚀 Getting Started in 30 Seconds

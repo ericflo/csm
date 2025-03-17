@@ -61,6 +61,7 @@ def mock_watermarker():
 def test_generation_workflow(mock_model, mock_text_tokenizer, mock_audio_tokenizer, mock_watermarker):
     """Test the basic generation workflow."""
     # Mock the watermark function to return the input audio and a sample rate
+    mock_watermark = MagicMock()
     mock_watermark.return_value = (torch.zeros(24000), 24000)
     
     # Import Generator here to avoid issues with actual dependencies
@@ -68,6 +69,7 @@ def test_generation_workflow(mock_model, mock_text_tokenizer, mock_audio_tokeniz
          patch("huggingface_hub.hf_hub_download", return_value="mock_path"), \
          patch("moshi.models.loaders.get_mimi", return_value=mock_audio_tokenizer), \
          patch("csm.watermarking.utils.load_watermarker", return_value=mock_watermarker), \
+         patch("csm.watermarking.utils.watermark", mock_watermark), \
          patch("torchaudio.functional.resample", return_value=torch.zeros(24000)):
         
         from csm.generator import Generator, Segment
@@ -113,6 +115,7 @@ def test_generation_workflow(mock_model, mock_text_tokenizer, mock_audio_tokeniz
 def test_generation_with_context(mock_model, mock_text_tokenizer, mock_audio_tokenizer, mock_watermarker):
     """Test generation with conversation context."""
     # Mock the watermark function to return the input audio and a sample rate
+    mock_watermark = MagicMock()
     mock_watermark.return_value = (torch.zeros(24000), 24000)
     
     # Import Generator here to avoid issues with actual dependencies
@@ -120,6 +123,7 @@ def test_generation_with_context(mock_model, mock_text_tokenizer, mock_audio_tok
          patch("huggingface_hub.hf_hub_download", return_value="mock_path"), \
          patch("moshi.models.loaders.get_mimi", return_value=mock_audio_tokenizer), \
          patch("csm.watermarking.utils.load_watermarker", return_value=mock_watermarker), \
+         patch("csm.watermarking.utils.watermark", mock_watermark), \
          patch("torchaudio.functional.resample", return_value=torch.zeros(24000)):
         
         from csm.generator import Generator, Segment

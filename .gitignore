@@ -72,3 +72,11 @@ removed_files/
 temp_files/
 *.pt
 *.wav
+
+# Temporary and backup files
+*.bak
+*.tmp
+*.temp
+*.orig
+*.old
+*.log

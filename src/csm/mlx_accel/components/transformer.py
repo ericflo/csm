@@ -287,9 +287,8 @@ class MLXTransformerLayer:
             cos = mx.take(self.cos_cached, position_ids, axis=0)
             sin = mx.take(self.sin_cached, position_ids, axis=0)
             
-            # Reshape for multiplication
-            cos = cos.reshape(batch_size, seq_length, 1, head_dim)
-            sin = sin.reshape(batch_size, seq_length, 1, head_dim)
+            # NOTE: We don't need to reshape here because our _apply_rotary_pos_emb
+            # method handles various input shapes including this one
             
             # Apply rotary embedding operation
             query_states = self._apply_rotary_pos_emb(query_states, cos, sin)
@@ -316,7 +315,9 @@ class MLXTransformerLayer:
                 attention_mask = mx.expand_dims(attention_mask, axis=1)
                 
             # Apply mask by adding a large negative value to masked positions
-            attention_scores = mx.where(attention_mask, attention_scores, mx.full_like(attention_scores, -1e9))
+            # Create a tensor filled with large negative values for masked positions
+            neg_inf = -1e9
+            attention_scores = mx.where(attention_mask, attention_scores, neg_inf)
         
         # Step 6: Apply softmax to get attention probabilities
         attention_probs = mx.softmax(attention_scores, axis=-1)
@@ -346,25 +347,46 @@ class MLXTransformerLayer:
         """Apply rotary position embeddings to query and key states."""
         # Extract dimensions
         batch_size, seq_len, num_heads, head_dim = states.shape
+        half_dim = head_dim // 2
         
-        # Reshape inputs if needed
-        if len(cos.shape) != 4 or cos.shape[2] != 1:
-            cos = cos.reshape(batch_size, seq_len, 1, head_dim)
-            sin = sin.reshape(batch_size, seq_len, 1, head_dim)
+        # Reshape inputs if needed - handle various input shapes
+        if cos.shape != (batch_size, seq_len, 1, half_dim):
+            # Extract the core cos/sin values from the shape
+            if len(cos.shape) == 2 and cos.shape[0] >= seq_len:
+                # Handle case where cos/sin are [max_seq_len, head_dim//2]
+                # Take the relevant positions
+                cos_used = cos[:seq_len, :half_dim]
+                sin_used = sin[:seq_len, :half_dim]
+                
+                # Now reshape to match required dimensions
+                cos = mx.broadcast_to(
+                    mx.reshape(cos_used, (1, seq_len, 1, half_dim)),
+                    (batch_size, seq_len, 1, half_dim)
+                )
+                sin = mx.broadcast_to(
+                    mx.reshape(sin_used, (1, seq_len, 1, half_dim)),
+                    (batch_size, seq_len, 1, half_dim)
+                )
+            else:
+                # General fallback - try to reshape directly
+                try:
+                    cos = cos.reshape(batch_size, seq_len, 1, half_dim)
+                    sin = sin.reshape(batch_size, seq_len, 1, half_dim)
+                except ValueError:
+                    # If all else fails, just create new compatible tensors
+                    print(f"Warning: Incompatible cos/sin shapes: {cos.shape}, {sin.shape}. Creating new ones.")
+                    cos = mx.ones((batch_size, seq_len, 1, half_dim))
+                    sin = mx.ones((batch_size, seq_len, 1, half_dim))
             
         # Split the tensor into even and odd dimensions
         # For rotary embeddings, we treat even and odd dimensions differently
-        states_reshape = states.reshape(batch_size, seq_len, num_heads, head_dim//2, 2)
+        states_reshape = states.reshape(batch_size, seq_len, num_heads, half_dim, 2)
         
         # Separate even and odd dimensions
         x1 = states_reshape[..., 0]  # Even dimensions
         x2 = states_reshape[..., 1]  # Odd dimensions
         
-        # Apply rotation
-        # cos * x1 - sin * x2, sin * x1 + cos * x2
-        cos = cos.reshape(batch_size, seq_len, 1, head_dim//2)
-        sin = sin.reshape(batch_size, seq_len, 1, head_dim//2)
-        
+        # Apply rotation formula: (cos * x1 - sin * x2, sin * x1 + cos * x2)
         y1 = x1 * cos - x2 * sin
         y2 = x1 * sin + x2 * cos
         

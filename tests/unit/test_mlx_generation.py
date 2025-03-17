@@ -8,25 +8,17 @@ from unittest.mock import MagicMock, patch
 import torch
 import numpy as np
 
+# These tests require MLX
+pytestmark = pytest.mark.requires_mlx
+
 # Check if MLX is available
 try:
     import mlx.core as mx
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
-    # Create a mock module
-    class MockMX:
-        def __init__(self):
-            self.core = MagicMock()
-            self.nn = MagicMock()
-            self.random = MagicMock()
-    mx = MockMX()
-    sys.modules['mlx'] = mx
-    sys.modules['mlx.core'] = mx.core
-    sys.modules['mlx.nn'] = mx.nn
-
-# Skip tests if MLX not available
-pytestmark = pytest.mark.skipif(not HAS_MLX, reason="MLX not available")
+    # Skip all tests if MLX is not available
+    pytest.skip("MLX is not available", allow_module_level=True)
 
 # Import the module under test
 from csm.mlx_accel.mlx_generation import MLXFrameGenerator
@@ -232,6 +224,7 @@ def test_generate_frame():
             assert result.shape == (2, 32)
 
 
+@pytest.mark.requires_mlx
 def test_generate_frame_with_numpy_fallback():
     """Test frame generation with fallback to numpy conversion."""
     # Create mock components
@@ -1309,6 +1302,7 @@ def test_input_token_processing():
                 assert mock_internal.call_count == 1
 
 
+@pytest.mark.requires_mlx
 def test_matrix_operations_and_transformer_integration():
     """Test matrix operations with MLX transformers."""
     # Skip if not using real MLX

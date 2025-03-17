@@ -55,11 +55,17 @@ def mock_watermarker():
 def test_generator_initialization(mock_model, mock_text_tokenizer, mock_audio_tokenizer, mock_watermarker):
     """Test initialization of the Generator class."""
     # Set up mocks
+    mock_load_tokenizer = MagicMock()
     mock_load_tokenizer.return_value = mock_text_tokenizer
+    mock_hf_hub_download = MagicMock()
     mock_hf_hub_download.return_value = "mock_path"
+    mock_get_mimi = MagicMock()
     mock_get_mimi.return_value = mock_audio_tokenizer
+    mock_load_watermarker = MagicMock()
     mock_load_watermarker.return_value = mock_watermarker
+    mock_watermark = MagicMock()
     mock_watermark.return_value = (torch.zeros(24000), 24000)
+    mock_resample = MagicMock()
     mock_resample.return_value = torch.zeros(24000)
     
     # Initialize the generator
@@ -77,11 +83,17 @@ def test_generator_initialization(mock_model, mock_text_tokenizer, mock_audio_to
 def test_tokenize_text_segment(mock_model, mock_text_tokenizer, mock_audio_tokenizer, mock_watermarker):
     """Test tokenizing a text segment."""
     # Set up mocks
+    mock_load_tokenizer = MagicMock()
     mock_load_tokenizer.return_value = mock_text_tokenizer
+    mock_hf_hub_download = MagicMock()
     mock_hf_hub_download.return_value = "mock_path"
+    mock_get_mimi = MagicMock()
     mock_get_mimi.return_value = mock_audio_tokenizer
+    mock_load_watermarker = MagicMock()
     mock_load_watermarker.return_value = mock_watermarker
+    mock_watermark = MagicMock()
     mock_watermark.return_value = (torch.zeros(24000), 24000)
+    mock_resample = MagicMock()
     mock_resample.return_value = torch.zeros(24000)
     
     # Initialize the generator
@@ -108,11 +120,17 @@ def test_tokenize_text_segment(mock_model, mock_text_tokenizer, mock_audio_token
 def test_tokenize_audio(mock_model, mock_text_tokenizer, mock_audio_tokenizer, mock_watermarker):
     """Test tokenizing an audio segment."""
     # Set up mocks
+    mock_load_tokenizer = MagicMock()
     mock_load_tokenizer.return_value = mock_text_tokenizer
+    mock_hf_hub_download = MagicMock()
     mock_hf_hub_download.return_value = "mock_path"
+    mock_get_mimi = MagicMock()
     mock_get_mimi.return_value = mock_audio_tokenizer
+    mock_load_watermarker = MagicMock()
     mock_load_watermarker.return_value = mock_watermarker
+    mock_watermark = MagicMock()
     mock_watermark.return_value = (torch.zeros(24000), 24000)
+    mock_resample = MagicMock()
     mock_resample.return_value = torch.zeros(24000)
     
     # Initialize the generator
@@ -140,11 +158,17 @@ def test_tokenize_audio(mock_model, mock_text_tokenizer, mock_audio_tokenizer, m
 def test_tokenize_segment(mock_model, mock_text_tokenizer, mock_audio_tokenizer, mock_watermarker):
     """Test tokenizing a complete segment."""
     # Set up mocks
+    mock_load_tokenizer = MagicMock()
     mock_load_tokenizer.return_value = mock_text_tokenizer
+    mock_hf_hub_download = MagicMock()
     mock_hf_hub_download.return_value = "mock_path"
+    mock_get_mimi = MagicMock()
     mock_get_mimi.return_value = mock_audio_tokenizer
+    mock_load_watermarker = MagicMock()
     mock_load_watermarker.return_value = mock_watermarker
+    mock_watermark = MagicMock()
     mock_watermark.return_value = (torch.zeros(24000), 24000)
+    mock_resample = MagicMock()
     mock_resample.return_value = torch.zeros(24000)
     
     # Initialize the generator
@@ -185,11 +209,17 @@ def test_tokenize_segment(mock_model, mock_text_tokenizer, mock_audio_tokenizer,
 def test_generate(mock_model, mock_text_tokenizer, mock_audio_tokenizer, mock_watermarker):
     """Test the generate method."""
     # Set up mocks
+    mock_load_tokenizer = MagicMock()
     mock_load_tokenizer.return_value = mock_text_tokenizer
+    mock_hf_hub_download = MagicMock()
     mock_hf_hub_download.return_value = "mock_path"
+    mock_get_mimi = MagicMock()
     mock_get_mimi.return_value = mock_audio_tokenizer
+    mock_load_watermarker = MagicMock()
     mock_load_watermarker.return_value = mock_watermarker
+    mock_watermark = MagicMock()
     mock_watermark.return_value = (torch.zeros(24000), 24000)
+    mock_resample = MagicMock()
     mock_resample.return_value = torch.zeros(24000)
     
     # Initialize the generator
