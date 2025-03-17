@@ -231,7 +231,7 @@ The following files need proper test coverage:
 1. ✅ `components/utils.py` - 46% coverage
 2. ✅ `components/config.py` - 80% coverage  
 3. ✅ `components/sampling.py` - 33% coverage (improved from 16%)
-4. ✅ `components/transformer.py` - 54% coverage
+4. ✅ `components/transformer.py` - 80% coverage (improved from 0%)
 5. ✅ `mlx_ops.py` - 75% coverage (improved from 41%)
 6. ✅ `mlx_embedding.py` - 88% coverage (improved from 8%)
 7. ✅ `mlx_layers.py` - 52% coverage
@@ -244,7 +244,7 @@ The following files need proper test coverage:
 14. ✅ `mlx_wrapper.py` - 69% coverage (improved from 49%)
 15. ✅ `components/utils.py` - 92% coverage (improved from 46%)
 
-Current overall test coverage for the MLX acceleration code is 35%, a significant improvement from the initial 1%. We now have fourteen core components with good test coverage, with eleven components reaching >50% coverage and nine components reaching >75% coverage. Five components have excellent coverage exceeding 85%: mlx_sample_exact.py (94%), mlx_kvcache.py (100%), components/model_wrapper.py (96%), mlx_embedding.py (88%), and components/utils.py (92%).
+Current overall test coverage for the MLX acceleration code is 35%, a significant improvement from the initial 1%. We now have fourteen core components with good test coverage, with eleven components reaching >50% coverage and nine components reaching >75% coverage. Six components have excellent coverage exceeding 80%: mlx_sample_exact.py (94%), mlx_kvcache.py (100%), components/model_wrapper.py (96%), mlx_embedding.py (88%), components/utils.py (92%), and components/transformer.py (80%).
 
 The improvements to components/generator.py testing include:
 1. Added tests for MLX audio token generation when model returns different output formats (dict, segments, direct tensors)
@@ -303,6 +303,23 @@ The improvements to components/utils.py testing include:
 5. Added tests for tensor dtype formatting with various input formats
 6. Added tests for shape information extraction from different tensor types
 
+The improvements to components/transformer.py testing include:
+1. Added comprehensive tests for MLXTransformerLayer initialization and parameter handling
+2. Added tests for loading parameters with both CSM and standard naming conventions
+3. Added tests for error handling with missing or incomplete parameters
+4. Added tests for the transformer's layernorm implementation
+5. Added tests for the SwiGLU feedforward network implementation
+6. Added tests for the multi-head attention mechanism with and without masks
+7. Added tests for rotary position embeddings implementation
+8. Added tests for complete layer forward pass with all components
+9. Added tests for the full transformer model's initialization, parameter loading, and forward pass
+10. Added tests for reset_caches functionality
+11. Added tests for handling differently shaped attention masks (3D and 4D)
+12. Added a robust MLX mock implementation that works regardless of MLX availability
+13. Added tests for handling standard Llama parameter naming
+14. Added tests for memory-efficient broadcasting operations in attention calculation
+15. Added tests for edge cases in rotary position embeddings
+
 The improvements to components/model_wrapper.py testing include:
 1. Added tests for model initialization with default and custom args
 2. Added tests for conversion of PyTorch transformers to MLX
@@ -335,15 +352,17 @@ The improvements to mlx_embedding.py testing include:
 
 Based on the current test coverage results, the following components should be prioritized next:
 
-1. `mlx_generation.py` (5% coverage) - This component has very low coverage and is essential for the generation pipeline. It contains complex MLX-specific generation logic and is a critical part of the audio generation system.
+1. `mlx_generation.py` (39% coverage, improved from 5%) - While improved, this component is essential for the generation pipeline and contains complex MLX-specific generation logic that is critical for the audio generation system.
 
-2. `components/sampling.py` (16% coverage) - While improved from 0%, this component still needs more robust testing of various sampling strategies, especially for the exact PyTorch-matching sampling.
+2. `components/sampling.py` (33% coverage, improved from 16%) - This component has improved but still needs more robust testing of various sampling strategies, especially for the exact PyTorch-matching sampling.
 
 3. ✅ `components/utils.py` (92% coverage, improved from 46%) - Utility functions now have excellent test coverage, including MLX device compatibility checks, debug features, and tensor info formatting.
 
-4. `components/transformer.py` (0% coverage) - This is a major component for implementing the transformer architecture in MLX and currently has no test coverage.
+4. ✅ `components/transformer.py` (80% coverage, improved from 0%) - This major component for implementing the transformer architecture in MLX now has excellent test coverage with comprehensive tests for initialization, parameter loading, attention mechanisms, and forward passes.
 
 5. `mlx_ops.py` (75% coverage) - While this component has good coverage, it is a critical low-level component and could benefit from additional tests for edge cases and more complex operations.
+
+6. `components/model_wrapper.py` (0% coverage) - This component is critical for the integration between PyTorch models and MLX execution and should be prioritized for testing.
 
 The test strategy should continue to:
 - Create specialized test fixtures to mock MLX interfaces
