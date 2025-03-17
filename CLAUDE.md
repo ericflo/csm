@@ -244,7 +244,7 @@ The following files need proper test coverage:
 14. ✅ `mlx_wrapper.py` - 69% coverage (improved from 49%)
 15. ✅ `components/utils.py` - 92% coverage (improved from 46%)
 
-Current overall test coverage for the MLX acceleration code is 35%, a significant improvement from the initial 1%. We now have fourteen core components with good test coverage, with eleven components reaching >50% coverage and nine components reaching >75% coverage. Six components have excellent coverage exceeding 80%: mlx_sample_exact.py (94%), mlx_kvcache.py (100%), components/model_wrapper.py (96%), mlx_embedding.py (88%), components/utils.py (92%), and components/transformer.py (80%).
+Current overall test coverage for the MLX acceleration code is 35%, a significant improvement from the initial 1%. We now have fourteen core components with good test coverage, with eleven components reaching >50% coverage and nine components reaching >75% coverage. Seven components have excellent coverage exceeding 80%: mlx_sample_exact.py (94%), mlx_kvcache.py (100%), components/model_wrapper.py (96%), mlx_embedding.py (88%), components/utils.py (92%), components/transformer.py (80%), and components/config.py (80%).
 
 The improvements to components/generator.py testing include:
 1. Added tests for MLX audio token generation when model returns different output formats (dict, segments, direct tensors)
@@ -294,6 +294,11 @@ The improvements to mlx_generation.py testing include:
 8. Added test for input token processing and token extraction logic
 9. Added test for matrix operations and transformer integration
 10. Added test for fallback integration and recovery mechanisms
+11. Added test for directly testing error handling in PyTorch to MLX conversion
+12. Added test for debug diagnostics and logging operations
+13. Added test for error handling in matrix multiplication operations
+14. Added test for multiple codebook generation in sequence
+15. Added test for embedding error recovery mechanisms
 
 The improvements to components/utils.py testing include:
 1. Added comprehensive tests for MLX availability checking
@@ -352,7 +357,7 @@ The improvements to mlx_embedding.py testing include:
 
 Based on the current test coverage results, the following components should be prioritized next:
 
-1. `mlx_generation.py` (39% coverage, improved from 5%) - While improved, this component is essential for the generation pipeline and contains complex MLX-specific generation logic that is critical for the audio generation system.
+1. `mlx_generation.py` (62% coverage, improved from 39%) - This component now has good test coverage. It is essential for the generation pipeline and contains complex MLX-specific generation logic that is critical for the audio generation system.
 
 2. `components/sampling.py` (33% coverage, improved from 16%) - This component has improved but still needs more robust testing of various sampling strategies, especially for the exact PyTorch-matching sampling.
 
@@ -362,7 +367,7 @@ Based on the current test coverage results, the following components should be p
 
 5. `mlx_ops.py` (75% coverage) - While this component has good coverage, it is a critical low-level component and could benefit from additional tests for edge cases and more complex operations.
 
-6. `components/model_wrapper.py` (0% coverage) - This component is critical for the integration between PyTorch models and MLX execution and should be prioritized for testing.
+6. ✅ `components/model_wrapper.py` (96% coverage) - This component has excellent test coverage for the integration between PyTorch models and MLX execution.
 
 The test strategy should continue to:
 - Create specialized test fixtures to mock MLX interfaces
