@@ -111,12 +111,24 @@ jobs:
         pip install matplotlib
         
         # Verify MLX is installed
-        python -c "try: import mlx; print(f'MLX version: {getattr(mlx, \"__version__\", \"not available\")}'); except ImportError: print('MLX not found')"
+        echo 'import sys
+try:
+    import mlx
+    print(f"MLX version: {getattr(mlx, "__version__", "not available")}")
+except ImportError:
+    print("MLX not found")' > check_mlx.py
+        python check_mlx.py
         
     - name: Run MLX tests
       run: |
         # Print MLX version info if available
-        python -c "try: import mlx; print(f'MLX version: {getattr(mlx, \"__version__\", \"not available\")}'); except ImportError: print('MLX not found')"
+        echo 'import sys
+try:
+    import mlx
+    print(f"MLX version: {getattr(mlx, "__version__", "not available")}")
+except ImportError:
+    print("MLX not found")' > check_mlx.py
+        python check_mlx.py
         # Run tests with error handling for MLX version issues
         python -m pytest || (echo "MLX tests failed but we're continuing the workflow" && exit 0)
         
