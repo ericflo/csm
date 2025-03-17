@@ -48,7 +48,7 @@ jobs:
         SKIP_MLX_TESTS=1 python -m pytest
         
     - name: Upload coverage report
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: coverage-report
@@ -97,7 +97,7 @@ jobs:
         python -m pytest
         
     - name: Upload coverage report
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: coverage-report-mlx
