@@ -11,11 +11,10 @@ This workflow runs the test suite and code quality checks for the CSM project.
 It includes two jobs:
 
 1. **`test`** - Runs on Ubuntu
-   - Runs linters (black, isort, ruff)
-   - Runs type checking (mypy)
    - Runs tests (with MLX tests skipped)
    - Uploads coverage reports
    - Uploads coverage to Codecov (if configured)
+   - Note: Linting and type checking are commented out by default
 
 2. **`test-macos`** - Runs on macOS with Apple Silicon
    - Only runs on the main branch or PRs labeled with "run-mlx-tests"

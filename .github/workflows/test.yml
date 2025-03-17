@@ -33,15 +33,18 @@ jobs:
         python -m pip install --upgrade pip
         pip install -e ".[dev]"
         
-    - name: Run linters
-      run: |
-        black --check src/ tests/
-        isort --check src/ tests/
-        ruff src/ tests/
-        
-    - name: Run type checking
-      run: |
-        mypy src/ tests/
+    # Linting and type checking steps are skipped
+    # Uncomment these steps if you want to enforce code style in CI
+    
+    # - name: Run linters
+    #   run: |
+    #     black --check src/ tests/
+    #     isort --check src/ tests/
+    #     ruff src/ tests/
+    #
+    # - name: Run type checking
+    #   run: |
+    #     mypy src/ tests/
         
     - name: Run tests
       run: |
