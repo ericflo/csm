@@ -72,6 +72,8 @@ removed_files/
 temp_files/
 *.pt
 *.wav
+reference/llama.cpp/
+reference/mlx-c/
 
 # Temporary and backup files
 *.bak

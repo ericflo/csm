@@ -10,6 +10,20 @@ option(WITH_MLX "Build with MLX support for Apple Silicon" ON)
 option(WITH_CUDA "Build with CUDA support" OFF)
 option(WITH_VULKAN "Build with Vulkan support" OFF)
 
+# Find required packages
+find_package(SentencePiece QUIET)
+if(NOT SentencePiece_FOUND)
+    message(STATUS "SentencePiece not found via find_package, will use vendored version or fetch content")
+    # Use FetchContent or vendored code for SentencePiece
+    include(FetchContent)
+    FetchContent_Declare(
+        sentencepiece
+        GIT_REPOSITORY https://github.com/google/sentencepiece.git
+        GIT_TAG v0.1.99
+    )
+    FetchContent_MakeAvailable(sentencepiece)
+endif()
+
 # Platform detection
 if(APPLE AND WITH_MLX)
     message(STATUS "Configuring for Apple Silicon with MLX acceleration")

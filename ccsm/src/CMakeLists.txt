@@ -8,6 +8,7 @@ file(GLOB CORE_SOURCES
 
 add_library(ccsm_core STATIC ${CORE_SOURCES})
 target_include_directories(ccsm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_link_libraries(ccsm_core PRIVATE sentencepiece)
 
 # MLX library (conditional)
 if(WITH_MLX)
