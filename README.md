@@ -282,6 +282,16 @@ This project provides high-quality speech generation for creative and educationa
 
 CSM includes watermarking to help identify AI-generated audio.
 
+## 🛠️ C++ Inference Engine (Planned)
+
+A high-performance C++ inference engine is being developed to enable small, efficient binaries for CSM inference:
+
+- `ccsm-generate`: CPU-only implementation using GGML
+- `ccsm-generate-mlx`: MLX-accelerated version for Apple Silicon
+- Future support for CUDA and Vulkan backends
+
+See [docs/ccsm.md](docs/ccsm.md) for the detailed implementation plan.
+
 ## 📄 License
 
 This project is based on the CSM model from Sesame. See LICENSE for details.
