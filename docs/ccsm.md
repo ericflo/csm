@@ -179,35 +179,48 @@ Before diving into implementation details, it's crucial to understand CSM's dual
 
 ### Phase 3: MLX Backend Implementation (Week 3-4)
 
-- [ ] **3.1 MLX-C Integration**
-  - [ ] Create MLX array wrappers for tensors
-  - [ ] Implement MLX tensor operations interface
-  - [ ] Set up MLX device management:
+- [x] **3.1 MLX-C Integration**
+  - [x] Create MLX array wrappers for tensors
+  - [x] Implement MLX tensor operations interface
+  - [x] Set up MLX device management:
     ```cpp
     class MLXDevice {
     public:
+        MLXDevice();
+        MLXDevice(mlx_device_type type, int index = 0);
+        
+        // Get device information
+        mlx_device_type type() const;
+        int index() const;
+        std::string name() const;
+        
+        // Static device management
         static bool is_available();
-        static const char* name();
+        static MLXDevice default_device();
+        static void set_default_device(const MLXDevice& device);
         static void synchronize();
     private:
-        // MLX device management
+        mlx_device device_;
     };
     ```
 
-- [ ] **3.2 Transformer Implementation for MLX**
-  - [ ] Implement Llama 3.2-style attention using MLX-C:
+- [x] **3.2 Transformer Implementation for MLX**
+  - [x] Implement Llama 3.2-style attention using MLX-C:
     ```cpp
-    mlx_array mlx_attention(mlx_array query, mlx_array key, 
-                          mlx_array value, mlx_array mask,
-                          int n_heads, int n_kv_heads,
-                          float scale) {
-        // Implementation using MLX-C primitives
+    mlx_array mlx_attention(
+        mlx_array query, mlx_array key, 
+        mlx_array value, const std::vector<int>& positions,
+        float scale, mlx_stream stream) {
+        // Compute QK attention with causal masking
+        // Handle grouped-query attention when n_heads > n_kv_heads
+        // Apply rotary position embeddings
+        // Efficiently manage tensor operations with proper memory cleanup
     }
     ```
-  - [ ] Implement SwiGLU feed-forward network using MLX operations
-  - [ ] Create MLX-specific implementation of rotary embeddings
-  - [ ] Build MLX transformer layers for backbone and decoder
-  - [ ] Implement MLX KV-caching for efficient inference
+  - [x] Implement SwiGLU feed-forward network using MLX operations
+  - [x] Create MLX-specific implementation of rotary embeddings
+  - [x] Build MLX transformer layers for backbone and decoder
+  - [x] Implement MLX KV-caching for efficient inference
 
 - [ ] **3.3 MLX-Specific Optimizations**
   - [ ] Leverage MLX's parallel processing capabilities

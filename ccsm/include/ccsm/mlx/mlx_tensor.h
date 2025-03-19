@@ -6,9 +6,14 @@
 #ifdef CCSM_WITH_MLX
 #include "mlx/c/array.h"
 #include "mlx/c/ops.h"
+#include "mlx/c/device.h"
+#include "mlx/c/stream.h"
 #endif
 
 namespace ccsm {
+
+// Forward declaration
+class MLXDevice;
 
 // MLX-specific tensor implementation
 class MLXTensorImpl : public TensorImpl {
@@ -40,8 +45,8 @@ public:
     mlx_array mlx_array_handle() const { return array_; }
     
     // Convert data type
-    static mlx_array_dtype to_mlx_dtype(DataType dtype);
-    static DataType from_mlx_dtype(mlx_array_dtype dtype);
+    static mlx_dtype to_mlx_dtype(DataType dtype);
+    static DataType from_mlx_dtype(mlx_dtype dtype);
     
 private:
     mlx_array array_;
@@ -61,6 +66,39 @@ private:
     std::shared_ptr<TensorImpl> view(const std::vector<size_t>& new_shape) const override { throw std::runtime_error("MLX not supported"); }
     std::shared_ptr<TensorImpl> slice(int dim, size_t start, size_t end) const override { throw std::runtime_error("MLX not supported"); }
     void print(const std::string& name = "") const override { throw std::runtime_error("MLX not supported"); }
+#endif
+};
+
+// MLX device management class
+class MLXDevice {
+public:
+#ifdef CCSM_WITH_MLX
+    MLXDevice();
+    MLXDevice(mlx_device_type type, int index = 0);
+    ~MLXDevice();
+
+    // Get the underlying MLX device
+    mlx_device device() const { return device_; }
+
+    // Get device properties
+    mlx_device_type type() const;
+    int index() const;
+    std::string name() const;
+
+    // Static device management
+    static bool is_available();
+    static MLXDevice default_device();
+    static void set_default_device(const MLXDevice& device);
+    static void synchronize();
+
+private:
+    mlx_device device_;
+
+#else
+    MLXDevice() = delete;
+    ~MLXDevice() = default;
+
+    static bool is_available() { return false; }
 #endif
 };
 
@@ -103,6 +141,9 @@ public:
 private:
     // Helper to convert our tensors to MLX arrays
     mlx_array get_mlx_array(const Tensor& tensor);
+    
+    // MLX stream for operations
+    mlx_stream stream_;
 #else
     MLXContext() = delete;
     ~MLXContext() = default;
