@@ -1,9 +1,12 @@
 #include <ccsm/cpu/ggml_tensor.h>
+#include <ccsm/cpu/thread_pool.h>
+#include <ccsm/cpu/simd.h>
 #include <ccsm/utils.h>
 #include <stdexcept>
 #include <cstring>
 #include <vector>
 #include <iostream>
+#include <algorithm>
 
 namespace ccsm {
 
@@ -407,7 +410,10 @@ struct ggml_tensor* GGMLContext::alloc_tensor(enum ggml_type type, int n_dims, c
 
 void GGMLContext::compute(struct ggml_cgraph* graph) {
     ggml_build_forward_expand(graph, graph->nodes[graph->n_nodes - 1]);
-    ggml_graph_compute_with_ctx(ctx_, graph, 1); // TODO: Add parallel threads
+    
+    // Use thread pool for parallel computation
+    int n_threads = static_cast<int>(simd::global_thread_pool().size());
+    ggml_graph_compute_with_ctx(ctx_, graph, n_threads);
 }
 
 struct ggml_tensor* GGMLContext::get_ggml_tensor(const Tensor& tensor) {

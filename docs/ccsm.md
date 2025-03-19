@@ -51,19 +51,19 @@ Before diving into implementation details, it's crucial to understand CSM's dual
 
 ### Phase 1: Foundation and Core Components (Week 1)
 
-- [ ] **1.1 Project Structure and Build System**
-  - [ ] Set up CMake configuration with flexible backend support:
+- [x] **1.1 Project Structure and Build System**
+  - [x] Set up CMake configuration with flexible backend support:
     ```cmake
     option(WITH_MLX "Build with MLX support" ON)
     option(WITH_CUDA "Build with CUDA support" OFF)
     option(WITH_VULKAN "Build with Vulkan support" OFF)
     ```
-  - [ ] Configure header-only GGML integration from llama.cpp (vendored)
-  - [ ] Set up MLX-C integration for Apple Silicon builds
-  - [ ] Create platform detection macros for conditional compilation
+  - [x] Configure header-only GGML integration from llama.cpp (vendored)
+  - [x] Set up MLX-C integration for Apple Silicon builds
+  - [x] Create platform detection macros for conditional compilation
 
-- [ ] **1.2 Tensor Abstraction Layer**
-  - [ ] Design a unified tensor interface supporting both GGML and MLX:
+- [x] **1.2 Tensor Abstraction Layer**
+  - [x] Design a unified tensor interface supporting both GGML and MLX:
     ```cpp
     class Tensor {
     public:
@@ -87,26 +87,26 @@ Before diving into implementation details, it's crucial to understand CSM's dual
         // Implementation
     };
     ```
-  - [ ] Implement tensor factory for backend-agnostic creation
-  - [ ] Implement tensor conversion utilities between backends
+  - [x] Implement tensor factory for backend-agnostic creation
+  - [x] Implement tensor conversion utilities between backends
 
-- [ ] **1.3 Common Utilities**
-  - [ ] Implement logging system with configurable verbosity levels
-  - [ ] Create memory management utilities for both backends
-  - [ ] Implement file I/O utilities for model loading
-  - [ ] Create error handling system with proper error propagation
+- [x] **1.3 Common Utilities**
+  - [x] Implement logging system with configurable verbosity levels
+  - [x] Create memory management utilities for both backends
+  - [x] Implement file I/O utilities for model loading
+  - [x] Create error handling system with proper error propagation
 
-- [ ] **1.4 Model Weight Management**
-  - [ ] Design a unified weight storage system compatible with both backends
-  - [ ] Implement GGUF loader from llama.cpp (for compatibility)
-  - [ ] Create checkpoint conversion utility for PyTorch → GGUF format
-  - [ ] Implement direct loading from PyTorch checkpoints (`.pt` files)
+- [x] **1.4 Model Weight Management**
+  - [x] Design a unified weight storage system compatible with both backends
+  - [x] Implement GGUF loader from llama.cpp (for compatibility)
+  - [x] Create checkpoint conversion utility for PyTorch → GGUF format
+  - [x] Implement direct loading from PyTorch checkpoints (`.pt` files)
 
 ### Phase 2: CPU Backend Implementation (Week 2-3)
 
-- [ ] **2.1 GGML Integration**
-  - [ ] Set up minimal GGML context with appropriate allocators
-  - [ ] Implement GGML tensor allocation with proper quantization:
+- [x] **2.1 GGML Integration**
+  - [x] Set up minimal GGML context with appropriate allocators
+  - [x] Implement GGML tensor allocation with proper quantization:
     ```cpp
     struct ggml_tensor* allocate_tensor(struct ggml_context* ctx, 
                                      enum ggml_type type,
@@ -114,10 +114,10 @@ Before diving into implementation details, it's crucial to understand CSM's dual
         // Properly handle memory allocation for tensors
     }
     ```
-  - [ ] Create GGML computation graph builder
+  - [x] Create GGML computation graph builder
 
-- [ ] **2.2 Transformer Implementation for CPU**
-  - [ ] Implement Llama 3.2-style attention mechanism using GGML:
+- [x] **2.2 Transformer Implementation for CPU**
+  - [x] Implement Llama 3.2-style attention mechanism using GGML:
     ```cpp
     // Multi-head attention with rotary embeddings
     struct ggml_tensor* llama_attention(struct ggml_context* ctx,
@@ -130,13 +130,13 @@ Before diving into implementation details, it's crucial to understand CSM's dual
         // Implementation based on llama.cpp patterns
     }
     ```
-  - [ ] Implement SwiGLU feed-forward network with GGML
-  - [ ] Implement rotary position embeddings using GGML primitives
-  - [ ] Create backbone and decoder transformer implementations
-  - [ ] Implement KV-caching strategy for efficient inference
+  - [x] Implement SwiGLU feed-forward network with GGML
+  - [x] Implement rotary position embeddings using GGML primitives
+  - [x] Create backbone and decoder transformer implementations
+  - [x] Implement KV-caching strategy for efficient inference
 
-- [ ] **2.3 Tokenization Module**
-  - [ ] Implement SentencePiece-compatible text tokenizer:
+- [x] **2.3 Tokenization Module**
+  - [x] Implement SentencePiece-compatible text tokenizer:
     ```cpp
     class TextTokenizer {
     public:
@@ -147,7 +147,7 @@ Before diving into implementation details, it's crucial to understand CSM's dual
         // SentencePiece model internals
     };
     ```
-  - [ ] Create Mimi-compatible audio tokenizer:
+  - [x] Create Mimi-compatible audio tokenizer:
     ```cpp
     class AudioTokenizer {
     public:
@@ -161,8 +161,8 @@ Before diving into implementation details, it's crucial to understand CSM's dual
     };
     ```
 
-- [ ] **2.4 Sampling Implementation**
-  - [ ] Implement top-k sampling for token generation:
+- [x] **2.4 Sampling Implementation**
+  - [x] Implement top-k sampling for token generation:
     ```cpp
     int sample_token(const float* logits, int vocab_size, 
                      int top_k, float temperature, 
@@ -170,12 +170,12 @@ Before diving into implementation details, it's crucial to understand CSM's dual
         // Implement efficient top-k sampling without unnecessary copies
     }
     ```
-  - [ ] Implement efficient logits processor with temperature scaling
+  - [x] Implement efficient logits processor with temperature scaling
 
-- [ ] **2.5 CPU-Specific Optimizations**
-  - [ ] Implement SIMD optimizations for critical paths
-  - [ ] Optimize memory layout for cache efficiency
-  - [ ] Implement thread-pool for parallel computation when possible
+- [x] **2.5 CPU-Specific Optimizations**
+  - [x] Implement SIMD optimizations for critical paths
+  - [x] Optimize memory layout for cache efficiency
+  - [x] Implement thread-pool for parallel computation when possible
 
 ### Phase 3: MLX Backend Implementation (Week 3-4)
 
@@ -295,9 +295,9 @@ Before diving into implementation details, it's crucial to understand CSM's dual
   - [ ] Ensure compatibility with Kyutai's implementation
   - [ ] Optimize for efficient CPU/GPU operation
 
-- [ ] **5.2 Audio Output Processing**
-  - [ ] Implement audio normalization and post-processing
-  - [ ] Create WAV file output functionality
+- [x] **5.2 Audio Output Processing**
+  - [x] Implement audio normalization and post-processing
+  - [x] Create WAV file output functionality
   - [ ] Add real-time audio output capabilities (optional)
 
 - [ ] **5.3 Audio Watermarking**
@@ -317,8 +317,8 @@ Before diving into implementation details, it's crucial to understand CSM's dual
 
 ### Phase 6: Command-Line Interface (Week 6-7)
 
-- [ ] **6.1 CLI Arguments Parser**
-  - [ ] Create argument parser with all necessary options:
+- [x] **6.1 CLI Arguments Parser**
+  - [x] Create argument parser with all necessary options:
     ```cpp
     struct CLIArgs {
         std::string model_path;
@@ -338,13 +338,13 @@ Before diving into implementation details, it's crucial to understand CSM's dual
 
     CLIArgs parse_args(int argc, char** argv);
     ```
-  - [ ] Implement help text and usage information
-  - [ ] Add proper error handling for invalid arguments
+  - [x] Implement help text and usage information
+  - [x] Add proper error handling for invalid arguments
 
-- [ ] **6.2 Main Application Logic**
-  - [ ] Implement entry points for both binaries
-  - [ ] Create progress reporting mechanism
-  - [ ] Add performance metrics reporting
+- [x] **6.2 Main Application Logic**
+  - [x] Implement entry points for both binaries
+  - [x] Create progress reporting mechanism
+  - [x] Add performance metrics reporting
 
 - [ ] **6.3 Model Loading Infrastructure**
   - [ ] Implement model discovery and auto-download:
