@@ -534,23 +534,288 @@ struct ggml_cgraph* GGMLModel::build_backbone_graph(
     const std::vector<int>& tokens,
     const std::vector<int>& positions) {
     
-    // TODO: Implement the full backbone transformer
-    // This is a placeholder that will just return random logits
-    
-    // Create a computation graph
-    struct ggml_cgraph* graph = ggml_new_graph(ctx);
-    
-    // Create a tensor for output logits
-    struct ggml_tensor* logits = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, config_.audio_vocab_size);
-    
-    // For now, just fill with random values
-    float* logits_data = (float*)logits->data;
-    std::normal_distribution<float> dist(0.0f, 1.0f);
-    for (int i = 0; i < config_.audio_vocab_size; i++) {
-        logits_data[i] = dist(rng_);
+    // Make sure we have tokens
+    if (tokens.empty()) {
+        throw std::runtime_error("Empty token sequence provided to backbone model");
     }
     
-    // Add the tensor to the graph
+    // Create computation graph
+    struct ggml_cgraph* graph = ggml_new_graph(ctx);
+    
+    // Shorthand for configuration values
+    const int n_embd = config_.d_model;
+    const int n_layer = config_.n_layers;
+    const int n_head = config_.n_heads;
+    const int n_kv_head = config_.n_kv_heads;
+    const int n_vocab = config_.vocab_size;
+    const int n_audio_vocab = config_.audio_vocab_size;
+    const int head_dim = n_embd / n_head;
+    const int kv_dim = n_embd / n_head;
+    
+    // Make sure KV cache is properly sized
+    backbone_kv_cache_->resize(positions.back() + 1);
+    
+    // Create input tokens tensor
+    struct ggml_tensor* input_tokens = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, tokens.size());
+    std::memcpy(input_tokens->data, tokens.data(), tokens.size() * sizeof(int));
+    
+    // Create input positions tensor
+    struct ggml_tensor* input_positions = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, positions.size());
+    std::memcpy(input_positions->data, positions.data(), positions.size() * sizeof(int));
+    
+    // Token embedding
+    struct ggml_tensor* tok_embeddings = get_weight("model.tok_embeddings.weight");
+    struct ggml_tensor* embd = ggml_get_rows(ctx, tok_embeddings, input_tokens);
+    
+    // Pre-compute sin/cos for RoPE
+    struct ggml_tensor* rope_cos;
+    struct ggml_tensor* rope_sin;
+    float theta = config_.rope_theta;
+    
+    // Sin and cos tables for rotary embeddings
+    rope_cos = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, head_dim / 2);
+    rope_sin = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, head_dim / 2);
+    
+    for (int i = 0; i < head_dim / 2; i++) {
+        float freq = 1.0f / powf(theta, (2.0f * i) / head_dim);
+        
+        float* cos_data = (float*)rope_cos->data;
+        float* sin_data = (float*)rope_sin->data;
+        
+        cos_data[i] = freq;
+        sin_data[i] = freq;
+    }
+    
+    // Transformer layers
+    for (int layer_idx = 0; layer_idx < n_layer; layer_idx++) {
+        // Layer prefix for weight names
+        std::string layer_prefix = "model.layers." + std::to_string(layer_idx) + ".";
+        
+        // Add residual connection
+        struct ggml_tensor* residual = embd;
+        
+        // First normalization (attention norm)
+        struct ggml_tensor* attn_norm_weight = get_weight(layer_prefix + "attention_norm.weight");
+        struct ggml_tensor* attn_norm_bias = get_weight(layer_prefix + "attention_norm.bias");
+        struct ggml_tensor* cur = ggml_norm(ctx, embd);
+        cur = ggml_mul(ctx, cur, attn_norm_weight);
+        cur = ggml_add(ctx, cur, attn_norm_bias);
+        
+        // QKV projections
+        struct ggml_tensor* wq = get_weight(layer_prefix + "attention.wq.weight");
+        struct ggml_tensor* wk = get_weight(layer_prefix + "attention.wk.weight");
+        struct ggml_tensor* wv = get_weight(layer_prefix + "attention.wv.weight");
+        
+        // Project to Q, K, V
+        struct ggml_tensor* q = ggml_mul_mat(ctx, wq, cur);
+        struct ggml_tensor* k = ggml_mul_mat(ctx, wk, cur);
+        struct ggml_tensor* v = ggml_mul_mat(ctx, wv, cur);
+        
+        // Reshape Q for attention
+        struct ggml_tensor* q_reshaped = ggml_reshape_3d(ctx, q, head_dim, n_head, tokens.size());
+        q_reshaped = ggml_permute(ctx, q_reshaped, 0, 2, 1, 3); // [head_dim, tokens, n_head, 1]
+        
+        // Reshape K for attention (grouped-query attention)
+        struct ggml_tensor* k_reshaped = ggml_reshape_3d(ctx, k, kv_dim, n_kv_head, tokens.size());
+        k_reshaped = ggml_permute(ctx, k_reshaped, 0, 2, 1, 3); // [kv_dim, tokens, n_kv_head, 1]
+        
+        // Reshape V for attention (grouped-query attention)
+        struct ggml_tensor* v_reshaped = ggml_reshape_3d(ctx, v, kv_dim, n_kv_head, tokens.size());
+        v_reshaped = ggml_permute(ctx, v_reshaped, 1, 2, 0, 3); // [tokens, n_kv_head, kv_dim, 1]
+        
+        // Apply rotary embeddings (RoPE) to Q and K
+        q_reshaped = ggml_rope(ctx, q_reshaped, rope_cos, rope_sin, input_positions, head_dim / 2, 0);
+        k_reshaped = ggml_rope(ctx, k_reshaped, rope_cos, rope_sin, input_positions, kv_dim / 2, 0);
+        
+        // Update KV cache
+        struct ggml_tensor* k_cache = backbone_kv_cache_->k_cache(layer_idx);
+        struct ggml_tensor* v_cache = backbone_kv_cache_->v_cache(layer_idx);
+        
+        // Update K cache - copy the new k values into the cache
+        for (size_t i = 0; i < positions.size(); i++) {
+            int pos = positions[i];
+            struct ggml_tensor* k_cur = ggml_view_1d(ctx, k_reshaped, kv_dim * n_kv_head, 
+                                                    i * kv_dim * n_kv_head * sizeof(float));
+            struct ggml_tensor* k_cache_view = ggml_view_2d(ctx, k_cache, kv_dim, n_kv_head, 
+                                                             kv_dim * n_kv_head * sizeof(float), 
+                                                             pos * kv_dim * n_kv_head * sizeof(float));
+            ggml_build_forward_expand(graph, ggml_cpy(ctx, k_cur, k_cache_view));
+        }
+        
+        // Update V cache - copy the new v values into the cache
+        for (size_t i = 0; i < positions.size(); i++) {
+            int pos = positions[i];
+            struct ggml_tensor* v_cur = ggml_view_1d(ctx, v_reshaped, kv_dim * n_kv_head, 
+                                                    i * kv_dim * n_kv_head * sizeof(float));
+            struct ggml_tensor* v_cache_view = ggml_view_2d(ctx, v_cache, kv_dim, n_kv_head,
+                                                             kv_dim * n_kv_head * sizeof(float), 
+                                                             pos * kv_dim * n_kv_head * sizeof(float));
+            ggml_build_forward_expand(graph, ggml_cpy(ctx, v_cur, v_cache_view));
+        }
+        
+        // Use K and V from the cache to perform attention calculation
+        struct ggml_tensor* k_seq = ggml_view_3d(ctx, k_cache, kv_dim, n_kv_head, positions.back() + 1,
+                                              kv_dim * n_kv_head * sizeof(float), 0);
+        struct ggml_tensor* v_seq = ggml_view_3d(ctx, v_cache, kv_dim, n_kv_head, positions.back() + 1,
+                                              kv_dim * n_kv_head * sizeof(float), 0);
+        
+        // Reshape K and V for attention
+        k_seq = ggml_permute(ctx, k_seq, 0, 2, 1, 3); // [kv_dim, seq_len, n_kv_head, 1]
+        v_seq = ggml_permute(ctx, v_seq, 1, 2, 0, 3); // [seq_len, n_kv_head, kv_dim, 1]
+        
+        // Grouped-query attention
+        // Each query head attends to a specific KV head
+        // We need to repeat KV heads to match the number of query heads
+        struct ggml_tensor* kv_heads_repeated;
+        if (n_head > n_kv_head) {
+            // Repeat KV heads to match the number of query heads
+            int repeats = n_head / n_kv_head;
+            kv_heads_repeated = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, kv_dim, positions.back() + 1, n_head);
+            
+            for (int head = 0; head < n_head; head++) {
+                int kv_head = head / repeats;
+                struct ggml_tensor* src = ggml_view_2d(ctx, k_seq, kv_dim, positions.back() + 1,
+                                                      kv_dim * (positions.back() + 1) * sizeof(float),
+                                                      kv_head * kv_dim * (positions.back() + 1) * sizeof(float));
+                struct ggml_tensor* dst = ggml_view_2d(ctx, kv_heads_repeated, kv_dim, positions.back() + 1,
+                                                      kv_dim * (positions.back() + 1) * sizeof(float),
+                                                      head * kv_dim * (positions.back() + 1) * sizeof(float));
+                ggml_build_forward_expand(graph, ggml_cpy(ctx, src, dst));
+            }
+            k_seq = kv_heads_repeated;
+            
+            // Repeat V heads in the same way
+            kv_heads_repeated = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, positions.back() + 1, n_head, kv_dim);
+            
+            for (int head = 0; head < n_head; head++) {
+                int kv_head = head / repeats;
+                struct ggml_tensor* src = ggml_view_2d(ctx, v_seq, positions.back() + 1, kv_dim,
+                                                      positions.back() + 1 * kv_dim * sizeof(float),
+                                                      kv_head * positions.back() + 1 * kv_dim * sizeof(float));
+                struct ggml_tensor* dst = ggml_view_2d(ctx, kv_heads_repeated, positions.back() + 1, kv_dim,
+                                                      positions.back() + 1 * kv_dim * sizeof(float),
+                                                      head * positions.back() + 1 * kv_dim * sizeof(float));
+                ggml_build_forward_expand(graph, ggml_cpy(ctx, src, dst));
+            }
+            v_seq = kv_heads_repeated;
+        }
+        
+        // QK attention
+        struct ggml_tensor* att_scores = ggml_mul_mat(ctx, k_seq, q_reshaped);
+        
+        // Scale attention scores
+        float scale = 1.0f / sqrtf(head_dim);
+        att_scores = ggml_scale(ctx, att_scores, scale);
+        
+        // Apply causal mask: we need to mask future tokens
+        // Create causal mask [seq_len, seq_len]
+        struct ggml_tensor* causal_mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, positions.back() + 1, tokens.size());
+        float* mask_data = (float*)causal_mask->data;
+        
+        for (size_t i = 0; i < tokens.size(); i++) {
+            int pos_i = positions[i];
+            for (int j = 0; j <= positions.back(); j++) {
+                // If j > pos_i, token j is in the future for token i
+                mask_data[i * (positions.back() + 1) + j] = j > pos_i ? -INFINITY : 0.0f;
+            }
+        }
+        
+        // Apply mask to attention scores
+        att_scores = ggml_add(ctx, att_scores, causal_mask);
+        
+        // Softmax
+        att_scores = ggml_soft_max(ctx, att_scores);
+        
+        // Apply attention to value vectors
+        struct ggml_tensor* output = ggml_mul_mat(ctx, v_seq, att_scores);
+        
+        // Reshape and permute to get the original shape
+        output = ggml_permute(ctx, output, 0, 2, 1, 3); // [head_dim, n_head, tokens, 1]
+        output = ggml_reshape_2d(ctx, output, n_embd, tokens.size()); // [n_embd, tokens]
+        
+        // Projection
+        struct ggml_tensor* wo = get_weight(layer_prefix + "attention.wo.weight");
+        output = ggml_mul_mat(ctx, wo, output);
+        
+        // Add the residual connection
+        embd = ggml_add(ctx, output, residual);
+        
+        // Second residual connection
+        residual = embd;
+        
+        // Second normalization (FFN norm)
+        struct ggml_tensor* ffn_norm_weight = get_weight(layer_prefix + "ffn_norm.weight");
+        struct ggml_tensor* ffn_norm_bias = get_weight(layer_prefix + "ffn_norm.bias");
+        cur = ggml_norm(ctx, embd);
+        cur = ggml_mul(ctx, cur, ffn_norm_weight);
+        cur = ggml_add(ctx, cur, ffn_norm_bias);
+        
+        // SwiGLU Feed-Forward Network
+        // SwiGLU: Act(xW1) * xW3
+        struct ggml_tensor* w1 = get_weight(layer_prefix + "feed_forward.w1.weight");
+        struct ggml_tensor* w3 = get_weight(layer_prefix + "feed_forward.w3.weight");
+        struct ggml_tensor* w2 = get_weight(layer_prefix + "feed_forward.w2.weight");
+        
+        struct ggml_tensor* ffn_out1 = ggml_mul_mat(ctx, w1, cur);
+        struct ggml_tensor* ffn_out3 = ggml_mul_mat(ctx, w3, cur);
+        
+        // SiLU activation for SwiGLU: x * sigmoid(x)
+        struct ggml_tensor* ffn_out1_silu = ggml_silu(ctx, ffn_out1);
+        
+        // Element-wise multiplication
+        struct ggml_tensor* ffn_out = ggml_mul(ctx, ffn_out1_silu, ffn_out3);
+        
+        // Final projection
+        ffn_out = ggml_mul_mat(ctx, w2, ffn_out);
+        
+        // Add residual
+        embd = ggml_add(ctx, ffn_out, residual);
+    }
+    
+    // Final normalization
+    struct ggml_tensor* norm_weight = get_weight("model.norm.weight");
+    struct ggml_tensor* norm_bias = get_weight("model.norm.bias");
+    struct ggml_tensor* normalized = ggml_norm(ctx, embd);
+    normalized = ggml_mul(ctx, normalized, norm_weight);
+    normalized = ggml_add(ctx, normalized, norm_bias);
+    
+    // Take only the last token's embedding
+    normalized = ggml_view_1d(ctx, normalized, n_embd, (tokens.size() - 1) * n_embd * sizeof(float));
+    
+    // Output projection (to audio vocabulary)
+    struct ggml_tensor* output_weight = get_weight("lm_head.weight");
+    
+    // Reshape output weight for audio vocabulary if needed
+    struct ggml_tensor* audio_output_weight;
+    if (output_weight->ne[0] != n_audio_vocab) {
+        // If the output weight shape doesn't match the audio vocabulary size,
+        // create a view of the appropriate size
+        if (output_weight->ne[0] < n_audio_vocab) {
+            // If the weight is smaller, pad with zeros
+            audio_output_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_audio_vocab, n_embd);
+            ggml_set_zero(audio_output_weight);
+            
+            struct ggml_tensor* weight_view = ggml_view_2d(
+                ctx, audio_output_weight, output_weight->ne[0], n_embd, 
+                n_audio_vocab * sizeof(float), 0
+            );
+            
+            ggml_build_forward_expand(graph, ggml_cpy(ctx, output_weight, weight_view));
+        } else {
+            // If the weight is larger, use a smaller view
+            audio_output_weight = ggml_view_2d(
+                ctx, output_weight, n_audio_vocab, n_embd,
+                output_weight->ne[0] * sizeof(float), 0
+            );
+        }
+    } else {
+        audio_output_weight = output_weight;
+    }
+    
+    // Project to audio vocabulary
+    struct ggml_tensor* logits = ggml_mul_mat(ctx, audio_output_weight, normalized);
+    
+    // Build forward graph with the final tensor (logits)
     ggml_build_forward_expand(graph, logits);
     
     return graph;
@@ -562,23 +827,304 @@ struct ggml_cgraph* GGMLModel::build_decoder_graph(
     const std::vector<int>& positions,
     int codebook) {
     
-    // TODO: Implement the full decoder transformer
-    // This is a placeholder that will just return random logits
-    
-    // Create a computation graph
-    struct ggml_cgraph* graph = ggml_new_graph(ctx);
-    
-    // Create a tensor for output logits
-    struct ggml_tensor* logits = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, config_.audio_vocab_size);
-    
-    // For now, just fill with random values
-    float* logits_data = (float*)logits->data;
-    std::normal_distribution<float> dist(0.0f, 1.0f);
-    for (int i = 0; i < config_.audio_vocab_size; i++) {
-        logits_data[i] = dist(rng_);
+    // Make sure we have tokens
+    if (tokens.empty()) {
+        throw std::runtime_error("Empty token sequence provided to decoder model");
     }
     
-    // Add the tensor to the graph
+    // Create computation graph
+    struct ggml_cgraph* graph = ggml_new_graph(ctx);
+    
+    // Shorthand for configuration values
+    const int n_embd = config_.d_model;
+    const int n_layer = config_.n_audio_layers;
+    const int n_head = config_.n_heads;
+    const int n_kv_head = config_.n_kv_heads;
+    const int n_vocab = config_.audio_vocab_size;
+    const int head_dim = n_embd / n_head;
+    const int kv_dim = n_embd / n_head;
+    
+    // Make sure KV cache is properly sized
+    decoder_kv_cache_->resize(positions.back() + 1);
+    
+    // Create input tokens tensor
+    struct ggml_tensor* input_tokens = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, tokens.size());
+    std::memcpy(input_tokens->data, tokens.data(), tokens.size() * sizeof(int));
+    
+    // Create input positions tensor
+    struct ggml_tensor* input_positions = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, positions.size());
+    std::memcpy(input_positions->data, positions.data(), positions.size() * sizeof(int));
+    
+    // Token embedding
+    struct ggml_tensor* tok_embeddings = get_weight("decoder.tok_embeddings.weight");
+    struct ggml_tensor* embd = ggml_get_rows(ctx, tok_embeddings, input_tokens);
+    
+    // Pre-compute sin/cos for RoPE
+    struct ggml_tensor* rope_cos;
+    struct ggml_tensor* rope_sin;
+    float theta = config_.rope_theta;
+    
+    // Sin and cos tables for rotary embeddings
+    rope_cos = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, head_dim / 2);
+    rope_sin = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, head_dim / 2);
+    
+    for (int i = 0; i < head_dim / 2; i++) {
+        float freq = 1.0f / powf(theta, (2.0f * i) / head_dim);
+        
+        float* cos_data = (float*)rope_cos->data;
+        float* sin_data = (float*)rope_sin->data;
+        
+        cos_data[i] = freq;
+        sin_data[i] = freq;
+    }
+    
+    // Transformer layers
+    for (int layer_idx = 0; layer_idx < n_layer; layer_idx++) {
+        // Layer prefix for weight names
+        std::string layer_prefix = "decoder.layers." + std::to_string(layer_idx) + ".";
+        
+        // Add residual connection
+        struct ggml_tensor* residual = embd;
+        
+        // First normalization (attention norm)
+        struct ggml_tensor* attn_norm_weight = get_weight(layer_prefix + "attention_norm.weight");
+        struct ggml_tensor* attn_norm_bias = get_weight(layer_prefix + "attention_norm.bias");
+        struct ggml_tensor* cur = ggml_norm(ctx, embd);
+        cur = ggml_mul(ctx, cur, attn_norm_weight);
+        cur = ggml_add(ctx, cur, attn_norm_bias);
+        
+        // QKV projections
+        struct ggml_tensor* wq = get_weight(layer_prefix + "attention.wq.weight");
+        struct ggml_tensor* wk = get_weight(layer_prefix + "attention.wk.weight");
+        struct ggml_tensor* wv = get_weight(layer_prefix + "attention.wv.weight");
+        
+        // Project to Q, K, V
+        struct ggml_tensor* q = ggml_mul_mat(ctx, wq, cur);
+        struct ggml_tensor* k = ggml_mul_mat(ctx, wk, cur);
+        struct ggml_tensor* v = ggml_mul_mat(ctx, wv, cur);
+        
+        // Reshape Q for attention
+        struct ggml_tensor* q_reshaped = ggml_reshape_3d(ctx, q, head_dim, n_head, tokens.size());
+        q_reshaped = ggml_permute(ctx, q_reshaped, 0, 2, 1, 3); // [head_dim, tokens, n_head, 1]
+        
+        // Reshape K for attention (grouped-query attention)
+        struct ggml_tensor* k_reshaped = ggml_reshape_3d(ctx, k, kv_dim, n_kv_head, tokens.size());
+        k_reshaped = ggml_permute(ctx, k_reshaped, 0, 2, 1, 3); // [kv_dim, tokens, n_kv_head, 1]
+        
+        // Reshape V for attention (grouped-query attention)
+        struct ggml_tensor* v_reshaped = ggml_reshape_3d(ctx, v, kv_dim, n_kv_head, tokens.size());
+        v_reshaped = ggml_permute(ctx, v_reshaped, 1, 2, 0, 3); // [tokens, n_kv_head, kv_dim, 1]
+        
+        // Apply rotary embeddings (RoPE) to Q and K
+        q_reshaped = ggml_rope(ctx, q_reshaped, rope_cos, rope_sin, input_positions, head_dim / 2, 0);
+        k_reshaped = ggml_rope(ctx, k_reshaped, rope_cos, rope_sin, input_positions, kv_dim / 2, 0);
+        
+        // Update KV cache
+        struct ggml_tensor* k_cache = decoder_kv_cache_->k_cache(layer_idx);
+        struct ggml_tensor* v_cache = decoder_kv_cache_->v_cache(layer_idx);
+        
+        // Update K cache - copy the new k values into the cache
+        for (size_t i = 0; i < positions.size(); i++) {
+            int pos = positions[i];
+            struct ggml_tensor* k_cur = ggml_view_1d(ctx, k_reshaped, kv_dim * n_kv_head, 
+                                                    i * kv_dim * n_kv_head * sizeof(float));
+            struct ggml_tensor* k_cache_view = ggml_view_2d(ctx, k_cache, kv_dim, n_kv_head, 
+                                                         kv_dim * n_kv_head * sizeof(float), 
+                                                         pos * kv_dim * n_kv_head * sizeof(float));
+            ggml_build_forward_expand(graph, ggml_cpy(ctx, k_cur, k_cache_view));
+        }
+        
+        // Update V cache - copy the new v values into the cache
+        for (size_t i = 0; i < positions.size(); i++) {
+            int pos = positions[i];
+            struct ggml_tensor* v_cur = ggml_view_1d(ctx, v_reshaped, kv_dim * n_kv_head, 
+                                                    i * kv_dim * n_kv_head * sizeof(float));
+            struct ggml_tensor* v_cache_view = ggml_view_2d(ctx, v_cache, kv_dim, n_kv_head,
+                                                         kv_dim * n_kv_head * sizeof(float), 
+                                                         pos * kv_dim * n_kv_head * sizeof(float));
+            ggml_build_forward_expand(graph, ggml_cpy(ctx, v_cur, v_cache_view));
+        }
+        
+        // Use K and V from the cache to perform attention calculation
+        struct ggml_tensor* k_seq = ggml_view_3d(ctx, k_cache, kv_dim, n_kv_head, positions.back() + 1,
+                                              kv_dim * n_kv_head * sizeof(float), 0);
+        struct ggml_tensor* v_seq = ggml_view_3d(ctx, v_cache, kv_dim, n_kv_head, positions.back() + 1,
+                                              kv_dim * n_kv_head * sizeof(float), 0);
+        
+        // Reshape K and V for attention
+        k_seq = ggml_permute(ctx, k_seq, 0, 2, 1, 3); // [kv_dim, seq_len, n_kv_head, 1]
+        v_seq = ggml_permute(ctx, v_seq, 1, 2, 0, 3); // [seq_len, n_kv_head, kv_dim, 1]
+        
+        // Grouped-query attention 
+        // Each query head attends to a specific KV head
+        // We need to repeat KV heads to match the number of query heads
+        struct ggml_tensor* kv_heads_repeated;
+        if (n_head > n_kv_head) {
+            // Repeat KV heads to match the number of query heads
+            int repeats = n_head / n_kv_head;
+            kv_heads_repeated = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, kv_dim, positions.back() + 1, n_head);
+            
+            for (int head = 0; head < n_head; head++) {
+                int kv_head = head / repeats;
+                struct ggml_tensor* src = ggml_view_2d(ctx, k_seq, kv_dim, positions.back() + 1,
+                                                      kv_dim * (positions.back() + 1) * sizeof(float),
+                                                      kv_head * kv_dim * (positions.back() + 1) * sizeof(float));
+                struct ggml_tensor* dst = ggml_view_2d(ctx, kv_heads_repeated, kv_dim, positions.back() + 1,
+                                                      kv_dim * (positions.back() + 1) * sizeof(float),
+                                                      head * kv_dim * (positions.back() + 1) * sizeof(float));
+                ggml_build_forward_expand(graph, ggml_cpy(ctx, src, dst));
+            }
+            k_seq = kv_heads_repeated;
+            
+            // Repeat V heads in the same way
+            kv_heads_repeated = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, positions.back() + 1, n_head, kv_dim);
+            
+            for (int head = 0; head < n_head; head++) {
+                int kv_head = head / repeats;
+                struct ggml_tensor* src = ggml_view_2d(ctx, v_seq, positions.back() + 1, kv_dim,
+                                                      positions.back() + 1 * kv_dim * sizeof(float),
+                                                      kv_head * positions.back() + 1 * kv_dim * sizeof(float));
+                struct ggml_tensor* dst = ggml_view_2d(ctx, kv_heads_repeated, positions.back() + 1, kv_dim,
+                                                      positions.back() + 1 * kv_dim * sizeof(float),
+                                                      head * positions.back() + 1 * kv_dim * sizeof(float));
+                ggml_build_forward_expand(graph, ggml_cpy(ctx, src, dst));
+            }
+            v_seq = kv_heads_repeated;
+        }
+        
+        // QK attention
+        struct ggml_tensor* att_scores = ggml_mul_mat(ctx, k_seq, q_reshaped);
+        
+        // Scale attention scores
+        float scale = 1.0f / sqrtf(head_dim);
+        att_scores = ggml_scale(ctx, att_scores, scale);
+        
+        // Apply causal mask: we need to mask future tokens
+        // Create causal mask [seq_len, seq_len]
+        struct ggml_tensor* causal_mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, positions.back() + 1, tokens.size());
+        float* mask_data = (float*)causal_mask->data;
+        
+        for (size_t i = 0; i < tokens.size(); i++) {
+            int pos_i = positions[i];
+            for (int j = 0; j <= positions.back(); j++) {
+                // If j > pos_i, token j is in the future for token i
+                mask_data[i * (positions.back() + 1) + j] = j > pos_i ? -INFINITY : 0.0f;
+            }
+        }
+        
+        // Apply mask to attention scores
+        att_scores = ggml_add(ctx, att_scores, causal_mask);
+        
+        // Softmax
+        att_scores = ggml_soft_max(ctx, att_scores);
+        
+        // Apply attention to value vectors
+        struct ggml_tensor* output = ggml_mul_mat(ctx, v_seq, att_scores);
+        
+        // Reshape and permute to get the original shape
+        output = ggml_permute(ctx, output, 0, 2, 1, 3); // [head_dim, n_head, tokens, 1]
+        output = ggml_reshape_2d(ctx, output, n_embd, tokens.size()); // [n_embd, tokens]
+        
+        // Projection
+        struct ggml_tensor* wo = get_weight(layer_prefix + "attention.wo.weight");
+        output = ggml_mul_mat(ctx, wo, output);
+        
+        // Add the residual connection
+        embd = ggml_add(ctx, output, residual);
+        
+        // Second residual connection
+        residual = embd;
+        
+        // Second normalization (FFN norm)
+        struct ggml_tensor* ffn_norm_weight = get_weight(layer_prefix + "ffn_norm.weight");
+        struct ggml_tensor* ffn_norm_bias = get_weight(layer_prefix + "ffn_norm.bias");
+        cur = ggml_norm(ctx, embd);
+        cur = ggml_mul(ctx, cur, ffn_norm_weight);
+        cur = ggml_add(ctx, cur, ffn_norm_bias);
+        
+        // SwiGLU Feed-Forward Network
+        // SwiGLU: Act(xW1) * xW3
+        struct ggml_tensor* w1 = get_weight(layer_prefix + "feed_forward.w1.weight");
+        struct ggml_tensor* w3 = get_weight(layer_prefix + "feed_forward.w3.weight");
+        struct ggml_tensor* w2 = get_weight(layer_prefix + "feed_forward.w2.weight");
+        
+        struct ggml_tensor* ffn_out1 = ggml_mul_mat(ctx, w1, cur);
+        struct ggml_tensor* ffn_out3 = ggml_mul_mat(ctx, w3, cur);
+        
+        // SiLU activation for SwiGLU: x * sigmoid(x)
+        struct ggml_tensor* ffn_out1_silu = ggml_silu(ctx, ffn_out1);
+        
+        // Element-wise multiplication
+        struct ggml_tensor* ffn_out = ggml_mul(ctx, ffn_out1_silu, ffn_out3);
+        
+        // Final projection
+        ffn_out = ggml_mul_mat(ctx, w2, ffn_out);
+        
+        // Add residual
+        embd = ggml_add(ctx, ffn_out, residual);
+    }
+    
+    // Final normalization
+    struct ggml_tensor* norm_weight = get_weight("decoder.norm.weight");
+    struct ggml_tensor* norm_bias = get_weight("decoder.norm.bias");
+    struct ggml_tensor* normalized = ggml_norm(ctx, embd);
+    normalized = ggml_mul(ctx, normalized, norm_weight);
+    normalized = ggml_add(ctx, normalized, norm_bias);
+    
+    // Take only the last token's embedding
+    normalized = ggml_view_1d(ctx, normalized, n_embd, (tokens.size() - 1) * n_embd * sizeof(float));
+    
+    // Output projection (specific to each codebook)
+    std::string output_name;
+    if (codebook == 0) {
+        // Use the same output weight as the backbone for the semantic codebook
+        output_name = "lm_head.weight";
+    } else {
+        // Use the decoder's specific output weights for other codebooks
+        output_name = "decoder.output." + std::to_string(codebook) + ".weight";
+    }
+    
+    struct ggml_tensor* output_weight;
+    try {
+        output_weight = get_weight(output_name);
+    } catch (const std::runtime_error& e) {
+        // Fallback to common output weight if specific one not found
+        CCSM_WARNING("Output weight not found for codebook ", codebook, ", using fallback");
+        output_name = "decoder.output.weight";
+        output_weight = get_weight(output_name);
+    }
+    
+    // Make sure the output weight has the right shape for the audio vocabulary
+    struct ggml_tensor* audio_output_weight;
+    if (output_weight->ne[0] != n_vocab) {
+        // If the output weight shape doesn't match the audio vocabulary size,
+        // create a view of the appropriate size
+        if (output_weight->ne[0] < n_vocab) {
+            // If the weight is smaller, pad with zeros
+            audio_output_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_vocab, n_embd);
+            ggml_set_zero(audio_output_weight);
+            
+            struct ggml_tensor* weight_view = ggml_view_2d(
+                ctx, audio_output_weight, output_weight->ne[0], n_embd, 
+                n_vocab * sizeof(float), 0
+            );
+            
+            ggml_build_forward_expand(graph, ggml_cpy(ctx, output_weight, weight_view));
+        } else {
+            // If the weight is larger, use a smaller view
+            audio_output_weight = ggml_view_2d(
+                ctx, output_weight, n_vocab, n_embd,
+                output_weight->ne[0] * sizeof(float), 0
+            );
+        }
+    } else {
+        audio_output_weight = output_weight;
+    }
+    
+    // Project to audio vocabulary
+    struct ggml_tensor* logits = ggml_mul_mat(ctx, audio_output_weight, normalized);
+    
+    // Build forward graph with the final tensor (logits)
     ggml_build_forward_expand(graph, logits);
     
     return graph;

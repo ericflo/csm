@@ -181,6 +181,12 @@ public:
     
     // Create directory if it doesn't exist
     static bool create_directory(const std::string& path);
+    
+    // Save audio as WAV file
+    static bool save_wav(const std::string& path, const std::vector<float>& audio, int sample_rate);
+    
+    // Load audio from WAV file
+    static std::vector<float> load_wav(const std::string& path, int* sample_rate = nullptr);
 };
 
 // Progress callback types
