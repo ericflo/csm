@@ -1,0 +1,3 @@
+"""
+Components unit tests module.
+"""
