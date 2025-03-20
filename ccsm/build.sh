@@ -1,16 +1,17 @@
 #!/bin/bash
 set -e
 
-# Create build directory if it doesn't exist
+# Build script for CCSM
 mkdir -p build
-
-# Move to build directory
 cd build
 
-# Configure the project with CMake
-cmake ..
+# Configure with MLX support
+cmake .. -DWITH_MLX=ON
 
-# Build the project
-make -j$(nproc 2>/dev/null || echo 4)
+# Build with all cores
+cmake --build . -j$(sysctl -n hw.ncpu)
 
-echo "Build completed successfully!"
+# Report success
+echo "Build complete! Binaries are in the build directory."
+echo "CPU version: ./build/ccsm-generate"
+echo "MLX version: ./build/ccsm-generate-mlx"
