@@ -47,6 +47,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/../reference/llama.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../reference/llama.cpp/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../reference/llama.cpp/ggml/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../reference/llama.cpp/ggml/src
 )
 
 # Add submodules if using vendored code
@@ -58,7 +59,32 @@ if(WITH_MLX)
     if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../reference/mlx-c/mlx")
         message(FATAL_ERROR "mlx-c dependency not found. Please init and update git submodules.")
     endif()
+    
+    # Include mlx-c headers
     include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../reference/mlx-c)
+    
+    # Check for the MLX library itself
+    find_library(MLX_LIBRARY mlx PATHS /opt/homebrew/lib $ENV{HOME}/.brew/lib)
+    if(NOT MLX_LIBRARY)
+        message(STATUS "Apple MLX library not found in standard paths, using stub implementation")
+        add_definitions(-DCCSM_MLX_STUB)
+    else()
+        message(STATUS "Found Apple MLX library: ${MLX_LIBRARY}")
+        
+        # Find mlx-c library or build it
+        find_library(MLX_C_LIBRARY mlx-c PATHS ${CMAKE_CURRENT_SOURCE_DIR}/../reference/mlx-c/build)
+        if(NOT MLX_C_LIBRARY)
+            message(STATUS "mlx-c library not found, will be included directly in build")
+            # Collect MLX-C source files
+            file(GLOB MLX_C_SOURCES
+                ${CMAKE_CURRENT_SOURCE_DIR}/../reference/mlx-c/mlx/c/*.cpp
+            )
+            # Make the sources available to the build
+            set(MLX_C_SOURCES ${MLX_C_SOURCES} CACHE INTERNAL "MLX-C source files")
+        else()
+            message(STATUS "Found mlx-c library: ${MLX_C_LIBRARY}")
+        endif()
+    endif()
 endif()
 
 # Add subdirectories
@@ -73,6 +99,11 @@ target_link_libraries(ccsm-generate PRIVATE ccsm_core)
 if(WITH_MLX)
     add_executable(ccsm-generate-mlx src/main_mlx.cpp)
     target_link_libraries(ccsm-generate-mlx PRIVATE ccsm_core ccsm_mlx)
+    
+    # Define MLX_STUB macro when we're using stub implementation
+    if(NOT MLX_LIBRARY)
+        target_compile_definitions(ccsm-generate-mlx PRIVATE CCSM_MLX_STUB)
+    endif()
 endif()
 
 # Install targets

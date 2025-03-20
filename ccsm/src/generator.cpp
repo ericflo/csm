@@ -6,6 +6,172 @@
 #include <stdexcept>
 #include <random>
 
+// Mock implementations for testing and building
+namespace ccsm {
+
+// Forward declarations for the mocks
+class MockModel;
+class MockTextTokenizer;
+class MockAudioCodec;
+class MockWatermarker;
+
+// Mock model implementation
+class MockModel : public Model {
+public:
+    MockModel() : Model(ModelConfig()) {
+        config_.name = "Mock CSM-1B";
+        config_.vocab_size = 32000;
+    }
+    
+    bool load_weights(const std::string& path) override {
+        return true; // Mock success
+    }
+    
+    bool load_weights(std::shared_ptr<ModelLoader> loader) override {
+        return true; // Mock success
+    }
+    
+    bool load_weights(const WeightMap& weights) override {
+        return true; // Mock success
+    }
+    
+    std::vector<int> generate_frame(
+        const std::vector<int>& tokens,
+        const std::vector<int>& positions,
+        float temperature = 0.9f,
+        int top_k = 50) override {
+        // Return a simple sequence of tokens to simulate a frame
+        return {42, 42, 42, 42};
+    }
+    
+    void reset_caches() override {
+        // No-op for mock
+    }
+    
+    std::vector<float> get_backbone_logits(
+        const std::vector<int>& tokens,
+        const std::vector<int>& positions) override {
+        // Return dummy logits
+        return std::vector<float>(config_.vocab_size, 0.0f);
+    }
+    
+    std::vector<float> get_decoder_logits(
+        const std::vector<int>& tokens,
+        const std::vector<int>& positions,
+        int codebook) override {
+        // Return dummy logits
+        return std::vector<float>(config_.audio_vocab_size, 0.0f);
+    }
+};
+
+// Mock text tokenizer
+class MockTextTokenizer : public TextTokenizer {
+public:
+    std::vector<int> encode(const std::string& text) const override {
+        // Return a simple token sequence
+        return {1, 2, 3, 4, 5};
+    }
+    
+    std::string decode(const std::vector<int>& tokens) const override {
+        return "Mock decoded text";
+    }
+    
+    int vocab_size() const override {
+        return 32000;
+    }
+    
+    int bos_token_id() const override {
+        return 1;
+    }
+    
+    int eos_token_id() const override {
+        return 2;
+    }
+    
+    int pad_token_id() const override {
+        return 0;
+    }
+    
+    int unk_token_id() const override {
+        return 3;
+    }
+    
+    int get_speaker_token_id(int speaker_id) const override {
+        return 42 + speaker_id;
+    }
+    
+    std::vector<int> get_audio_token_ids() const {
+        // Return audio token IDs
+        return {100, 101, 102, 103};
+    }
+};
+
+// Mock audio codec
+class MockAudioCodec : public AudioCodec {
+public:
+    std::vector<std::vector<int>> encode(const std::vector<float>& audio) const override {
+        // Return multi-codebook encoding
+        return {{1, 2, 3}, {4, 5, 6}, {7, 8, 9}};
+    }
+    
+    std::vector<float> decode(const std::vector<std::vector<int>>& tokens) const override {
+        // Return a short sine wave
+        std::vector<float> audio(24000);
+        for (size_t i = 0; i < audio.size(); i++) {
+            audio[i] = 0.5f * sin(2.0f * 3.14159f * 440.0f * i / 24000.0f);
+        }
+        return audio;
+    }
+    
+    int num_codebooks() const override {
+        return 32;
+    }
+    
+    int vocab_size() const override {
+        return 2051;
+    }
+    
+    int sample_rate() const override {
+        return 24000;
+    }
+    
+    int hop_length() const override {
+        return 400; // 80ms at 24kHz
+    }
+    
+    bool is_eos_token(int token, int codebook) const override {
+        return token == 0;
+    }
+};
+
+// Mock watermarker
+class MockWatermarker : public Watermarker {
+public:
+    std::vector<float> apply_watermark(const std::vector<float>& audio) override {
+        // Just return the same audio
+        return audio;
+    }
+    
+    bool detect_watermark(const std::vector<float>& audio) override {
+        // Always detect watermark in mock
+        return true;
+    }
+    
+    float get_strength() const override {
+        return 0.5f;
+    }
+    
+    void set_strength(float strength) override {
+        // No-op for mock
+    }
+    
+    std::string get_key() const override {
+        return "mock-key";
+    }
+};
+
+} // namespace ccsm
+
 namespace ccsm {
 
 // Generator implementation
@@ -140,15 +306,34 @@ std::shared_ptr<AudioCodec> Generator::audio_codec() const {
 
 // Factory function to create a generator with the CSM-1B model
 std::shared_ptr<Generator> load_csm_1b(const std::string& device) {
-    // TODO: Create model and tokenizers, then return a fully initialized generator
-    throw std::runtime_error("load_csm_1b not implemented yet");
+    CCSM_INFO("Creating CSM-1B generator for device: ", device);
+    
+    // This is a placeholder implementation that will be completed in Phase 4
+    // Create a mock model, tokenizer, and audio codec that don't do anything yet
+    auto model = std::make_shared<MockModel>();
+    auto tokenizer = std::make_shared<MockTextTokenizer>();
+    auto codec = std::make_shared<MockAudioCodec>();
+    auto watermarker = std::make_shared<MockWatermarker>();
+    
+    CCSM_INFO("Created mock components for CPU generator");
+    CCSM_INFO("Phase 4: Model Generation Pipeline coming soon");
+    
+    return std::make_shared<Generator>(model, tokenizer, codec, watermarker);
 }
 
 // Factory function for MLX-accelerated generator
 std::shared_ptr<Generator> load_csm_1b_mlx() {
 #ifdef CCSM_WITH_MLX
-    // TODO: Create MLX-specific model and return a fully initialized generator
-    throw std::runtime_error("load_csm_1b_mlx not implemented yet");
+    // This is a placeholder implementation until we have PyTorch → MLX weight conversion
+    CCSM_INFO("Creating MLX-accelerated CSM-1B generator");
+    
+    // For now, this is just a stub that calls the CPU implementation
+    // with a log message that we'll be enhancing this soon
+    CCSM_INFO("MLX acceleration implementation in progress - using CPU backend with MLX placeholders");
+    CCSM_INFO("Phase 3.4: PyTorch → MLX Weight Conversion coming soon");
+    
+    // Create a CPU model that will be replaced with MLX in the future
+    return load_csm_1b("cpu");
 #else
     throw std::runtime_error("MLX support not compiled into this build");
 #endif

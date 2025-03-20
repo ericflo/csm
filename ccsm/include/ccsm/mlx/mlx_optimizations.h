@@ -8,9 +8,9 @@
 #include <memory>
 
 #ifdef CCSM_WITH_MLX
-#include <mlx/c/array.h>
-#include <mlx/c/device.h>
-#include <mlx/c/stream.h>
+#include "mlx/c/array.h"
+#include "mlx/c/device.h"
+#include "mlx/c/stream.h"
 #endif
 
 namespace ccsm {

@@ -4,20 +4,18 @@
 #include <string>
 #include <vector>
 #include <chrono>
-#include <functional>
-#include <memory>
 #include <iostream>
+#include <iomanip>
 #include <sstream>
 
 namespace ccsm {
 
-// Logging levels
+// Log levels
 enum class LogLevel {
-    DEBUG = 0,
-    INFO = 1,
-    WARNING = 2,
-    ERROR = 3,
-    NONE = 4
+    DEBUG,
+    INFO,
+    WARNING,
+    ERROR
 };
 
 // Logger class
@@ -36,97 +34,55 @@ public:
         return level_;
     }
     
-    template <typename... Args>
-    void debug(Args&&... args) {
-        if (level_ <= LogLevel::DEBUG) {
-            log(LogLevel::DEBUG, std::forward<Args>(args)...);
+    template<typename... Args>
+    void log(LogLevel level, const Args&... args) {
+        if (level >= level_) {
+            std::ostringstream oss;
+            oss << "[" << level_to_string(level) << "] ";
+            log_impl(oss, args...);
+            std::cout << oss.str() << std::endl;
         }
-    }
-    
-    template <typename... Args>
-    void info(Args&&... args) {
-        if (level_ <= LogLevel::INFO) {
-            log(LogLevel::INFO, std::forward<Args>(args)...);
-        }
-    }
-    
-    template <typename... Args>
-    void warning(Args&&... args) {
-        if (level_ <= LogLevel::WARNING) {
-            log(LogLevel::WARNING, std::forward<Args>(args)...);
-        }
-    }
-    
-    template <typename... Args>
-    void error(Args&&... args) {
-        if (level_ <= LogLevel::ERROR) {
-            log(LogLevel::ERROR, std::forward<Args>(args)...);
-        }
-    }
-    
-    // Set output stream
-    void set_output(std::ostream& os) {
-        output_ = &os;
     }
     
 private:
-    Logger() : level_(LogLevel::INFO), output_(&std::cerr) {}
-    ~Logger() = default;
+    Logger() : level_(LogLevel::INFO) {}
     
-    Logger(const Logger&) = delete;
-    Logger& operator=(const Logger&) = delete;
-    
-    template <typename T, typename... Args>
-    void log(LogLevel level, T&& value, Args&&... args) {
-        std::stringstream ss;
-        ss << value;
-        log(level, ss.str(), std::forward<Args>(args)...);
-    }
-    
-    template <typename... Args>
-    void log(LogLevel level, const std::string& message, Args&&... args) {
-        std::stringstream ss;
-        ss << message;
-        log(level, ss.str(), std::forward<Args>(args)...);
-    }
-    
-    void log(LogLevel level, const std::string& message) {
-        std::string prefix;
+    std::string level_to_string(LogLevel level) {
         switch (level) {
-            case LogLevel::DEBUG:
-                prefix = "[DEBUG] ";
-                break;
-            case LogLevel::INFO:
-                prefix = "[INFO] ";
-                break;
-            case LogLevel::WARNING:
-                prefix = "[WARNING] ";
-                break;
-            case LogLevel::ERROR:
-                prefix = "[ERROR] ";
-                break;
-            case LogLevel::NONE:
-                prefix = "";
-                break;
+            case LogLevel::DEBUG:   return "DEBUG";
+            case LogLevel::INFO:    return "INFO";
+            case LogLevel::WARNING: return "WARNING";
+            case LogLevel::ERROR:   return "ERROR";
+            default:                return "UNKNOWN";
         }
-        
-        *output_ << prefix << message << std::endl;
+    }
+    
+    template<typename T>
+    void log_impl(std::ostringstream& oss, const T& value) {
+        oss << value;
+    }
+    
+    template<typename T, typename... Args>
+    void log_impl(std::ostringstream& oss, const T& value, const Args&... args) {
+        oss << value;
+        log_impl(oss, args...);
     }
     
     LogLevel level_;
-    std::ostream* output_;
 };
 
-// Convenience macros for logging
-#define CCSM_DEBUG(...) ccsm::Logger::instance().debug(__VA_ARGS__)
-#define CCSM_INFO(...) ccsm::Logger::instance().info(__VA_ARGS__)
-#define CCSM_WARNING(...) ccsm::Logger::instance().warning(__VA_ARGS__)
-#define CCSM_ERROR(...) ccsm::Logger::instance().error(__VA_ARGS__)
+// Logging macros
+#define CCSM_DEBUG(...) ccsm::Logger::instance().log(ccsm::LogLevel::DEBUG, __VA_ARGS__)
+#define CCSM_INFO(...) ccsm::Logger::instance().log(ccsm::LogLevel::INFO, __VA_ARGS__)
+#define CCSM_WARNING(...) ccsm::Logger::instance().log(ccsm::LogLevel::WARNING, __VA_ARGS__)
+#define CCSM_ERROR(...) ccsm::Logger::instance().log(ccsm::LogLevel::ERROR, __VA_ARGS__)
 
-// Timer utility for benchmarking
+// Timer class for benchmarking
 class Timer {
 public:
-    Timer() : start_(std::chrono::high_resolution_clock::now()) {}
+    Timer() {
+        reset();
+    }
     
     void reset() {
         start_ = std::chrono::high_resolution_clock::now();
@@ -145,66 +101,60 @@ private:
     std::chrono::time_point<std::chrono::high_resolution_clock> start_;
 };
 
-// Memory utilities
-class MemoryUtils {
+// Simple progress bar
+class ProgressBar {
 public:
-    // Get current process memory usage in bytes
-    static size_t get_memory_usage();
+    ProgressBar(int total, int width = 50)
+        : total_(total), width_(width), current_(0) {}
     
-    // Format memory size to human-readable string
-    static std::string format_size(size_t size_bytes);
+    void update(int current) {
+        current_ = current;
+        int pos = width_ * current_ / total_;
+        
+        std::cout << "\r[";
+        for (int i = 0; i < width_; ++i) {
+            if (i < pos) std::cout << "=";
+            else if (i == pos) std::cout << ">";
+            else std::cout << " ";
+        }
+        std::cout << "] " << current_ << "/" << total_ << " (" 
+                 << std::fixed << std::setprecision(1) 
+                 << 100.0 * current_ / total_ << "%)";
+        
+        std::cout.flush();
+    }
     
-    // Check if out of memory
-    static bool is_out_of_memory();
+    void finish() {
+        update(total_);
+        std::cout << std::endl;
+    }
+    
+private:
+    int total_;
+    int width_;
+    int current_;
 };
 
 // File utilities
 class FileUtils {
 public:
+    // Load WAV file
+    static std::vector<float> load_wav(const std::string& filename, int* sample_rate = nullptr);
+    
+    // Save WAV file
+    static bool save_wav(const std::string& filename, const std::vector<float>& audio, int sample_rate);
+    
     // Check if file exists
-    static bool file_exists(const std::string& path);
-    
-    // Read entire file into a string
-    static std::string read_text_file(const std::string& path);
-    
-    // Read binary file
-    static std::vector<uint8_t> read_binary_file(const std::string& path);
-    
-    // Write string to file
-    static bool write_text_file(const std::string& path, const std::string& content);
-    
-    // Write binary data to file
-    static bool write_binary_file(const std::string& path, const std::vector<uint8_t>& data);
+    static bool file_exists(const std::string& filename);
     
     // Get file size
-    static size_t get_file_size(const std::string& path);
+    static size_t file_size(const std::string& filename);
     
-    // Create directory if it doesn't exist
-    static bool create_directory(const std::string& path);
+    // Read text file
+    static std::string read_text_file(const std::string& filename);
     
-    // Save audio as WAV file
-    static bool save_wav(const std::string& path, const std::vector<float>& audio, int sample_rate);
-    
-    // Load audio from WAV file
-    static std::vector<float> load_wav(const std::string& path, int* sample_rate = nullptr);
-};
-
-// Progress callback types
-using ProgressCallback = std::function<void(int current, int total)>;
-
-// Progress bar utility
-class ProgressBar {
-public:
-    ProgressBar(int total, int width = 40);
-    
-    void update(int current);
-    void finish();
-    
-private:
-    int total_;
-    int width_;
-    int last_printed_percent_;
-    bool finished_;
+    // Write text file
+    static bool write_text_file(const std::string& filename, const std::string& content);
 };
 
 } // namespace ccsm

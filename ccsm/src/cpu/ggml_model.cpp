@@ -2,6 +2,7 @@
 #include <ccsm/model_loader.h>
 #include <ccsm/utils.h>
 
+// Use direct includes for GGML
 #include "ggml.h"
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
