@@ -44,19 +44,21 @@ endif()
 # Include directories
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/reference/llama.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../reference/llama.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../reference/llama.cpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../reference/llama.cpp/ggml/include
 )
 
 # Add submodules if using vendored code
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/reference/llama.cpp/ggml.h")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../reference/llama.cpp/include/llama.h")
     message(FATAL_ERROR "llama.cpp dependency not found. Please init and update git submodules.")
 endif()
 
 if(WITH_MLX)
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/reference/mlx-c/mlx")
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../reference/mlx-c/mlx")
         message(FATAL_ERROR "mlx-c dependency not found. Please init and update git submodules.")
     endif()
-    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/reference/mlx-c)
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../reference/mlx-c)
 endif()
 
 # Add subdirectories

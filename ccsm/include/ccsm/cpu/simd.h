@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cmath>
 #include <cassert>
+#include <algorithm>
 
 // CPU feature detection
 #if defined(__x86_64__) || defined(_M_X64)

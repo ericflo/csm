@@ -88,12 +88,12 @@ private:
     std::mt19937 rng_;
     
     // Helper methods
-    struct ggml_cgraph* build_backbone_graph(
+    std::pair<struct ggml_cgraph*, struct ggml_tensor*> build_backbone_graph(
         struct ggml_context* ctx,
         const std::vector<int>& tokens,
         const std::vector<int>& positions);
     
-    struct ggml_cgraph* build_decoder_graph(
+    std::pair<struct ggml_cgraph*, struct ggml_tensor*> build_decoder_graph(
         struct ggml_context* ctx,
         const std::vector<int>& tokens,
         const std::vector<int>& positions,

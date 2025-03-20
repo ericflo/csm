@@ -4,6 +4,7 @@
 
 #include "ggml.h"
 #include "ggml-alloc.h"
+#include "ggml-cpu.h"
 
 #include <algorithm>
 #include <cmath>
@@ -298,9 +299,9 @@ bool GGMLModel::load_backbone_weights(const WeightMap& tensor_weights) {
         
         // Create GGML tensor
         struct ggml_tensor* ggml_tensor = ggml_new_tensor(ctx_, 
-                                                      GGMLTensorImpl::to_ggml_type(tensor.dtype()), 
-                                                      std::min(static_cast<size_t>(GGML_MAX_DIMS), shape.size()), 
-                                                      ne);
+                                                  GGMLTensorImpl::to_ggml_type(tensor.dtype()), 
+                                                  std::min(static_cast<size_t>(GGML_MAX_DIMS), shape.size()), 
+                                                  ne);
         if (!ggml_tensor) {
             CCSM_ERROR("Failed to create GGML tensor for weight: ", name);
             continue;
@@ -372,9 +373,9 @@ bool GGMLModel::load_decoder_weights(const WeightMap& tensor_weights) {
         
         // Create GGML tensor
         struct ggml_tensor* ggml_tensor = ggml_new_tensor(ctx_, 
-                                                      GGMLTensorImpl::to_ggml_type(tensor.dtype()), 
-                                                      std::min(static_cast<size_t>(GGML_MAX_DIMS), shape.size()), 
-                                                      ne);
+                                                  GGMLTensorImpl::to_ggml_type(tensor.dtype()), 
+                                                  std::min(static_cast<size_t>(GGML_MAX_DIMS), shape.size()), 
+                                                  ne);
         if (!ggml_tensor) {
             CCSM_ERROR("Failed to create GGML tensor for weight: ", name);
             continue;
@@ -460,22 +461,14 @@ std::vector<float> GGMLModel::get_backbone_logits(
         throw std::runtime_error("Failed to create computation context");
     }
     
-    // Build the backbone computation graph
-    struct ggml_cgraph* graph = build_backbone_graph(comp_ctx, tokens, positions);
+    // Build the backbone computation graph and get the logits tensor
+    struct ggml_cgraph* graph;
+    struct ggml_tensor* logits_tensor;
     
-    // Allocate memory for computation
-    // TODO: Implement proper memory allocation
-    //struct ggml_allocr* allocr = ggml_allocr_alloc(graph, false);
-    //if (!allocr) {
-    //    ggml_free(comp_ctx);
-    //    throw std::runtime_error("Failed to allocate memory for computation");
-    //}
+    std::tie(graph, logits_tensor) = build_backbone_graph(comp_ctx, tokens, positions);
     
     // Compute the graph
     ggml_graph_compute_with_ctx(comp_ctx, graph, 1); // Use 1 thread for now
-    
-    // Get logits from the output tensor
-    struct ggml_tensor* logits_tensor = graph->nodes[graph->n_nodes - 1];
     
     // Copy logits to vector
     std::vector<float> logits(config_.audio_vocab_size);
@@ -483,7 +476,6 @@ std::vector<float> GGMLModel::get_backbone_logits(
     std::copy(logits_data, logits_data + config_.audio_vocab_size, logits.begin());
     
     // Free resources
-    //ggml_allocr_free(allocr);
     ggml_free(comp_ctx);
     
     return logits;
@@ -500,22 +492,14 @@ std::vector<float> GGMLModel::get_decoder_logits(
         throw std::runtime_error("Failed to create computation context");
     }
     
-    // Build the decoder computation graph
-    struct ggml_cgraph* graph = build_decoder_graph(comp_ctx, tokens, positions, codebook);
+    // Build the decoder computation graph and get the logits tensor
+    struct ggml_cgraph* graph;
+    struct ggml_tensor* logits_tensor;
     
-    // Allocate memory for computation
-    // TODO: Implement proper memory allocation
-    //struct ggml_allocr* allocr = ggml_allocr_alloc(graph, false);
-    //if (!allocr) {
-    //    ggml_free(comp_ctx);
-    //    throw std::runtime_error("Failed to allocate memory for computation");
-    //}
+    std::tie(graph, logits_tensor) = build_decoder_graph(comp_ctx, tokens, positions, codebook);
     
     // Compute the graph
     ggml_graph_compute_with_ctx(comp_ctx, graph, 1); // Use 1 thread for now
-    
-    // Get logits from the output tensor
-    struct ggml_tensor* logits_tensor = graph->nodes[graph->n_nodes - 1];
     
     // Copy logits to vector
     std::vector<float> logits(config_.audio_vocab_size);
@@ -523,13 +507,12 @@ std::vector<float> GGMLModel::get_decoder_logits(
     std::copy(logits_data, logits_data + config_.audio_vocab_size, logits.begin());
     
     // Free resources
-    //ggml_allocr_free(allocr);
     ggml_free(comp_ctx);
     
     return logits;
 }
 
-struct ggml_cgraph* GGMLModel::build_backbone_graph(
+std::pair<struct ggml_cgraph*, struct ggml_tensor*> GGMLModel::build_backbone_graph(
     struct ggml_context* ctx,
     const std::vector<int>& tokens,
     const std::vector<int>& positions) {
@@ -597,7 +580,7 @@ struct ggml_cgraph* GGMLModel::build_backbone_graph(
         // First normalization (attention norm)
         struct ggml_tensor* attn_norm_weight = get_weight(layer_prefix + "attention_norm.weight");
         struct ggml_tensor* attn_norm_bias = get_weight(layer_prefix + "attention_norm.bias");
-        struct ggml_tensor* cur = ggml_norm(ctx, embd);
+        struct ggml_tensor* cur = ggml_rms_norm(ctx, embd, 1e-5f);
         cur = ggml_mul(ctx, cur, attn_norm_weight);
         cur = ggml_add(ctx, cur, attn_norm_bias);
         
@@ -624,8 +607,8 @@ struct ggml_cgraph* GGMLModel::build_backbone_graph(
         v_reshaped = ggml_permute(ctx, v_reshaped, 1, 2, 0, 3); // [tokens, n_kv_head, kv_dim, 1]
         
         // Apply rotary embeddings (RoPE) to Q and K
-        q_reshaped = ggml_rope(ctx, q_reshaped, rope_cos, rope_sin, input_positions, head_dim / 2, 0);
-        k_reshaped = ggml_rope(ctx, k_reshaped, rope_cos, rope_sin, input_positions, kv_dim / 2, 0);
+        q_reshaped = ggml_rope_inplace(ctx, q_reshaped, input_positions, head_dim/2, 0);
+        k_reshaped = ggml_rope_inplace(ctx, k_reshaped, input_positions, kv_dim/2, 0);
         
         // Update KV cache
         struct ggml_tensor* k_cache = backbone_kv_cache_->k_cache(layer_idx);
@@ -637,8 +620,8 @@ struct ggml_cgraph* GGMLModel::build_backbone_graph(
             struct ggml_tensor* k_cur = ggml_view_1d(ctx, k_reshaped, kv_dim * n_kv_head, 
                                                     i * kv_dim * n_kv_head * sizeof(float));
             struct ggml_tensor* k_cache_view = ggml_view_2d(ctx, k_cache, kv_dim, n_kv_head, 
-                                                             kv_dim * n_kv_head * sizeof(float), 
-                                                             pos * kv_dim * n_kv_head * sizeof(float));
+                                                         kv_dim * n_kv_head * sizeof(float), 
+                                                         pos * kv_dim * n_kv_head * sizeof(float));
             ggml_build_forward_expand(graph, ggml_cpy(ctx, k_cur, k_cache_view));
         }
         
@@ -648,16 +631,16 @@ struct ggml_cgraph* GGMLModel::build_backbone_graph(
             struct ggml_tensor* v_cur = ggml_view_1d(ctx, v_reshaped, kv_dim * n_kv_head, 
                                                     i * kv_dim * n_kv_head * sizeof(float));
             struct ggml_tensor* v_cache_view = ggml_view_2d(ctx, v_cache, kv_dim, n_kv_head,
-                                                             kv_dim * n_kv_head * sizeof(float), 
-                                                             pos * kv_dim * n_kv_head * sizeof(float));
+                                                         kv_dim * n_kv_head * sizeof(float), 
+                                                         pos * kv_dim * n_kv_head * sizeof(float));
             ggml_build_forward_expand(graph, ggml_cpy(ctx, v_cur, v_cache_view));
         }
         
         // Use K and V from the cache to perform attention calculation
         struct ggml_tensor* k_seq = ggml_view_3d(ctx, k_cache, kv_dim, n_kv_head, positions.back() + 1,
-                                              kv_dim * n_kv_head * sizeof(float), 0);
+                                             kv_dim * sizeof(float), kv_dim * n_kv_head * sizeof(float), 0);
         struct ggml_tensor* v_seq = ggml_view_3d(ctx, v_cache, kv_dim, n_kv_head, positions.back() + 1,
-                                              kv_dim * n_kv_head * sizeof(float), 0);
+                                             kv_dim * sizeof(float), kv_dim * n_kv_head * sizeof(float), 0);
         
         // Reshape K and V for attention
         k_seq = ggml_permute(ctx, k_seq, 0, 2, 1, 3); // [kv_dim, seq_len, n_kv_head, 1]
@@ -705,7 +688,7 @@ struct ggml_cgraph* GGMLModel::build_backbone_graph(
         
         // Scale attention scores
         float scale = 1.0f / sqrtf(head_dim);
-        att_scores = ggml_scale(ctx, att_scores, scale);
+        att_scores = ggml_scale_inplace(ctx, att_scores, scale);
         
         // Apply causal mask: we need to mask future tokens
         // Create causal mask [seq_len, seq_len]
@@ -724,7 +707,7 @@ struct ggml_cgraph* GGMLModel::build_backbone_graph(
         att_scores = ggml_add(ctx, att_scores, causal_mask);
         
         // Softmax
-        att_scores = ggml_soft_max(ctx, att_scores);
+        att_scores = ggml_soft_max_inplace(ctx, att_scores);
         
         // Apply attention to value vectors
         struct ggml_tensor* output = ggml_mul_mat(ctx, v_seq, att_scores);
@@ -746,7 +729,7 @@ struct ggml_cgraph* GGMLModel::build_backbone_graph(
         // Second normalization (FFN norm)
         struct ggml_tensor* ffn_norm_weight = get_weight(layer_prefix + "ffn_norm.weight");
         struct ggml_tensor* ffn_norm_bias = get_weight(layer_prefix + "ffn_norm.bias");
-        cur = ggml_norm(ctx, embd);
+        cur = ggml_rms_norm(ctx, embd, 1e-5f);
         cur = ggml_mul(ctx, cur, ffn_norm_weight);
         cur = ggml_add(ctx, cur, ffn_norm_bias);
         
@@ -775,7 +758,7 @@ struct ggml_cgraph* GGMLModel::build_backbone_graph(
     // Final normalization
     struct ggml_tensor* norm_weight = get_weight("model.norm.weight");
     struct ggml_tensor* norm_bias = get_weight("model.norm.bias");
-    struct ggml_tensor* normalized = ggml_norm(ctx, embd);
+    struct ggml_tensor* normalized = ggml_rms_norm(ctx, embd, 1e-5f);
     normalized = ggml_mul(ctx, normalized, norm_weight);
     normalized = ggml_add(ctx, normalized, norm_bias);
     
@@ -818,10 +801,10 @@ struct ggml_cgraph* GGMLModel::build_backbone_graph(
     // Build forward graph with the final tensor (logits)
     ggml_build_forward_expand(graph, logits);
     
-    return graph;
+    return {graph, logits};
 }
 
-struct ggml_cgraph* GGMLModel::build_decoder_graph(
+std::pair<struct ggml_cgraph*, struct ggml_tensor*> GGMLModel::build_decoder_graph(
     struct ggml_context* ctx,
     const std::vector<int>& tokens,
     const std::vector<int>& positions,
@@ -889,7 +872,7 @@ struct ggml_cgraph* GGMLModel::build_decoder_graph(
         // First normalization (attention norm)
         struct ggml_tensor* attn_norm_weight = get_weight(layer_prefix + "attention_norm.weight");
         struct ggml_tensor* attn_norm_bias = get_weight(layer_prefix + "attention_norm.bias");
-        struct ggml_tensor* cur = ggml_norm(ctx, embd);
+        struct ggml_tensor* cur = ggml_rms_norm(ctx, embd, 1e-5f);
         cur = ggml_mul(ctx, cur, attn_norm_weight);
         cur = ggml_add(ctx, cur, attn_norm_bias);
         
@@ -916,8 +899,8 @@ struct ggml_cgraph* GGMLModel::build_decoder_graph(
         v_reshaped = ggml_permute(ctx, v_reshaped, 1, 2, 0, 3); // [tokens, n_kv_head, kv_dim, 1]
         
         // Apply rotary embeddings (RoPE) to Q and K
-        q_reshaped = ggml_rope(ctx, q_reshaped, rope_cos, rope_sin, input_positions, head_dim / 2, 0);
-        k_reshaped = ggml_rope(ctx, k_reshaped, rope_cos, rope_sin, input_positions, kv_dim / 2, 0);
+        q_reshaped = ggml_rope_inplace(ctx, q_reshaped, input_positions, head_dim/2, 0);
+        k_reshaped = ggml_rope_inplace(ctx, k_reshaped, input_positions, kv_dim/2, 0);
         
         // Update KV cache
         struct ggml_tensor* k_cache = decoder_kv_cache_->k_cache(layer_idx);
@@ -947,9 +930,9 @@ struct ggml_cgraph* GGMLModel::build_decoder_graph(
         
         // Use K and V from the cache to perform attention calculation
         struct ggml_tensor* k_seq = ggml_view_3d(ctx, k_cache, kv_dim, n_kv_head, positions.back() + 1,
-                                              kv_dim * n_kv_head * sizeof(float), 0);
+                                             kv_dim * sizeof(float), kv_dim * n_kv_head * sizeof(float), 0);
         struct ggml_tensor* v_seq = ggml_view_3d(ctx, v_cache, kv_dim, n_kv_head, positions.back() + 1,
-                                              kv_dim * n_kv_head * sizeof(float), 0);
+                                             kv_dim * sizeof(float), kv_dim * n_kv_head * sizeof(float), 0);
         
         // Reshape K and V for attention
         k_seq = ggml_permute(ctx, k_seq, 0, 2, 1, 3); // [kv_dim, seq_len, n_kv_head, 1]
@@ -997,7 +980,7 @@ struct ggml_cgraph* GGMLModel::build_decoder_graph(
         
         // Scale attention scores
         float scale = 1.0f / sqrtf(head_dim);
-        att_scores = ggml_scale(ctx, att_scores, scale);
+        att_scores = ggml_scale_inplace(ctx, att_scores, scale);
         
         // Apply causal mask: we need to mask future tokens
         // Create causal mask [seq_len, seq_len]
@@ -1016,7 +999,7 @@ struct ggml_cgraph* GGMLModel::build_decoder_graph(
         att_scores = ggml_add(ctx, att_scores, causal_mask);
         
         // Softmax
-        att_scores = ggml_soft_max(ctx, att_scores);
+        att_scores = ggml_soft_max_inplace(ctx, att_scores);
         
         // Apply attention to value vectors
         struct ggml_tensor* output = ggml_mul_mat(ctx, v_seq, att_scores);
@@ -1038,7 +1021,7 @@ struct ggml_cgraph* GGMLModel::build_decoder_graph(
         // Second normalization (FFN norm)
         struct ggml_tensor* ffn_norm_weight = get_weight(layer_prefix + "ffn_norm.weight");
         struct ggml_tensor* ffn_norm_bias = get_weight(layer_prefix + "ffn_norm.bias");
-        cur = ggml_norm(ctx, embd);
+        cur = ggml_rms_norm(ctx, embd, 1e-5f);
         cur = ggml_mul(ctx, cur, ffn_norm_weight);
         cur = ggml_add(ctx, cur, ffn_norm_bias);
         
@@ -1067,7 +1050,7 @@ struct ggml_cgraph* GGMLModel::build_decoder_graph(
     // Final normalization
     struct ggml_tensor* norm_weight = get_weight("decoder.norm.weight");
     struct ggml_tensor* norm_bias = get_weight("decoder.norm.bias");
-    struct ggml_tensor* normalized = ggml_norm(ctx, embd);
+    struct ggml_tensor* normalized = ggml_rms_norm(ctx, embd, 1e-5f);
     normalized = ggml_mul(ctx, normalized, norm_weight);
     normalized = ggml_add(ctx, normalized, norm_bias);
     
@@ -1127,7 +1110,7 @@ struct ggml_cgraph* GGMLModel::build_decoder_graph(
     // Build forward graph with the final tensor (logits)
     ggml_build_forward_expand(graph, logits);
     
-    return graph;
+    return {graph, logits};
 }
 
 int GGMLModel::sample_token(const float* logits, int vocab_size, float temperature, int top_k) {
