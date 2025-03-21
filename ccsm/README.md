@@ -53,6 +53,52 @@ cmake ..
 make
 ```
 
+### Build Options
+
+The following options can be passed to the build script:
+
+```bash
+./build.sh --no-mlx      # Disable MLX support
+./build.sh --coverage    # Build with code coverage instrumentation
+./build.sh --help        # Show help message
+```
+
+## Testing
+
+Run the tests using CTest:
+
+```bash
+cd build
+ctest
+```
+
+### Code Coverage
+
+First, install the required dependencies:
+
+```bash
+# On macOS
+brew install lcov
+
+# On Ubuntu/Debian
+sudo apt-get install lcov
+```
+
+Then, to generate a code coverage report, build with coverage instrumentation and run:
+
+```bash
+./build.sh --coverage
+cd build
+ctest                # Run tests to collect coverage data
+make coverage        # Generate coverage report
+```
+
+Then open the coverage report in your browser:
+
+```bash
+open build/coverage_unit/index.html
+```
+
 ## Usage
 
 ### CPU Version

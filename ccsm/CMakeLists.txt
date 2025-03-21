@@ -5,6 +5,19 @@ project(ccsm VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Option for enabling code coverage
+option(WITH_COVERAGE "Build with code coverage instrumentation" OFF)
+
+# Include custom CMake modules
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+
+# Configure code coverage if enabled
+if(WITH_COVERAGE)
+    message(STATUS "Building with code coverage instrumentation")
+    include(CodeCoverage)
+    append_coverage_compiler_flags()
+endif()
+
 # Option for backend selection
 option(WITH_MLX "Build with MLX support for Apple Silicon" ON)
 option(WITH_CUDA "Build with CUDA support" OFF)
