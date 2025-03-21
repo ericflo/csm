@@ -345,8 +345,4 @@ TEST_F(AudioCodecTest, DifferentConfigurations) {
     }
 }
 
-// Main function for running tests
-int main(int argc, char **argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
+// No main function here - using the common main_test.cpp

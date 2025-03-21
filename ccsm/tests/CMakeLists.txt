@@ -16,21 +16,28 @@ endif()
 # Unit tests
 file(GLOB TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp"
 )
 
 # Create unit test executable
 add_executable(ccsm_unit_tests ${TEST_SOURCES})
-target_link_libraries(ccsm_unit_tests PRIVATE ccsm_core GTest::gtest GTest::gtest_main)
+target_link_libraries(ccsm_unit_tests PRIVATE ccsm_core GTest::gtest)
 target_include_directories(ccsm_unit_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
 # Add tokenizer test
-add_executable(test_tokenizer ${CMAKE_CURRENT_SOURCE_DIR}/tokenizer/test_tokenizer.cpp)
-target_link_libraries(test_tokenizer PRIVATE ccsm_core)
+add_executable(test_tokenizer 
+    ${CMAKE_CURRENT_SOURCE_DIR}/tokenizer/test_tokenizer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_tokenizer PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_tokenizer PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
 # Add SIMD optimization test
-add_executable(test_simd ${CMAKE_CURRENT_SOURCE_DIR}/simd/test_simd.cpp)
-target_link_libraries(test_simd PRIVATE ccsm_core)
+add_executable(test_simd 
+    ${CMAKE_CURRENT_SOURCE_DIR}/simd/test_simd.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_simd PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_simd PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
 # We'll add integration tests after defining coverage targets
@@ -48,10 +55,10 @@ if(WITH_MLX)
     endif()
 endif()
 
-# Add the tests to CTest
-add_test(NAME UnitTests COMMAND ccsm_unit_tests)
-add_test(NAME TokenizerTest COMMAND test_tokenizer)
-add_test(NAME SIMDTest COMMAND test_simd)
+# Add the tests to CTest - specify full paths for test binaries
+add_test(NAME UnitTests COMMAND ${CMAKE_CURRENT_BINARY_DIR}/ccsm_unit_tests)
+add_test(NAME TokenizerTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_tokenizer)
+add_test(NAME SIMDTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_simd)
 
 if(WITH_MLX AND MLX_TEST_SOURCES)
     add_test(NAME MLXTests COMMAND ccsm_mlx_tests)

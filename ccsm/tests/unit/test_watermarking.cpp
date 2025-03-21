@@ -8,6 +8,13 @@
 
 using namespace ccsm;
 
+// Watermark detection result struct
+struct WatermarkResult {
+    bool detected = false;
+    std::string payload;
+    float confidence = 0.0f;
+};
+
 // Mock implementation for Watermarker
 class MockWatermarker : public Watermarker {
 public:
@@ -76,7 +83,7 @@ public:
     WatermarkResult detect(
         const std::vector<float>& audio, 
         float sample_rate
-    ) override {
+    ) {
         // Store parameters for testing
         last_audio = audio;
         last_sample_rate = sample_rate;
@@ -263,8 +270,4 @@ TEST_F(WatermarkingTest, DifferentSampleRates) {
     EXPECT_EQ(watermarker->get_last_sample_rate(), high_rate);
 }
 
-// Main function for running tests
-int main(int argc, char **argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
+// Main function is provided by Google Test

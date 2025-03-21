@@ -1,34 +1,37 @@
 #include <ccsm/cpu/simd.h>
 #include <ccsm/cpu/thread_pool.h>
-#include <cassert>
+#include <gtest/gtest.h>
 #include <cmath>
 #include <vector>
-#include <iostream>
 #include <chrono>
 
 using namespace ccsm;
 
-// Simple test helpers
-bool almost_equal(float a, float b, float epsilon = 1e-5) {
-    return std::fabs(a - b) < epsilon;
-}
-
-bool vector_almost_equal(const std::vector<float>& a, const std::vector<float>& b, float epsilon = 1e-5) {
-    if (a.size() != b.size()) {
-        return false;
+// Test fixture for SIMD operations
+class SIMDTest : public ::testing::Test {
+protected:
+    // Simple test helpers
+    bool almost_equal(float a, float b, float epsilon = 1e-5) {
+        return std::fabs(a - b) < epsilon;
     }
-    
-    for (size_t i = 0; i < a.size(); i++) {
-        if (!almost_equal(a[i], b[i], epsilon)) {
+
+    bool vector_almost_equal(const std::vector<float>& a, const std::vector<float>& b, float epsilon = 1e-5) {
+        if (a.size() != b.size()) {
             return false;
         }
+        
+        for (size_t i = 0; i < a.size(); i++) {
+            if (!almost_equal(a[i], b[i], epsilon)) {
+                return false;
+            }
+        }
+        
+        return true;
     }
-    
-    return true;
-}
+};
 
-// Test SIMD operations
-void test_simd_operations() {
+// Test vector operations
+TEST_F(SIMDTest, VectorOperations) {
     const size_t n = 1024;
     
     // Create test vectors
@@ -43,16 +46,14 @@ void test_simd_operations() {
     
     // Test vector_add
     simd::vector_add(a.data(), b.data(), c.data(), n);
-    assert(vector_almost_equal(c, expected));
-    std::cout << "vector_add test passed" << std::endl;
+    EXPECT_TRUE(vector_almost_equal(c, expected));
     
     // Test vector_mul
     for (size_t i = 0; i < n; i++) {
         expected[i] = a[i] * b[i];
     }
     simd::vector_mul(a.data(), b.data(), c.data(), n);
-    assert(vector_almost_equal(c, expected));
-    std::cout << "vector_mul test passed" << std::endl;
+    EXPECT_TRUE(vector_almost_equal(c, expected));
     
     // Test vector_scale
     const float scalar = 2.5f;
@@ -60,8 +61,7 @@ void test_simd_operations() {
         expected[i] = a[i] * scalar;
     }
     simd::vector_scale(a.data(), scalar, c.data(), n);
-    assert(vector_almost_equal(c, expected));
-    std::cout << "vector_scale test passed" << std::endl;
+    EXPECT_TRUE(vector_almost_equal(c, expected));
     
     // Test vector_dot
     float dot_expected = 0.0f;
@@ -69,8 +69,15 @@ void test_simd_operations() {
         dot_expected += a[i] * b[i];
     }
     float dot_result = simd::vector_dot(a.data(), b.data(), n);
-    assert(almost_equal(dot_result, dot_expected));
-    std::cout << "vector_dot test passed" << std::endl;
+    EXPECT_TRUE(almost_equal(dot_result, dot_expected));
+}
+
+// Test activation functions
+TEST_F(SIMDTest, ActivationFunctions) {
+    const size_t n = 1024;
+    
+    // Create test vectors
+    std::vector<float> a(n), c(n), expected(n);
     
     // Test relu
     for (size_t i = 0; i < n; i++) {
@@ -78,8 +85,7 @@ void test_simd_operations() {
         expected[i] = std::max(0.0f, a[i]);
     }
     simd::relu(a.data(), c.data(), n);
-    assert(vector_almost_equal(c, expected));
-    std::cout << "relu test passed" << std::endl;
+    EXPECT_TRUE(vector_almost_equal(c, expected));
     
     // Test softmax
     float sum = 0.0f;
@@ -95,10 +101,11 @@ void test_simd_operations() {
         expected[i] /= sum;
     }
     simd::softmax(a.data(), c.data(), n);
-    assert(vector_almost_equal(c, expected));
-    std::cout << "softmax test passed" << std::endl;
-    
-    // Test matrix multiplication
+    EXPECT_TRUE(vector_almost_equal(c, expected));
+}
+
+// Test matrix multiplication
+TEST_F(SIMDTest, MatrixMultiplication) {
     // Create small matrices for testing
     const size_t m = 16, k = 16, p = 16;
     std::vector<float> mat_a(m*k), mat_b(k*p), mat_c(m*p), mat_expected(m*p);
@@ -129,12 +136,15 @@ void test_simd_operations() {
     
     // Test matrix_mul
     simd::matrix_mul(mat_a.data(), mat_b.data(), mat_c.data(), m, k, p);
-    assert(vector_almost_equal(mat_c, mat_expected, 1e-3f)); // Larger epsilon due to potential FP precision differences
-    std::cout << "matrix_mul test passed" << std::endl;
+    EXPECT_TRUE(vector_almost_equal(mat_c, mat_expected, 1e-3f)); // Larger epsilon due to potential FP precision differences
 }
 
-// Test thread pool
-void test_thread_pool() {
+// Test fixture for thread pool
+class ThreadPoolTest : public ::testing::Test {
+};
+
+// Test thread pool basic functionality
+TEST_F(ThreadPoolTest, BasicThreadPoolFunctionality) {
     ThreadPool pool(4); // Create pool with 4 threads
     
     const int num_tasks = 100;
@@ -151,12 +161,12 @@ void test_thread_pool() {
     
     // Check results
     for (int i = 0; i < num_tasks; i++) {
-        assert(results[i].get() == i * i);
+        EXPECT_EQ(results[i].get(), i * i);
     }
-    
-    std::cout << "Thread pool basic test passed" << std::endl;
-    
-    // Test parallel for
+}
+
+// Test ParallelFor functionality
+TEST_F(ThreadPoolTest, ParallelForFunctionality) {
     const int array_size = 10000;
     std::vector<int> array(array_size, 0);
     
@@ -167,12 +177,12 @@ void test_thread_pool() {
     
     // Verify results
     for (int i = 0; i < array_size; i++) {
-        assert(array[i] == i * i);
+        EXPECT_EQ(array[i], i * i);
     }
-    
-    std::cout << "Parallel for test passed" << std::endl;
-    
-    // Performance test
+}
+
+// Test ParallelFor performance (this is a long-running test, so it's marked as DISABLED)
+TEST_F(ThreadPoolTest, DISABLED_ParallelForPerformance) {
     const int perf_array_size = 50000000;
     std::vector<float> perf_array(perf_array_size, 1.0f);
     std::vector<float> result_array(perf_array_size, 0.0f);
@@ -194,18 +204,6 @@ void test_thread_pool() {
     auto end_parallel = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> parallel_time = end_parallel - start_parallel;
     
-    std::cout << "Serial time: " << serial_time.count() << " seconds" << std::endl;
-    std::cout << "Parallel time: " << parallel_time.count() << " seconds" << std::endl;
-    std::cout << "Speedup: " << serial_time.count() / parallel_time.count() << "x" << std::endl;
-}
-
-int main() {
-    std::cout << "Testing SIMD operations..." << std::endl;
-    test_simd_operations();
-    
-    std::cout << "\nTesting thread pool..." << std::endl;
-    test_thread_pool();
-    
-    std::cout << "\nAll tests passed!" << std::endl;
-    return 0;
+    // We should expect at least some speedup
+    EXPECT_GT(serial_time.count() / parallel_time.count(), 1.0);
 }

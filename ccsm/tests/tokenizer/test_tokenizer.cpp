@@ -1,6 +1,5 @@
 #include "ccsm/tokenizer.h"
-#include <cassert>
-#include <iostream>
+#include <gtest/gtest.h>
 #include <memory>
 #include <string>
 #include <vector>
@@ -78,47 +77,56 @@ public:
     }
 };
 
-int main() {
-    std::cout << "Testing tokenizer..." << std::endl;
+// Test fixture for tokenizer tests
+class TokenizerTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        tokenizer = std::make_shared<MockTokenizer>();
+    }
+    
+    std::shared_ptr<MockTokenizer> tokenizer;
+};
 
-    // Create mock tokenizer
-    auto tokenizer = std::make_shared<MockTokenizer>();
-
+// Test basic tokenizer functionality
+TEST_F(TokenizerTest, BasicFunctionality) {
     // Test encode/decode
     std::string test_text = "hello world";
     auto tokens = tokenizer->encode(test_text);
     std::string decoded = tokenizer->decode(tokens);
     
-    std::cout << "Original: " << test_text << std::endl;
-    std::cout << "Encoded: ";
-    for (auto token : tokens) {
-        std::cout << token << " ";
-    }
-    std::cout << std::endl;
-    std::cout << "Decoded: " << decoded << std::endl;
+    EXPECT_EQ(tokens.size(), 2);
+    EXPECT_EQ(tokens[0], 4); // "hello"
+    EXPECT_EQ(tokens[1], 5); // "world"
+    EXPECT_EQ(decoded, "hello world");
+}
 
-    // Test special tokens
-    std::cout << "BOS token ID: " << tokenizer->bos_token_id() << std::endl;
-    std::cout << "EOS token ID: " << tokenizer->eos_token_id() << std::endl;
-    std::cout << "PAD token ID: " << tokenizer->pad_token_id() << std::endl;
-    std::cout << "UNK token ID: " << tokenizer->unk_token_id() << std::endl;
+// Test special tokens
+TEST_F(TokenizerTest, SpecialTokens) {
+    EXPECT_EQ(tokenizer->vocab_size(), 9);
+    EXPECT_EQ(tokenizer->bos_token_id(), 0);
+    EXPECT_EQ(tokenizer->eos_token_id(), 1);
+    EXPECT_EQ(tokenizer->pad_token_id(), 2);
+    EXPECT_EQ(tokenizer->unk_token_id(), 3);
+}
 
-    // Test speaker token IDs
-    for (int i = 0; i <= 3; ++i) {
-        std::cout << "Speaker " << i << " token ID: " << tokenizer->get_speaker_token_id(i) << std::endl;
-    }
+// Test speaker token IDs
+TEST_F(TokenizerTest, SpeakerTokens) {
+    EXPECT_EQ(tokenizer->get_speaker_token_id(0), 6);
+    EXPECT_EQ(tokenizer->get_speaker_token_id(1), 7);
+    EXPECT_EQ(tokenizer->get_speaker_token_id(2), 8);
+    EXPECT_EQ(tokenizer->get_speaker_token_id(3), 3); // Invalid speaker ID returns UNK
+}
 
-    // Basic assertion tests
-    assert(tokenizer->vocab_size() == 9);
-    assert(tokenizer->bos_token_id() == 0);
-    assert(tokenizer->eos_token_id() == 1);
-    assert(tokenizer->pad_token_id() == 2);
-    assert(tokenizer->unk_token_id() == 3);
-    assert(tokenizer->get_speaker_token_id(0) == 6);
-    assert(tokenizer->get_speaker_token_id(1) == 7);
-    assert(tokenizer->get_speaker_token_id(2) == 8);
-    assert(tokenizer->get_speaker_token_id(3) == 3); // Invalid speaker ID returns UNK
-
-    std::cout << "All tests passed!" << std::endl;
-    return 0;
+// Test unknown token handling
+TEST_F(TokenizerTest, UnknownTokens) {
+    // Test with unknown text
+    std::string unknown_text = "unknown text";
+    auto unknown_tokens = tokenizer->encode(unknown_text);
+    EXPECT_EQ(unknown_tokens.size(), 1);
+    EXPECT_EQ(unknown_tokens[0], 3); // UNK token
+    
+    // Test with out-of-range token IDs
+    std::vector<int> out_of_range = {100, 101}; // Non-existent token IDs
+    std::string decoded = tokenizer->decode(out_of_range);
+    EXPECT_EQ(decoded, "<unk> <unk>");
 }

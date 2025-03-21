@@ -1,6 +1,6 @@
+#include <gtest/gtest.h>
 #include <ccsm/cpu/simd.h>
 #include <ccsm/cpu/thread_pool.h>
-#include <cassert>
 #include <cmath>
 #include <vector>
 #include <iostream>
@@ -43,7 +43,7 @@ void test_simd_operations() {
     
     // Test vector_add
     simd::vector_add(a.data(), b.data(), c.data(), n);
-    assert(vector_almost_equal(c, expected));
+    EXPECT_TRUE(vector_almost_equal(c, expected));
     std::cout << "vector_add test passed" << std::endl;
     
     // Test vector_mul
@@ -51,7 +51,7 @@ void test_simd_operations() {
         expected[i] = a[i] * b[i];
     }
     simd::vector_mul(a.data(), b.data(), c.data(), n);
-    assert(vector_almost_equal(c, expected));
+    EXPECT_TRUE(vector_almost_equal(c, expected));
     std::cout << "vector_mul test passed" << std::endl;
     
     // Test vector_scale
@@ -60,7 +60,7 @@ void test_simd_operations() {
         expected[i] = a[i] * scalar;
     }
     simd::vector_scale(a.data(), scalar, c.data(), n);
-    assert(vector_almost_equal(c, expected));
+    EXPECT_TRUE(vector_almost_equal(c, expected));
     std::cout << "vector_scale test passed" << std::endl;
     
     // Test vector_dot
@@ -69,7 +69,7 @@ void test_simd_operations() {
         dot_expected += a[i] * b[i];
     }
     float dot_result = simd::vector_dot(a.data(), b.data(), n);
-    assert(almost_equal(dot_result, dot_expected));
+    EXPECT_TRUE(almost_equal(dot_result, dot_expected));
     std::cout << "vector_dot test passed" << std::endl;
     
     // Test relu
@@ -78,7 +78,7 @@ void test_simd_operations() {
         expected[i] = std::max(0.0f, a[i]);
     }
     simd::relu(a.data(), c.data(), n);
-    assert(vector_almost_equal(c, expected));
+    EXPECT_TRUE(vector_almost_equal(c, expected));
     std::cout << "relu test passed" << std::endl;
     
     // Test softmax
@@ -95,7 +95,7 @@ void test_simd_operations() {
         expected[i] /= sum;
     }
     simd::softmax(a.data(), c.data(), n);
-    assert(vector_almost_equal(c, expected));
+    EXPECT_TRUE(vector_almost_equal(c, expected));
     std::cout << "softmax test passed" << std::endl;
     
     // Test matrix multiplication
@@ -129,7 +129,7 @@ void test_simd_operations() {
     
     // Test matrix_mul
     simd::matrix_mul(mat_a.data(), mat_b.data(), mat_c.data(), m, k, p);
-    assert(vector_almost_equal(mat_c, mat_expected, 1e-3f)); // Larger epsilon due to potential FP precision differences
+    EXPECT_TRUE(vector_almost_equal(mat_c, mat_expected, 1e-3f)); // Larger epsilon due to potential FP precision differences
     std::cout << "matrix_mul test passed" << std::endl;
 }
 
@@ -151,7 +151,7 @@ void test_thread_pool() {
     
     // Check results
     for (int i = 0; i < num_tasks; i++) {
-        assert(results[i].get() == i * i);
+        EXPECT_EQ(results[i].get(), i * i);
     }
     
     std::cout << "Thread pool basic test passed" << std::endl;
@@ -167,7 +167,7 @@ void test_thread_pool() {
     
     // Verify results
     for (int i = 0; i < array_size; i++) {
-        assert(array[i] == i * i);
+        EXPECT_EQ(array[i], i * i);
     }
     
     std::cout << "Parallel for test passed" << std::endl;
@@ -199,13 +199,11 @@ void test_thread_pool() {
     std::cout << "Speedup: " << serial_time.count() / parallel_time.count() << "x" << std::endl;
 }
 
-int main() {
-    std::cout << "Testing SIMD operations..." << std::endl;
+// Convert to Google Test format
+TEST(SIMDTest, VectorOperations) {
     test_simd_operations();
-    
-    std::cout << "\nTesting thread pool..." << std::endl;
+}
+
+TEST(ThreadPoolTest, BasicOperations) {
     test_thread_pool();
-    
-    std::cout << "\nAll tests passed!" << std::endl;
-    return 0;
 }

@@ -47,6 +47,7 @@ The GGML backend provides CPU-based tensor operations using GGML library.
    - Complete the `ggml_tensor.cpp` implementation 
    - Implement tensor creation, reshaping, and basic operations
    - Ensure proper memory management with GGML contexts
+   - Fix missing symbols like `ggml_graph_compute_with_ctx`
 
 2. **Next steps**:
    - Implement quantization support
@@ -101,6 +102,7 @@ Implement audio watermarking for attribution.
 
 1. **First steps**:
    - Complete the `watermarking.cpp` implementation
+   - Fix the test issues with `WatermarkResult` struct
    - Implement basic watermark embedding
    - Add watermark detection
 
@@ -166,3 +168,24 @@ Before releasing:
 3. Performance meets or exceeds baseline metrics
 4. All public APIs are properly documented
 5. Command-line interface has appropriate help and error messages
+
+## Current Implementation Issues
+
+### 1. Watermarking Tests
+- The `WatermarkResult` struct is referenced in tests but not defined in the header
+- Solution: Define the struct in the test file and update the implementation later
+
+### 2. GGML Functions
+- Missing `ggml_graph_compute_with_ctx` function used in `ggml_model.cpp`
+- Solution: Update the GGML backend to include this function or use a suitable alternative
+
+### 3. Integration Tests
+- Issues with the end-to-end workflow tests
+- Solution: Focus on unit tests first, then fix integration tests
+
+## Immediate Tasks
+
+1. Fix the compilation errors in the watermarking tests
+2. Fix the GGML tensor tests to not rely on internal GGML functions
+3. Implement core functionality in tensor.cpp to pass basic tests
+4. Run the coverage report to identify the next areas to implement

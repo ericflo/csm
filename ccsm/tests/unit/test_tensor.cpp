@@ -253,24 +253,25 @@ public:
     }
 };
 
-// Override TensorFactory for testing
-namespace ccsm {
-    Tensor TensorFactory::create(const std::vector<size_t>& shape, DataType dtype) {
+// Test helper functions - create local versions for testing without conflicting with the library's implementation
+// These functions are intentionally very similar to the real implementations but don't override the actual functions
+namespace test_helpers {
+    static Tensor createMockTensor(const std::vector<size_t>& shape, DataType dtype) {
         static MockContext ctx;
         return ctx.zeros(shape, dtype);
     }
     
-    Tensor TensorFactory::zeros(const std::vector<size_t>& shape, DataType dtype) {
+    static Tensor createMockZeros(const std::vector<size_t>& shape, DataType dtype) {
         static MockContext ctx;
         return ctx.zeros(shape, dtype);
     }
     
-    Tensor TensorFactory::ones(const std::vector<size_t>& shape, DataType dtype) {
+    static Tensor createMockOnes(const std::vector<size_t>& shape, DataType dtype) {
         static MockContext ctx;
         return ctx.ones(shape, dtype);
     }
     
-    Tensor TensorFactory::from_data(const void* data, const std::vector<size_t>& shape, DataType dtype) {
+    static Tensor createMockFromData(const void* data, const std::vector<size_t>& shape, DataType dtype) {
         auto result = std::make_shared<MockTensorImpl>(shape, dtype);
         
         // Copy data
@@ -280,7 +281,7 @@ namespace ccsm {
         return Tensor(result);
     }
     
-    Tensor TensorFactory::convert(const Tensor& tensor, const std::string& to_backend) {
+    static Tensor convertMockTensor(const Tensor& tensor, const std::string& to_backend) {
         if (to_backend == "mock") {
             return tensor; // Already a mock tensor
         } else if (to_backend == "ggml") {
@@ -291,7 +292,7 @@ namespace ccsm {
         }
     }
     
-    std::shared_ptr<Context> ContextFactory::create(const std::string& backend) {
+    static std::shared_ptr<Context> createMockContext() {
         return std::make_shared<MockContext>();
     }
 }
@@ -347,14 +348,14 @@ TEST_F(TensorTest, InvalidTensorOperations) {
 // Test tensor creation for different shapes and types
 TEST_F(TensorTest, TensorCreation) {
     // Test vector creation
-    Tensor vector = TensorFactory::zeros(vector_shape, DataType::F32);
+    Tensor vector = test_helpers::createMockZeros(vector_shape, DataType::F32);
     EXPECT_TRUE(vector.is_valid());
     EXPECT_EQ(vector.ndim(), 1);
     EXPECT_EQ(vector.shape(0), 10);
     EXPECT_EQ(vector.size(), 10);
     
     // Test matrix creation
-    Tensor matrix = TensorFactory::zeros(matrix_shape, DataType::F16);
+    Tensor matrix = test_helpers::createMockZeros(matrix_shape, DataType::F16);
     EXPECT_TRUE(matrix.is_valid());
     EXPECT_EQ(matrix.ndim(), 2);
     EXPECT_EQ(matrix.shape(0), 5);
@@ -364,7 +365,7 @@ TEST_F(TensorTest, TensorCreation) {
     EXPECT_EQ(matrix.dtype_str(), "F16");
     
     // Test 3D tensor creation
-    Tensor tensor3d = TensorFactory::zeros(tensor3d_shape, DataType::BF16);
+    Tensor tensor3d = test_helpers::createMockZeros(tensor3d_shape, DataType::BF16);
     EXPECT_TRUE(tensor3d.is_valid());
     EXPECT_EQ(tensor3d.ndim(), 3);
     EXPECT_EQ(tensor3d.shape(0), 3);
@@ -375,14 +376,14 @@ TEST_F(TensorTest, TensorCreation) {
     EXPECT_EQ(tensor3d.dtype_str(), "BF16");
     
     // Test ones tensor
-    Tensor ones = TensorFactory::ones(vector_shape, DataType::I32);
+    Tensor ones = test_helpers::createMockOnes(vector_shape, DataType::I32);
     EXPECT_TRUE(ones.is_valid());
     EXPECT_EQ(ones.dtype(), DataType::I32);
     EXPECT_EQ(ones.dtype_str(), "I32");
     
     // Test from_data creation
     float data[10] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-    Tensor from_data = TensorFactory::from_data(data, vector_shape, DataType::F32);
+    Tensor from_data = test_helpers::createMockFromData(data, vector_shape, DataType::F32);
     EXPECT_TRUE(from_data.is_valid());
     EXPECT_EQ(from_data.ndim(), 1);
     EXPECT_EQ(from_data.shape(0), 10);
@@ -395,7 +396,7 @@ TEST_F(TensorTest, TensorCreation) {
 // Test tensor reshape and view operations
 TEST_F(TensorTest, TensorReshapeView) {
     // Create a 3D tensor
-    Tensor original = TensorFactory::zeros(tensor3d_shape, default_dtype);
+    Tensor original = test_helpers::createMockZeros(tensor3d_shape, default_dtype);
     EXPECT_TRUE(original.is_valid());
     EXPECT_EQ(original.ndim(), 3);
     EXPECT_EQ(original.size(), 150);
@@ -434,7 +435,7 @@ TEST_F(TensorTest, TensorReshapeView) {
 // Test tensor slice operations
 TEST_F(TensorTest, TensorSlice) {
     // Create a 3D tensor
-    Tensor original = TensorFactory::zeros(tensor3d_shape, default_dtype);
+    Tensor original = test_helpers::createMockZeros(tensor3d_shape, default_dtype);
     EXPECT_TRUE(original.is_valid());
     
     // Slice along dim 0
@@ -453,8 +454,8 @@ TEST_F(TensorTest, TensorSlice) {
 // Test context operations (basic arithmetic)
 TEST_F(TensorTest, ContextOperations) {
     // Create tensors
-    Tensor a = TensorFactory::ones(vector_shape, default_dtype);
-    Tensor b = TensorFactory::ones(vector_shape, default_dtype);
+    Tensor a = test_helpers::createMockOnes(vector_shape, default_dtype);
+    Tensor b = test_helpers::createMockOnes(vector_shape, default_dtype);
     
     // Test add
     Tensor c = context->add(a, b);
@@ -477,8 +478,8 @@ TEST_F(TensorTest, ContextOperations) {
     EXPECT_EQ(f.shape(), vector_shape);
     
     // Test matmul with compatible dimensions
-    Tensor g = TensorFactory::ones({10, 5}, default_dtype);
-    Tensor h = TensorFactory::ones({5, 3}, default_dtype);
+    Tensor g = test_helpers::createMockOnes({10, 5}, default_dtype);
+    Tensor h = test_helpers::createMockOnes({5, 3}, default_dtype);
     Tensor i = context->matmul(g, h);
     EXPECT_TRUE(i.is_valid());
     EXPECT_EQ(i.ndim(), 2);
@@ -512,21 +513,15 @@ TEST_F(TensorTest, ContextOperations) {
 // Test tensor backend conversion
 TEST_F(TensorTest, TensorConversion) {
     // Create a tensor
-    Tensor original = TensorFactory::zeros(vector_shape, default_dtype);
+    Tensor original = test_helpers::createMockZeros(vector_shape, default_dtype);
     EXPECT_TRUE(original.is_valid());
     
     // Convert to a different backend (should be a no-op if same backend)
-    Tensor converted = TensorFactory::convert(original, "ggml");
+    Tensor converted = test_helpers::convertMockTensor(original, "ggml");
     EXPECT_TRUE(converted.is_valid());
     EXPECT_EQ(converted.shape(), original.shape());
     EXPECT_EQ(converted.dtype(), original.dtype());
     
     // Test conversion to an invalid backend should throw
-    EXPECT_THROW(TensorFactory::convert(original, "invalid_backend"), std::runtime_error);
-}
-
-// Main function for running tests
-int main(int argc, char **argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
+    EXPECT_THROW(test_helpers::convertMockTensor(original, "invalid_backend"), std::runtime_error);
 }
