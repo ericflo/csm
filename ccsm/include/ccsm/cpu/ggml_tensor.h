@@ -68,6 +68,9 @@ public:
     Tensor zeros(const std::vector<size_t>& shape, DataType dtype) override;
     Tensor ones(const std::vector<size_t>& shape, DataType dtype) override;
     
+    // Additional creation method for tests
+    Tensor create_tensor(const std::vector<size_t>& shape, DataType dtype);
+    
     // Reductions
     Tensor sum(const Tensor& x, int dim) override;
     Tensor mean(const Tensor& x, int dim) override;
