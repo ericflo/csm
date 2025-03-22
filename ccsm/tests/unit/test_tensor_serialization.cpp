@@ -234,9 +234,6 @@ TEST_F(TensorSerializationTest, ErrorHandling) {
 
 // Test serialization of tensor with custom metadata
 TEST_F(TensorSerializationTest, CustomMetadata) {
-    // Skip this test for now until we fix the serialization
-    GTEST_SKIP() << "Skipping test until metadata serialization issues are fixed";
-    
     // Create a tensor
     Tensor original = createFilledTensor(vector_shape, DataType::F32, 1.0f);
     
@@ -248,132 +245,25 @@ TEST_F(TensorSerializationTest, CustomMetadata) {
     metadata.custom_fields["author"] = "CCSM Test";
     metadata.custom_fields["purpose"] = "Unit testing";
     
-    // Create a simple version of this test that just verifies the metadata structure
-    std::string test_file = test_dir + "/manual_metadata.bin";
+    // Test the actual implementation directly
+    // No manual file creation, just use the proper APIs
     
-    // First create a very basic tensor file
-    {
-        std::ofstream file(test_file, std::ios::binary);
-        
-        // Write simplified tensor header
-        const uint32_t magic = 0x54534F52; // "TSRZ" in little endian
-        file.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
-        
-        // Write format version
-        const uint32_t version = 1;
-        file.write(reinterpret_cast<const char*>(&version), sizeof(version));
-        
-        // Tensor has 1 dimension with 4 elements
-        const int ndim = 1;
-        file.write(reinterpret_cast<const char*>(&ndim), sizeof(ndim));
-        
-        const DataType dtype = DataType::F32;
-        file.write(reinterpret_cast<const char*>(&dtype), sizeof(dtype));
-        
-        // Write shape (4 elements)
-        uint64_t dim_size = 4;
-        file.write(reinterpret_cast<const char*>(&dim_size), sizeof(dim_size));
-        
-        // Write endian and compression (both native/none)
-        const uint8_t endian_code = 0;
-        file.write(reinterpret_cast<const char*>(&endian_code), sizeof(endian_code));
-        
-        const uint8_t compression_code = 0;
-        file.write(reinterpret_cast<const char*>(&compression_code), sizeof(compression_code));
-        
-        // Write data size
-        const uint64_t data_size = 16; // 4 floats * 4 bytes
-        file.write(reinterpret_cast<const char*>(&data_size), sizeof(data_size));
-        file.write(reinterpret_cast<const char*>(&data_size), sizeof(data_size)); // same for uncompressed
-        
-        // Write simplified data: 4 floats all set to 1.0f
-        float data[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-        file.write(reinterpret_cast<const char*>(data), sizeof(data));
-        
-        // Write metadata marker
-        const uint32_t metadata_marker = 0x4D455441; // "META" in little endian
-        file.write(reinterpret_cast<const char*>(&metadata_marker), sizeof(metadata_marker));
-        
-        // Write safety marker
-        const uint64_t safety_marker = 0x4353534D4D455441; // "CSMMETA" in little endian
-        file.write(reinterpret_cast<const char*>(&safety_marker), sizeof(safety_marker));
-        
-        // Write test metadata
-        const char* name = "test_tensor";
-        uint32_t name_length = strlen(name);
-        file.write(reinterpret_cast<const char*>(&name_length), sizeof(name_length));
-        file.write(name, name_length);
-        
-        const char* desc = "A test tensor for serialization";
-        uint32_t desc_length = strlen(desc);
-        file.write(reinterpret_cast<const char*>(&desc_length), sizeof(desc_length));
-        file.write(desc, desc_length);
-        
-        const int32_t meta_version = 1;
-        file.write(reinterpret_cast<const char*>(&meta_version), sizeof(meta_version));
-        
-        // Write 2 custom fields
-        const uint32_t num_fields = 2;
-        file.write(reinterpret_cast<const char*>(&num_fields), sizeof(num_fields));
-        
-        // Field 1
-        const char* key1 = "author";
-        uint32_t key1_length = strlen(key1);
-        file.write(reinterpret_cast<const char*>(&key1_length), sizeof(key1_length));
-        file.write(key1, key1_length);
-        
-        const char* val1 = "CCSM Test";
-        uint32_t val1_length = strlen(val1);
-        file.write(reinterpret_cast<const char*>(&val1_length), sizeof(val1_length));
-        file.write(val1, val1_length);
-        
-        // Field 2
-        const char* key2 = "purpose";
-        uint32_t key2_length = strlen(key2);
-        file.write(reinterpret_cast<const char*>(&key2_length), sizeof(key2_length));
-        file.write(key2, key2_length);
-        
-        const char* val2 = "Unit testing";
-        uint32_t val2_length = strlen(val2);
-        file.write(reinterpret_cast<const char*>(&val2_length), sizeof(val2_length));
-        file.write(val2, val2_length);
-    }
-    
-    // Now read the metadata from this file directly
-    TensorMetadata loaded_metadata;
-    Tensor loaded = TensorFactory::load_with_metadata(test_file, loaded_metadata);
-    
-    // Verify tensor
-    EXPECT_EQ(loaded.ndim(), 1);
-    EXPECT_EQ(loaded.shape(0), 4);
-    EXPECT_EQ(loaded.dtype(), DataType::F32);
-    
-    // Verify metadata
-    EXPECT_EQ(loaded_metadata.name, "test_tensor");
-    EXPECT_EQ(loaded_metadata.description, "A test tensor for serialization");
-    EXPECT_EQ(loaded_metadata.version, 1);
-    EXPECT_EQ(loaded_metadata.custom_fields["author"], "CCSM Test");
-    EXPECT_EQ(loaded_metadata.custom_fields["purpose"], "Unit testing");
-    
-    // The actual implementation test can be restored later
-    /*
     // Save with metadata
     EXPECT_TRUE(TensorFactory::save_with_metadata(original, test_dir + "/with_metadata.bin", metadata));
     
     // Load with metadata
-    TensorMetadata loaded_metadata;
-    Tensor loaded = TensorFactory::load_with_metadata(test_dir + "/with_metadata.bin", loaded_metadata);
+    TensorMetadata loaded_metadata2;
+    Tensor loaded2 = TensorFactory::load_with_metadata(test_dir + "/with_metadata.bin", loaded_metadata2);
     
     // Verify tensor
-    EXPECT_TRUE(tensorEquals(original, loaded));
+    EXPECT_TRUE(tensorEquals(original, loaded2));
     
     // Verify metadata
-    EXPECT_EQ(loaded_metadata.name, "test_tensor");
-    EXPECT_EQ(loaded_metadata.description, "A test tensor for serialization");
-    EXPECT_EQ(loaded_metadata.version, 1);
-    EXPECT_EQ(loaded_metadata.custom_fields["author"], "CCSM Test");
-    EXPECT_EQ(loaded_metadata.custom_fields["purpose"], "Unit testing");
-    */
+    EXPECT_EQ(loaded_metadata2.name, "test_tensor");
+    EXPECT_EQ(loaded_metadata2.description, "A test tensor for serialization");
+    EXPECT_EQ(loaded_metadata2.version, 1);
+    EXPECT_EQ(loaded_metadata2.custom_fields["author"], "CCSM Test");
+    EXPECT_EQ(loaded_metadata2.custom_fields["purpose"], "Unit testing");
 }
 
 // Test serialization with compression
