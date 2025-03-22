@@ -1,0 +1,62 @@
+# Build directory
+build/
+bin/
+lib/
+install/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+CMakeScripts/
+CPackConfig.cmake
+CPackSourceConfig.cmake
+cmake_install.cmake
+Makefile
+CTestTestfile.cmake
+DartConfiguration.tcl
+Testing/
+_deps/
+
+# Compiled Static libraries
+*.a
+*.lib
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Generated files
+compile_commands.json
+.cache/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Dependency directories
+vendor/
+
+# Test outputs
+tests/test_*
+!tests/test_*.cpp
+!tests/test_*.h
+
+# Log files
+*.log
+
+# Core dumps
+core
