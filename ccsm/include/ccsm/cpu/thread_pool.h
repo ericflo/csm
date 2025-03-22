@@ -105,6 +105,9 @@ public:
     // Get number of threads
     size_t size() const { return threads_.size(); }
     
+    // Alias for size() that's more descriptive for tests
+    size_t getThreadCount() const { return threads_.size(); }
+    
 private:
     std::vector<std::thread> threads_;
     TaskQueue task_queue_;

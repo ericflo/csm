@@ -129,20 +129,23 @@ open build/coverage_unit/index.html
 
 ## Implementation Status
 
-The project is currently in active development with the following components implemented:
+The project is currently in active development. For detailed status information, implementation plans, and testing strategy, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
-✅ CPU Backend with GGML Integration
-✅ Transformer Architecture Implementation
-✅ Tokenization Module
-✅ MLX Infrastructure for Apple Silicon
-✅ CLI Arguments Parser
-✅ Basic Audio I/O
+Key components implemented:
+- ✅ Core Tensor System (basic operations, broadcasting)
+- ✅ CPU Backend with GGML Integration
+- ✅ SIMD Optimizations (matrix multiplication, activation functions)
+- ✅ Transformer Architecture Implementation
+- ✅ Tokenization Module with SentencePiece
+- ✅ CLI Arguments Parser
+- ✅ Basic Audio I/O
 
 Work in progress:
-🔄 PyTorch → MLX Weight Conversion
-🔄 Model Generation Pipeline
-🔄 Full Mimi Codec Integration
-🔄 Model Loading Infrastructure
+- 🔄 Advanced Tensor Operations
+- 🔄 GGML Quantization Support
+- 🔄 Model Generation Pipeline
+- 🔄 MLX Acceleration for Apple Silicon
+- 🔄 Thread Pool Improvements
 
 ## Contributing
 

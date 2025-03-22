@@ -19,6 +19,11 @@ file(GLOB TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp"
 )
 
+# Make sure test_thread_pool.cpp is included
+if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_thread_pool.cpp")
+    message(WARNING "test_thread_pool.cpp not found. Thread pool tests will not be included.")
+endif()
+
 # Create unit test executable
 add_executable(ccsm_unit_tests ${TEST_SOURCES})
 target_link_libraries(ccsm_unit_tests PRIVATE ccsm_core GTest::gtest)
@@ -32,9 +37,11 @@ add_executable(test_tokenizer
 target_link_libraries(test_tokenizer PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_tokenizer PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
-# Add SIMD optimization test
+# Add SIMD optimization tests
 add_executable(test_simd 
     ${CMAKE_CURRENT_SOURCE_DIR}/simd/test_simd.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/simd/test_simd_matmul.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/simd/test_simd_activation.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
 )
 target_link_libraries(test_simd PRIVATE ccsm_core GTest::gtest)

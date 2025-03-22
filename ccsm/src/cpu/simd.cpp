@@ -381,13 +381,58 @@ void softmax_avx_f32(float* output, const float* input, size_t n) {
 }
 
 void matrix_mul_avx_f32(float* result, const float* a, const float* b, size_t m, size_t k, size_t n) {
-    // Use scalar implementation for simplicity and correctness
-    // This is a basic matrix multiplication implementation
-    for (size_t i = 0; i < m; i++) {
-        for (size_t j = 0; j < n; j++) {
-            result[i * n + j] = 0.0f;
-            for (size_t l = 0; l < k; l++) {
-                result[i * n + j] += a[i * k + l] * b[l * n + j];
+    constexpr size_t BLOCK_SIZE_M = 32; // Adjust based on L1 cache size
+    constexpr size_t BLOCK_SIZE_N = 32; 
+    constexpr size_t BLOCK_SIZE_K = 32;
+    
+    // Initialize result matrix to zeros
+    for (size_t i = 0; i < m * n; i++) {
+        result[i] = 0.0f;
+    }
+    
+    // Cache-blocking matrix multiplication
+    for (size_t i0 = 0; i0 < m; i0 += BLOCK_SIZE_M) {
+        size_t i_end = std::min(i0 + BLOCK_SIZE_M, m);
+        
+        for (size_t j0 = 0; j0 < n; j0 += BLOCK_SIZE_N) {
+            size_t j_end = std::min(j0 + BLOCK_SIZE_N, n);
+            
+            for (size_t k0 = 0; k0 < k; k0 += BLOCK_SIZE_K) {
+                size_t k_end = std::min(k0 + BLOCK_SIZE_K, k);
+                
+                // Process blocks using AVX
+                for (size_t i = i0; i < i_end; i++) {
+                    for (size_t j = j0; j < j_end; j += 8) {
+                        if (j + 8 <= j_end) {
+                            // Load 8 elements from result (C matrix)
+                            __m256 vc = _mm256_loadu_ps(&result[i * n + j]);
+                            
+                            // Process inner dimension in chunks
+                            for (size_t l = k0; l < k_end; l++) {
+                                // Broadcast single element from A matrix
+                                __m256 va = _mm256_set1_ps(a[i * k + l]);
+                                
+                                // Load 8 elements from B matrix
+                                __m256 vb = _mm256_loadu_ps(&b[l * n + j]);
+                                
+                                // Multiply and accumulate: vc += va * vb
+                                vc = _mm256_add_ps(vc, _mm256_mul_ps(va, vb));
+                            }
+                            
+                            // Store result back to C matrix
+                            _mm256_storeu_ps(&result[i * n + j], vc);
+                        } else {
+                            // Handle remainder (< 8 columns)
+                            for (size_t j1 = j; j1 < j_end; j1++) {
+                                float sum = result[i * n + j1];
+                                for (size_t l = k0; l < k_end; l++) {
+                                    sum += a[i * k + l] * b[l * n + j1];
+                                }
+                                result[i * n + j1] = sum;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
