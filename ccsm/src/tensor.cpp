@@ -367,26 +367,161 @@ public:
         return ss.str();
     }
     
-    Tensor add(const Tensor& a, const Tensor& b) override {
-        // Handle scalar broadcasting for tensor + scalar operations
-        bool is_scalar_op = false;
-        DataType result_dtype = a.dtype();
-        std::vector<size_t> result_shape = a.shape();
+    // Validate tensor for NaN/Inf
+    template<typename T>
+    bool validate_tensor_values(const Tensor& tensor) {
+        if (!tensor.is_valid()) {
+            return false;
+        }
         
-        if (a.ndim() == 0) {
-            // a is scalar, b is tensor
-            result_shape = b.shape();
-            result_dtype = b.dtype();
-            is_scalar_op = true;
-        } else if (b.ndim() == 0) {
-            // b is scalar, a is tensor
-            is_scalar_op = true;
-        } else if (a.shape() != b.shape()) {
-            // Check for broadcasting compatibility between tensors
-            // For now, just handle exact shape matches
-            throw std::runtime_error("Shape mismatch for addition: " + 
-                                    shape_to_string(a.shape()) + " vs " + 
+        if (tensor.dtype() != DataType::F32 && tensor.dtype() != DataType::F16 && tensor.dtype() != DataType::BF16) {
+            // Only validate floating point tensors
+            return true;
+        }
+        
+        if (tensor.dtype() == DataType::F32) {
+            const float* data = static_cast<const float*>(tensor.data());
+            for (size_t i = 0; i < tensor.size(); i++) {
+                if (std::isnan(data[i]) || std::isinf(data[i])) {
+                    return false;
+                }
+            }
+        }
+        // For other float types, we'd need proper conversion
+        
+        return true;
+    }
+    
+    // Check if broadcasting is possible between two shapes
+    bool can_broadcast(const std::vector<size_t>& shape_a, const std::vector<size_t>& shape_b, 
+                       std::vector<size_t>& result_shape) {
+        // Handle scalar case
+        if (shape_a.empty() || shape_b.empty()) {
+            result_shape = shape_a.empty() ? shape_b : shape_a;
+            return true;
+        }
+        
+        // Get the number of dimensions of each tensor
+        size_t ndim_a = shape_a.size();
+        size_t ndim_b = shape_b.size();
+        
+        // Get the maximum number of dimensions
+        size_t max_ndim = std::max(ndim_a, ndim_b);
+        
+        // Resize result shape to maximum dimensions
+        result_shape.resize(max_ndim);
+        
+        // Check if broadcasting is possible and calculate the result shape
+        for (size_t i = 0; i < max_ndim; i++) {
+            size_t dim_a = (i < ndim_a) ? shape_a[ndim_a - 1 - i] : 1;
+            size_t dim_b = (i < ndim_b) ? shape_b[ndim_b - 1 - i] : 1;
+            
+            if (dim_a != dim_b && dim_a != 1 && dim_b != 1) {
+                return false; // Incompatible dimensions
+            }
+            
+            result_shape[max_ndim - 1 - i] = std::max(dim_a, dim_b);
+        }
+        
+        return true;
+    }
+    
+    // Map a linear index from the result tensor to the corresponding indices in input tensors,
+    // accounting for broadcasting rules.
+    void map_broadcast_indices(const std::vector<size_t>& shape_result, size_t linear_idx,
+                             const std::vector<size_t>& shape_a, const std::vector<size_t>& shape_b,
+                             size_t& idx_a, size_t& idx_b) {
+        if (shape_a.empty()) {
+            // A is scalar, just use index 0
+            idx_a = 0;
+            
+            // Map index for B (should be identical to result since B's shape == result shape)
+            idx_b = linear_idx;
+            return;
+        }
+        
+        if (shape_b.empty()) {
+            // B is scalar, just use index 0
+            idx_b = 0;
+            
+            // Map index for A (should be identical to result since A's shape == result shape)
+            idx_a = linear_idx;
+            return;
+        }
+        
+        // Get the dimensionality of each tensor
+        size_t ndim_result = shape_result.size();
+        size_t ndim_a = shape_a.size();
+        size_t ndim_b = shape_b.size();
+        
+        // Convert the linear index to a multi-dimensional index in the result tensor
+        std::vector<size_t> indices_result(ndim_result);
+        size_t remaining_idx = linear_idx;
+        
+        for (int i = ndim_result - 1; i >= 0; i--) {
+            indices_result[i] = remaining_idx % shape_result[i];
+            remaining_idx /= shape_result[i];
+        }
+        
+        // Map to indices in tensor A
+        size_t stride_a = 1;
+        idx_a = 0;
+        for (int i = ndim_a - 1; i >= 0; i--) {
+            int result_dim = i + (ndim_result - ndim_a); // Offset for dimensions
+            size_t dim_idx = (result_dim >= 0) ? indices_result[result_dim] : 0;
+            
+            // Handle broadcasting - if this dimension in A is 1, use index 0
+            if (shape_a[i] == 1) {
+                dim_idx = 0;
+            }
+            
+            idx_a += dim_idx * stride_a;
+            stride_a *= shape_a[i];
+        }
+        
+        // Map to indices in tensor B
+        size_t stride_b = 1;
+        idx_b = 0;
+        for (int i = ndim_b - 1; i >= 0; i--) {
+            int result_dim = i + (ndim_result - ndim_b); // Offset for dimensions
+            size_t dim_idx = (result_dim >= 0) ? indices_result[result_dim] : 0;
+            
+            // Handle broadcasting - if this dimension in B is 1, use index 0
+            if (shape_b[i] == 1) {
+                dim_idx = 0;
+            }
+            
+            idx_b += dim_idx * stride_b;
+            stride_b *= shape_b[i];
+        }
+    }
+    
+    Tensor add(const Tensor& a, const Tensor& b) override {
+        // Validate inputs
+        if (!a.is_valid() || !b.is_valid()) {
+            throw std::runtime_error("Cannot perform addition on invalid tensors");
+        }
+        
+        // Check for NaN/Inf values
+        if (!validate_tensor_values<float>(a) || !validate_tensor_values<float>(b)) {
+            throw std::runtime_error("Cannot perform addition on tensors with NaN or Inf values");
+        }
+        
+        // Determine result data type and shape with broadcasting
+        DataType result_dtype = a.dtype();
+        std::vector<size_t> result_shape;
+        bool is_scalar_op = (a.ndim() == 0 || b.ndim() == 0);
+        
+        // Check broadcasting compatibility
+        if (!can_broadcast(a.shape(), b.shape(), result_shape)) {
+            throw std::runtime_error("Cannot broadcast shapes for addition: " + 
+                                    shape_to_string(a.shape()) + " and " + 
                                     shape_to_string(b.shape()));
+        }
+        
+        // If one tensor is scalar, mark for special handling
+        if (a.ndim() == 0) {
+            result_dtype = b.dtype();
         }
         
         // Determine result data type
@@ -411,6 +546,7 @@ public:
             float* result_data = static_cast<float*>(result.data());
             
             if (is_scalar_op) {
+                // Optimized path for scalar operations
                 float scalar_val = a.ndim() == 0 ? *a_data : *b_data;
                 const float* tensor_data = a.ndim() == 0 ? b_data : a_data;
                 size_t size = result.size();
@@ -418,9 +554,20 @@ public:
                 for (size_t i = 0; i < size; i++) {
                     result_data[i] = tensor_data[i] + scalar_val;
                 }
-            } else {
-                for (size_t i = 0; i < a.size(); i++) {
+            } else if (a.shape() == b.shape()) {
+                // Fast path for identically shaped tensors
+                for (size_t i = 0; i < result.size(); i++) {
                     result_data[i] = a_data[i] + b_data[i];
+                }
+            } else {
+                // General broadcasting case
+                for (size_t i = 0; i < result.size(); i++) {
+                    // Map the result index to indices in the input tensors
+                    size_t idx_a, idx_b;
+                    map_broadcast_indices(result_shape, i, a.shape(), b.shape(), idx_a, idx_b);
+                    
+                    // Perform the operation using the mapped indices
+                    result_data[i] = a_data[idx_a] + b_data[idx_b];
                 }
             }
         } else {
@@ -434,25 +581,31 @@ public:
     }
     
     Tensor subtract(const Tensor& a, const Tensor& b) override {
-        // Handle scalar broadcasting for tensor - scalar operations
-        bool is_scalar_op = false;
-        DataType result_dtype = a.dtype();
-        std::vector<size_t> result_shape = a.shape();
+        // Validate inputs
+        if (!a.is_valid() || !b.is_valid()) {
+            throw std::runtime_error("Cannot perform subtraction on invalid tensors");
+        }
         
-        if (a.ndim() == 0) {
-            // a is scalar, b is tensor
-            result_shape = b.shape();
-            result_dtype = b.dtype();
-            is_scalar_op = true;
-        } else if (b.ndim() == 0) {
-            // b is scalar, a is tensor
-            is_scalar_op = true;
-        } else if (a.shape() != b.shape()) {
-            // Check for broadcasting compatibility between tensors
-            // For now, just handle exact shape matches
-            throw std::runtime_error("Shape mismatch for subtraction: " + 
-                                    shape_to_string(a.shape()) + " vs " + 
+        // Check for NaN/Inf values
+        if (!validate_tensor_values<float>(a) || !validate_tensor_values<float>(b)) {
+            throw std::runtime_error("Cannot perform subtraction on tensors with NaN or Inf values");
+        }
+        
+        // Determine result data type and shape with broadcasting
+        DataType result_dtype = a.dtype();
+        std::vector<size_t> result_shape;
+        bool is_scalar_op = (a.ndim() == 0 || b.ndim() == 0);
+        
+        // Check broadcasting compatibility
+        if (!can_broadcast(a.shape(), b.shape(), result_shape)) {
+            throw std::runtime_error("Cannot broadcast shapes for subtraction: " + 
+                                    shape_to_string(a.shape()) + " and " + 
                                     shape_to_string(b.shape()));
+        }
+        
+        // If one tensor is scalar, adjust result type
+        if (a.ndim() == 0) {
+            result_dtype = b.dtype();
         }
         
         // Determine result data type
@@ -477,6 +630,7 @@ public:
             float* result_data = static_cast<float*>(result.data());
             
             if (is_scalar_op) {
+                // Optimized path for scalar operations
                 if (a.ndim() == 0) {
                     // a is scalar, b is tensor: result = a - b
                     float scalar_val = *a_data;
@@ -494,10 +648,20 @@ public:
                         result_data[i] = a_data[i] - scalar_val;
                     }
                 }
-            } else {
-                // Element-wise subtraction
-                for (size_t i = 0; i < a.size(); i++) {
+            } else if (a.shape() == b.shape()) {
+                // Fast path for identically shaped tensors
+                for (size_t i = 0; i < result.size(); i++) {
                     result_data[i] = a_data[i] - b_data[i];
+                }
+            } else {
+                // General broadcasting case
+                for (size_t i = 0; i < result.size(); i++) {
+                    // Map the result index to indices in the input tensors
+                    size_t idx_a, idx_b;
+                    map_broadcast_indices(result_shape, i, a.shape(), b.shape(), idx_a, idx_b);
+                    
+                    // Perform the operation using the mapped indices
+                    result_data[i] = a_data[idx_a] - b_data[idx_b];
                 }
             }
         } else {
@@ -511,25 +675,31 @@ public:
     }
     
     Tensor multiply(const Tensor& a, const Tensor& b) override {
-        // Handle scalar broadcasting for tensor * scalar operations
-        bool is_scalar_op = false;
-        DataType result_dtype = a.dtype();
-        std::vector<size_t> result_shape = a.shape();
+        // Validate inputs
+        if (!a.is_valid() || !b.is_valid()) {
+            throw std::runtime_error("Cannot perform multiplication on invalid tensors");
+        }
         
-        if (a.ndim() == 0) {
-            // a is scalar, b is tensor
-            result_shape = b.shape();
-            result_dtype = b.dtype();
-            is_scalar_op = true;
-        } else if (b.ndim() == 0) {
-            // b is scalar, a is tensor
-            is_scalar_op = true;
-        } else if (a.shape() != b.shape()) {
-            // Check for broadcasting compatibility between tensors
-            // For now, just handle exact shape matches
-            throw std::runtime_error("Shape mismatch for multiplication: " + 
-                                    shape_to_string(a.shape()) + " vs " + 
+        // Check for NaN/Inf values
+        if (!validate_tensor_values<float>(a) || !validate_tensor_values<float>(b)) {
+            throw std::runtime_error("Cannot perform multiplication on tensors with NaN or Inf values");
+        }
+        
+        // Determine result data type and shape with broadcasting
+        DataType result_dtype = a.dtype();
+        std::vector<size_t> result_shape;
+        bool is_scalar_op = (a.ndim() == 0 || b.ndim() == 0);
+        
+        // Check broadcasting compatibility
+        if (!can_broadcast(a.shape(), b.shape(), result_shape)) {
+            throw std::runtime_error("Cannot broadcast shapes for multiplication: " + 
+                                    shape_to_string(a.shape()) + " and " + 
                                     shape_to_string(b.shape()));
+        }
+        
+        // If one tensor is scalar, adjust result type
+        if (a.ndim() == 0) {
+            result_dtype = b.dtype();
         }
         
         // Determine result data type
@@ -554,6 +724,7 @@ public:
             float* result_data = static_cast<float*>(result.data());
             
             if (is_scalar_op) {
+                // Optimized path for scalar operations
                 float scalar_val = a.ndim() == 0 ? *a_data : *b_data;
                 const float* tensor_data = a.ndim() == 0 ? b_data : a_data;
                 size_t size = result.size();
@@ -561,10 +732,20 @@ public:
                 for (size_t i = 0; i < size; i++) {
                     result_data[i] = tensor_data[i] * scalar_val;
                 }
-            } else {
-                // Element-wise multiplication
-                for (size_t i = 0; i < a.size(); i++) {
+            } else if (a.shape() == b.shape()) {
+                // Fast path for identically shaped tensors
+                for (size_t i = 0; i < result.size(); i++) {
                     result_data[i] = a_data[i] * b_data[i];
+                }
+            } else {
+                // General broadcasting case
+                for (size_t i = 0; i < result.size(); i++) {
+                    // Map the result index to indices in the input tensors
+                    size_t idx_a, idx_b;
+                    map_broadcast_indices(result_shape, i, a.shape(), b.shape(), idx_a, idx_b);
+                    
+                    // Perform the operation using the mapped indices
+                    result_data[i] = a_data[idx_a] * b_data[idx_b];
                 }
             }
         } else {
@@ -578,25 +759,31 @@ public:
     }
     
     Tensor divide(const Tensor& a, const Tensor& b) override {
-        // Handle scalar broadcasting for tensor / scalar operations
-        bool is_scalar_op = false;
-        DataType result_dtype = a.dtype();
-        std::vector<size_t> result_shape = a.shape();
+        // Validate inputs
+        if (!a.is_valid() || !b.is_valid()) {
+            throw std::runtime_error("Cannot perform division on invalid tensors");
+        }
         
-        if (a.ndim() == 0) {
-            // a is scalar, b is tensor
-            result_shape = b.shape();
-            result_dtype = b.dtype();
-            is_scalar_op = true;
-        } else if (b.ndim() == 0) {
-            // b is scalar, a is tensor
-            is_scalar_op = true;
-        } else if (a.shape() != b.shape()) {
-            // Check for broadcasting compatibility between tensors
-            // For now, just handle exact shape matches
-            throw std::runtime_error("Shape mismatch for division: " + 
-                                    shape_to_string(a.shape()) + " vs " + 
+        // Check for NaN/Inf values
+        if (!validate_tensor_values<float>(a) || !validate_tensor_values<float>(b)) {
+            throw std::runtime_error("Cannot perform division on tensors with NaN or Inf values");
+        }
+        
+        // Determine result data type and shape with broadcasting
+        DataType result_dtype = a.dtype();
+        std::vector<size_t> result_shape;
+        bool is_scalar_op = (a.ndim() == 0 || b.ndim() == 0);
+        
+        // Check broadcasting compatibility
+        if (!can_broadcast(a.shape(), b.shape(), result_shape)) {
+            throw std::runtime_error("Cannot broadcast shapes for division: " + 
+                                    shape_to_string(a.shape()) + " and " + 
                                     shape_to_string(b.shape()));
+        }
+        
+        // If one tensor is scalar, adjust result type
+        if (a.ndim() == 0) {
+            result_dtype = b.dtype();
         }
         
         // Determine result data type
@@ -620,37 +807,59 @@ public:
             float* b_data = static_cast<float*>(const_cast<void*>(b.data()));
             float* result_data = static_cast<float*>(result.data());
             
+            // Check for division by zero first
+            if (b.ndim() == 0) {
+                // b is scalar, check if it's zero
+                float scalar_val = *b_data;
+                if (scalar_val == 0 || std::abs(scalar_val) < 1e-10) {
+                    throw std::runtime_error("Division by zero or very small value (value=" + 
+                                           std::to_string(scalar_val) + ")");
+                }
+            } else {
+                // Check if any element in b is zero or near-zero
+                for (size_t i = 0; i < b.size(); i++) {
+                    if (b_data[i] == 0 || std::abs(b_data[i]) < 1e-10) {
+                        throw std::runtime_error("Division by zero or very small value at index " + 
+                                               std::to_string(i) + " (value=" + 
+                                               std::to_string(b_data[i]) + ")");
+                    }
+                }
+            }
+            
+            // Perform division
             if (is_scalar_op) {
+                // Optimized path for scalar operations
                 if (a.ndim() == 0) {
                     // a is scalar, b is tensor: result = a / b
                     float scalar_val = *a_data;
                     size_t size = result.size();
                     
                     for (size_t i = 0; i < size; i++) {
-                        if (b_data[i] == 0) {
-                            throw std::runtime_error("Division by zero");
-                        }
                         result_data[i] = scalar_val / b_data[i];
                     }
                 } else {
                     // b is scalar, a is tensor: result = a / b
                     float scalar_val = *b_data;
-                    if (scalar_val == 0) {
-                        throw std::runtime_error("Division by zero");
-                    }
-                    
                     size_t size = result.size();
+                    
                     for (size_t i = 0; i < size; i++) {
                         result_data[i] = a_data[i] / scalar_val;
                     }
                 }
-            } else {
-                // Element-wise division
-                for (size_t i = 0; i < a.size(); i++) {
-                    if (b_data[i] == 0) {
-                        throw std::runtime_error("Division by zero");
-                    }
+            } else if (a.shape() == b.shape()) {
+                // Fast path for identically shaped tensors
+                for (size_t i = 0; i < result.size(); i++) {
                     result_data[i] = a_data[i] / b_data[i];
+                }
+            } else {
+                // General broadcasting case
+                for (size_t i = 0; i < result.size(); i++) {
+                    // Map the result index to indices in the input tensors
+                    size_t idx_a, idx_b;
+                    map_broadcast_indices(result_shape, i, a.shape(), b.shape(), idx_a, idx_b);
+                    
+                    // Perform the operation using the mapped indices
+                    result_data[i] = a_data[idx_a] / b_data[idx_b];
                 }
             }
         } else {
@@ -664,6 +873,16 @@ public:
     }
     
     Tensor matmul(const Tensor& a, const Tensor& b) override {
+        // Validate inputs
+        if (!a.is_valid() || !b.is_valid()) {
+            throw std::runtime_error("Cannot perform matrix multiplication on invalid tensors");
+        }
+        
+        // Check for NaN/Inf values 
+        if (!validate_tensor_values<float>(a) || !validate_tensor_values<float>(b)) {
+            throw std::runtime_error("Cannot perform matrix multiplication on tensors with NaN or Inf values");
+        }
+        
         // Check for shape compatibility
         if (a.ndim() < 1 || b.ndim() < 1) {
             throw std::runtime_error("Tensors must have at least 1 dimension for matmul");
@@ -718,9 +937,20 @@ public:
         
         // Check for compatibility
         if (a_cols != b_rows) {
-            throw std::runtime_error("Incompatible dimensions for matrix multiplication: " +
-                                    shape_to_string(a.shape()) + " and " + shape_to_string(b.shape()) +
-                                    " (inner dims: " + std::to_string(a_cols) + " vs " + std::to_string(b_rows) + ")");
+            std::stringstream error_msg;
+            error_msg << "Incompatible dimensions for matrix multiplication: " 
+                      << shape_to_string(a.shape()) << " and " << shape_to_string(b.shape())
+                      << " (inner dimensions mismatch: " << a_cols << " vs " << b_rows << ")";
+                    
+            if (a_cols == b_cols && a_rows == b_rows) {
+                // Common mistake: trying to do element-wise multiplication with matmul
+                error_msg << ". Did you mean to use element-wise multiplication instead?";
+            } else if (a_cols == b_rows - 1 || a_cols == b_rows + 1) {
+                // Off-by-one error
+                error_msg << ". Looks like an off-by-one error in tensor dimensions.";
+            }
+            
+            throw std::runtime_error(error_msg.str());
         }
         
         // Calculate result shape

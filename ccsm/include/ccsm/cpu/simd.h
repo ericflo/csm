@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cmath>
 #include <cassert>
+#include <string>
 #include <algorithm>
 
 // CPU feature detection
@@ -55,6 +56,24 @@
 namespace ccsm {
 namespace simd {
 
+// SIMD implementation type - used for runtime detection
+enum class Implementation {
+    UNKNOWN,
+    SCALAR,
+    SSE2,
+    SSE41,
+    AVX,
+    AVX2,
+    AVX512,
+    NEON
+};
+
+// Get current active implementation
+Implementation get_active_implementation();
+
+// Get CPU capabilities as string for debugging
+std::string get_cpu_capabilities();
+
 // Detect CPU features at runtime
 struct CPUFeatures {
     bool avx512f = false;
@@ -69,114 +88,148 @@ struct CPUFeatures {
     static const CPUFeatures& get();
 };
 
+// Memory alignment utilities
+template <typename T>
+T* aligned_alloc(size_t n, size_t alignment) {
+    void* ptr = nullptr;
+#if defined(_MSC_VER)
+    ptr = _aligned_malloc(n * sizeof(T), alignment);
+#else
+    int result = posix_memalign(&ptr, alignment, n * sizeof(T));
+    if (result != 0) {
+        ptr = nullptr;
+    }
+#endif
+    return static_cast<T*>(ptr);
+}
+
+inline void aligned_free(void* ptr) {
+#if defined(_MSC_VER)
+    _aligned_free(ptr);
+#else
+    free(ptr);
+#endif
+}
+
+inline void* align_ptr(void* ptr, size_t alignment) {
+    uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+    uintptr_t aligned = (addr + alignment - 1) & ~(alignment - 1);
+    return reinterpret_cast<void*>(aligned);
+}
+
+// Vector comparison with mask
+template<typename T>
+void vector_gt_mask(T* result, const T* a, const T* b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        result[i] = (a[i] > b[i]) ? T(1) : T(0);
+    }
+}
+
 // Forward declarations for vectorized operations
 template<typename T>
-void vector_add(const T* a, const T* b, T* c, size_t n);
+void vector_add(T* result, const T* a, const T* b, size_t n);
 
 template<typename T>
-void vector_mul(const T* a, const T* b, T* c, size_t n);
+void vector_mul(T* result, const T* a, const T* b, size_t n);
 
 template<typename T>
-void vector_fma(const T* a, const T* b, const T* c, T* d, size_t n); // d = a * b + c
+void vector_fma(T* result, const T* a, const T* b, const T* c, size_t n); // result = a * b + c
 
 template<typename T>
-void vector_scale(const T* a, T scalar, T* b, size_t n);
+void vector_scale(T* result, const T* a, T scalar, size_t n);
 
 template<typename T>
 T vector_dot(const T* a, const T* b, size_t n);
 
 template<typename T>
-void matrix_mul(const T* a, const T* b, T* c, size_t m, size_t k, size_t n);
+void matrix_mul(T* result, const T* a, const T* b, size_t m, size_t k, size_t n);
 
 template<typename T>
-void softmax(const T* input, T* output, size_t n);
+void softmax(T* output, const T* input, size_t n);
 
 template<typename T>
-void relu(const T* input, T* output, size_t n);
+void relu(T* output, const T* input, size_t n);
 
 template<typename T>
-void silu(const T* input, T* output, size_t n);
-
-// Helper functions to choose the best implementation at runtime
-// These will be specialized based on architecture
+void silu(T* output, const T* input, size_t n);
 
 // Implementation details namespace (not part of public API)
 namespace detail {
 
 // Vector add implementations
 template<typename T>
-void vector_add_scalar(const T* a, const T* b, T* c, size_t n) {
+void vector_add_scalar(T* result, const T* a, const T* b, size_t n) {
     for (size_t i = 0; i < n; i++) {
-        c[i] = a[i] + b[i];
+        result[i] = a[i] + b[i];
     }
 }
 
 #if defined(CCSM_HAVE_AVX)
-void vector_add_avx_f32(const float* a, const float* b, float* c, size_t n);
+void vector_add_avx_f32(float* result, const float* a, const float* b, size_t n);
 #endif
 
 #if defined(CCSM_HAVE_AVX2)
-void vector_add_avx2_f32(const float* a, const float* b, float* c, size_t n);
+void vector_add_avx2_f32(float* result, const float* a, const float* b, size_t n);
 #endif
 
 #if defined(CCSM_HAVE_NEON)
-void vector_add_neon_f32(const float* a, const float* b, float* c, size_t n);
+void vector_add_neon_f32(float* result, const float* a, const float* b, size_t n);
 #endif
 
 // Vector multiply implementations
 template<typename T>
-void vector_mul_scalar(const T* a, const T* b, T* c, size_t n) {
+void vector_mul_scalar(T* result, const T* a, const T* b, size_t n) {
     for (size_t i = 0; i < n; i++) {
-        c[i] = a[i] * b[i];
+        result[i] = a[i] * b[i];
     }
 }
 
 #if defined(CCSM_HAVE_AVX)
-void vector_mul_avx_f32(const float* a, const float* b, float* c, size_t n);
+void vector_mul_avx_f32(float* result, const float* a, const float* b, size_t n);
 #endif
 
 #if defined(CCSM_HAVE_AVX2)
-void vector_mul_avx2_f32(const float* a, const float* b, float* c, size_t n);
+void vector_mul_avx2_f32(float* result, const float* a, const float* b, size_t n);
 #endif
 
 #if defined(CCSM_HAVE_NEON)
-void vector_mul_neon_f32(const float* a, const float* b, float* c, size_t n);
+void vector_mul_neon_f32(float* result, const float* a, const float* b, size_t n);
 #endif
 
 // Vector FMA implementations
 template<typename T>
-void vector_fma_scalar(const T* a, const T* b, const T* c, T* d, size_t n) {
+void vector_fma_scalar(T* result, const T* a, const T* b, const T* c, size_t n) {
     for (size_t i = 0; i < n; i++) {
-        d[i] = a[i] * b[i] + c[i];
+        result[i] = a[i] * b[i] + c[i];
     }
 }
 
 #if defined(CCSM_HAVE_AVX2)
-void vector_fma_avx2_f32(const float* a, const float* b, const float* c, float* d, size_t n);
+void vector_fma_avx2_f32(float* result, const float* a, const float* b, const float* c, size_t n);
 #endif
 
 #if defined(CCSM_HAVE_NEON)
-void vector_fma_neon_f32(const float* a, const float* b, const float* c, float* d, size_t n);
+void vector_fma_neon_f32(float* result, const float* a, const float* b, const float* c, size_t n);
 #endif
 
 // Vector scale implementations
 template<typename T>
-void vector_scale_scalar(const T* a, T scalar, T* b, size_t n) {
+void vector_scale_scalar(T* result, const T* a, T scalar, size_t n) {
     for (size_t i = 0; i < n; i++) {
-        b[i] = a[i] * scalar;
+        result[i] = a[i] * scalar;
     }
 }
 
 #if defined(CCSM_HAVE_AVX)
-void vector_scale_avx_f32(const float* a, float scalar, float* b, size_t n);
+void vector_scale_avx_f32(float* result, const float* a, float scalar, size_t n);
 #endif
 
 #if defined(CCSM_HAVE_AVX2)
-void vector_scale_avx2_f32(const float* a, float scalar, float* b, size_t n);
+void vector_scale_avx2_f32(float* result, const float* a, float scalar, size_t n);
 #endif
 
 #if defined(CCSM_HAVE_NEON)
-void vector_scale_neon_f32(const float* a, float scalar, float* b, size_t n);
+void vector_scale_neon_f32(float* result, const float* a, float scalar, size_t n);
 #endif
 
 // Vector dot implementations
@@ -201,35 +254,55 @@ float vector_dot_avx2_f32(const float* a, const float* b, size_t n);
 float vector_dot_neon_f32(const float* a, const float* b, size_t n);
 #endif
 
+// Vector comparison implementations
+template<typename T>
+void vector_gt_mask_scalar(T* result, const T* a, const T* b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        result[i] = (a[i] > b[i]) ? T(1) : T(0);
+    }
+}
+
+#if defined(CCSM_HAVE_AVX)
+void vector_gt_mask_avx_f32(float* result, const float* a, const float* b, size_t n);
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+void vector_gt_mask_neon_f32(float* result, const float* a, const float* b, size_t n);
+#endif
+
 // Matrix multiply implementations
 template<typename T>
-void matrix_mul_scalar(const T* a, const T* b, T* c, size_t m, size_t k, size_t n) {
+void matrix_mul_scalar(T* result, const T* a, const T* b, size_t m, size_t k, size_t n) {
+    // Initialize result to zero
+    for (size_t i = 0; i < m * n; i++) {
+        result[i] = 0;
+    }
+    
+    // Perform matrix multiplication
     for (size_t i = 0; i < m; i++) {
         for (size_t j = 0; j < n; j++) {
-            T sum = 0;
             for (size_t l = 0; l < k; l++) {
-                sum += a[i * k + l] * b[l * n + j];
+                result[i * n + j] += a[i * k + l] * b[l * n + j];
             }
-            c[i * n + j] = sum;
         }
     }
 }
 
 #if defined(CCSM_HAVE_AVX)
-void matrix_mul_avx_f32(const float* a, const float* b, float* c, size_t m, size_t k, size_t n);
+void matrix_mul_avx_f32(float* result, const float* a, const float* b, size_t m, size_t k, size_t n);
 #endif
 
 #if defined(CCSM_HAVE_AVX2)
-void matrix_mul_avx2_f32(const float* a, const float* b, float* c, size_t m, size_t k, size_t n);
+void matrix_mul_avx2_f32(float* result, const float* a, const float* b, size_t m, size_t k, size_t n);
 #endif
 
 #if defined(CCSM_HAVE_NEON)
-void matrix_mul_neon_f32(const float* a, const float* b, float* c, size_t m, size_t k, size_t n);
+void matrix_mul_neon_f32(float* result, const float* a, const float* b, size_t m, size_t k, size_t n);
 #endif
 
 // Softmax implementations
 template<typename T>
-void softmax_scalar(const T* input, T* output, size_t n) {
+void softmax_scalar(T* output, const T* input, size_t n) {
     // Find max for numerical stability
     T max_val = input[0];
     for (size_t i = 1; i < n; i++) {
@@ -251,155 +324,155 @@ void softmax_scalar(const T* input, T* output, size_t n) {
 }
 
 #if defined(CCSM_HAVE_AVX)
-void softmax_avx_f32(const float* input, float* output, size_t n);
+void softmax_avx_f32(float* output, const float* input, size_t n);
 #endif
 
 #if defined(CCSM_HAVE_NEON)
-void softmax_neon_f32(const float* input, float* output, size_t n);
+void softmax_neon_f32(float* output, const float* input, size_t n);
 #endif
 
 // ReLU implementations
 template<typename T>
-void relu_scalar(const T* input, T* output, size_t n) {
+void relu_scalar(T* output, const T* input, size_t n) {
     for (size_t i = 0; i < n; i++) {
         output[i] = std::max(T(0), input[i]);
     }
 }
 
 #if defined(CCSM_HAVE_AVX)
-void relu_avx_f32(const float* input, float* output, size_t n);
+void relu_avx_f32(float* output, const float* input, size_t n);
 #endif
 
 #if defined(CCSM_HAVE_NEON)
-void relu_neon_f32(const float* input, float* output, size_t n);
+void relu_neon_f32(float* output, const float* input, size_t n);
 #endif
 
 // SiLU implementations
 template<typename T>
-void silu_scalar(const T* input, T* output, size_t n) {
+void silu_scalar(T* output, const T* input, size_t n) {
     for (size_t i = 0; i < n; i++) {
         output[i] = input[i] / (1 + std::exp(-input[i]));
     }
 }
 
 #if defined(CCSM_HAVE_AVX)
-void silu_avx_f32(const float* input, float* output, size_t n);
+void silu_avx_f32(float* output, const float* input, size_t n);
 #endif
 
 #if defined(CCSM_HAVE_NEON)
-void silu_neon_f32(const float* input, float* output, size_t n);
+void silu_neon_f32(float* output, const float* input, size_t n);
 #endif
 
 } // namespace detail
 
 // Template specializations for float - these will dispatch to the best available implementation
 template<>
-inline void vector_add<float>(const float* a, const float* b, float* c, size_t n) {
+inline void vector_add<float>(float* result, const float* a, const float* b, size_t n) {
     const auto& features = CPUFeatures::get();
     
 #if defined(CCSM_HAVE_AVX2)
     if (features.avx2) {
-        detail::vector_add_avx2_f32(a, b, c, n);
+        detail::vector_add_avx2_f32(result, a, b, n);
         return;
     }
 #endif
 
 #if defined(CCSM_HAVE_AVX)
     if (features.avx) {
-        detail::vector_add_avx_f32(a, b, c, n);
+        detail::vector_add_avx_f32(result, a, b, n);
         return;
     }
 #endif
 
 #if defined(CCSM_HAVE_NEON)
     if (features.neon) {
-        detail::vector_add_neon_f32(a, b, c, n);
+        detail::vector_add_neon_f32(result, a, b, n);
         return;
     }
 #endif
 
     // Fallback to scalar implementation
-    detail::vector_add_scalar(a, b, c, n);
+    detail::vector_add_scalar(result, a, b, n);
 }
 
 template<>
-inline void vector_mul<float>(const float* a, const float* b, float* c, size_t n) {
+inline void vector_mul<float>(float* result, const float* a, const float* b, size_t n) {
     const auto& features = CPUFeatures::get();
     
 #if defined(CCSM_HAVE_AVX2)
     if (features.avx2) {
-        detail::vector_mul_avx2_f32(a, b, c, n);
+        detail::vector_mul_avx2_f32(result, a, b, n);
         return;
     }
 #endif
 
 #if defined(CCSM_HAVE_AVX)
     if (features.avx) {
-        detail::vector_mul_avx_f32(a, b, c, n);
+        detail::vector_mul_avx_f32(result, a, b, n);
         return;
     }
 #endif
 
 #if defined(CCSM_HAVE_NEON)
     if (features.neon) {
-        detail::vector_mul_neon_f32(a, b, c, n);
+        detail::vector_mul_neon_f32(result, a, b, n);
         return;
     }
 #endif
 
     // Fallback to scalar implementation
-    detail::vector_mul_scalar(a, b, c, n);
+    detail::vector_mul_scalar(result, a, b, n);
 }
 
 template<>
-inline void vector_fma<float>(const float* a, const float* b, const float* c, float* d, size_t n) {
+inline void vector_fma<float>(float* result, const float* a, const float* b, const float* c, size_t n) {
     const auto& features = CPUFeatures::get();
     
 #if defined(CCSM_HAVE_AVX2)
     if (features.avx2) {
-        detail::vector_fma_avx2_f32(a, b, c, d, n);
+        detail::vector_fma_avx2_f32(result, a, b, c, n);
         return;
     }
 #endif
 
 #if defined(CCSM_HAVE_NEON)
     if (features.neon) {
-        detail::vector_fma_neon_f32(a, b, c, d, n);
+        detail::vector_fma_neon_f32(result, a, b, c, n);
         return;
     }
 #endif
 
     // Fallback to scalar implementation
-    detail::vector_fma_scalar(a, b, c, d, n);
+    detail::vector_fma_scalar(result, a, b, c, n);
 }
 
 template<>
-inline void vector_scale<float>(const float* a, float scalar, float* b, size_t n) {
+inline void vector_scale<float>(float* result, const float* a, float scalar, size_t n) {
     const auto& features = CPUFeatures::get();
     
 #if defined(CCSM_HAVE_AVX2)
     if (features.avx2) {
-        detail::vector_scale_avx2_f32(a, scalar, b, n);
+        detail::vector_scale_avx2_f32(result, a, scalar, n);
         return;
     }
 #endif
 
 #if defined(CCSM_HAVE_AVX)
     if (features.avx) {
-        detail::vector_scale_avx_f32(a, scalar, b, n);
+        detail::vector_scale_avx_f32(result, a, scalar, n);
         return;
     }
 #endif
 
 #if defined(CCSM_HAVE_NEON)
     if (features.neon) {
-        detail::vector_scale_neon_f32(a, scalar, b, n);
+        detail::vector_scale_neon_f32(result, a, scalar, n);
         return;
     }
 #endif
 
     // Fallback to scalar implementation
-    detail::vector_scale_scalar(a, scalar, b, n);
+    detail::vector_scale_scalar(result, a, scalar, n);
 }
 
 template<>
@@ -429,98 +502,120 @@ inline float vector_dot<float>(const float* a, const float* b, size_t n) {
 }
 
 template<>
-inline void matrix_mul<float>(const float* a, const float* b, float* c, size_t m, size_t k, size_t n) {
+inline void vector_gt_mask<float>(float* result, const float* a, const float* b, size_t n) {
+    const auto& features = CPUFeatures::get();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (features.avx) {
+        detail::vector_gt_mask_avx_f32(result, a, b, n);
+        return;
+    }
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+    if (features.neon) {
+        detail::vector_gt_mask_neon_f32(result, a, b, n);
+        return;
+    }
+#endif
+
+    // Fallback to scalar implementation
+    detail::vector_gt_mask_scalar(result, a, b, n);
+}
+
+template<>
+inline void matrix_mul<float>(float* result, const float* a, const float* b, size_t m, size_t k, size_t n) {
     const auto& features = CPUFeatures::get();
     
 #if defined(CCSM_HAVE_AVX2)
     if (features.avx2) {
-        detail::matrix_mul_avx2_f32(a, b, c, m, k, n);
+        detail::matrix_mul_avx2_f32(result, a, b, m, k, n);
         return;
     }
 #endif
 
 #if defined(CCSM_HAVE_AVX)
     if (features.avx) {
-        detail::matrix_mul_avx_f32(a, b, c, m, k, n);
+        detail::matrix_mul_avx_f32(result, a, b, m, k, n);
         return;
     }
 #endif
 
 #if defined(CCSM_HAVE_NEON)
     if (features.neon) {
-        detail::matrix_mul_neon_f32(a, b, c, m, k, n);
+        detail::matrix_mul_neon_f32(result, a, b, m, k, n);
         return;
     }
 #endif
 
     // Fallback to scalar implementation
-    detail::matrix_mul_scalar(a, b, c, m, k, n);
+    detail::matrix_mul_scalar(result, a, b, m, k, n);
 }
 
 template<>
-inline void softmax<float>(const float* input, float* output, size_t n) {
+inline void softmax<float>(float* output, const float* input, size_t n) {
     const auto& features = CPUFeatures::get();
     
 #if defined(CCSM_HAVE_AVX)
     if (features.avx) {
-        detail::softmax_avx_f32(input, output, n);
+        detail::softmax_avx_f32(output, input, n);
         return;
     }
 #endif
 
 #if defined(CCSM_HAVE_NEON)
     if (features.neon) {
-        detail::softmax_neon_f32(input, output, n);
+        detail::softmax_neon_f32(output, input, n);
         return;
     }
 #endif
 
     // Fallback to scalar implementation
-    detail::softmax_scalar(input, output, n);
+    detail::softmax_scalar(output, input, n);
 }
 
 template<>
-inline void relu<float>(const float* input, float* output, size_t n) {
+inline void relu<float>(float* output, const float* input, size_t n) {
     const auto& features = CPUFeatures::get();
     
 #if defined(CCSM_HAVE_AVX)
     if (features.avx) {
-        detail::relu_avx_f32(input, output, n);
+        detail::relu_avx_f32(output, input, n);
         return;
     }
 #endif
 
 #if defined(CCSM_HAVE_NEON)
     if (features.neon) {
-        detail::relu_neon_f32(input, output, n);
+        detail::relu_neon_f32(output, input, n);
         return;
     }
 #endif
 
     // Fallback to scalar implementation
-    detail::relu_scalar(input, output, n);
+    detail::relu_scalar(output, input, n);
 }
 
 template<>
-inline void silu<float>(const float* input, float* output, size_t n) {
+inline void silu<float>(float* output, const float* input, size_t n) {
     const auto& features = CPUFeatures::get();
     
 #if defined(CCSM_HAVE_AVX)
     if (features.avx) {
-        detail::silu_avx_f32(input, output, n);
+        detail::silu_avx_f32(output, input, n);
         return;
     }
 #endif
 
 #if defined(CCSM_HAVE_NEON)
     if (features.neon) {
-        detail::silu_neon_f32(input, output, n);
+        detail::silu_neon_f32(output, input, n);
         return;
     }
 #endif
 
     // Fallback to scalar implementation
-    detail::silu_scalar(input, output, n);
+    detail::silu_scalar(output, input, n);
 }
 
 // Cache-aware memory layout utilities

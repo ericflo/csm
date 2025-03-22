@@ -134,7 +134,7 @@ namespace detail {
 // AVX implementations
 // -------------------------------------------------------------------------
 
-#if defined(CCSM_HAVE_AVX)
+#if defined(CCSM_HAVE_AVX) && defined(__AVX__)
 
 void vector_gt_mask_avx_f32(float* result, const float* a, const float* b, size_t n) {
     size_t i = 0;
@@ -251,18 +251,8 @@ float vector_dot_avx_f32(const float* a, const float* b, size_t n) {
 }
 
 void relu_avx_f32(float* output, const float* input, size_t n) {
-    size_t i = 0;
-    __m256 vzero = _mm256_setzero_ps();
-    
-    // Process 8 elements at a time using AVX
-    for (; i + 7 < n; i += 8) {
-        __m256 vin = _mm256_loadu_ps(input + i);
-        __m256 vout = _mm256_max_ps(vzero, vin);
-        _mm256_storeu_ps(output + i, vout);
-    }
-    
-    // Process remaining elements
-    for (; i < n; i++) {
+    // Use scalar implementation for simplicity
+    for (size_t i = 0; i < n; i++) {
         output[i] = std::max(0.0f, input[i]);
     }
 }
@@ -316,104 +306,29 @@ void softmax_avx_f32(float* output, const float* input, size_t n) {
         max_val = std::max(max_val, input[i]);
     }
     
-    __m256 vmax = _mm256_set1_ps(max_val);
-    __m256 vsum = _mm256_setzero_ps();
-    
-    size_t i = 0;
-    
-    // First pass: compute exp(x - max) for each element
-    for (; i + 7 < n; i += 8) {
-        __m256 vin = _mm256_loadu_ps(input + i);
-        __m256 vcentered = _mm256_sub_ps(vin, vmax);
-        
-        // Approximate exp using polynomial or other method
-        // This is a simplified approximation for illustration
-        __m256 vexp = _mm256_set1_ps(1.0f);
-        __m256 vtmp = _mm256_set1_ps(1.0f);
-        __m256 vfac = _mm256_set1_ps(1.0f);
-        
-        for (int j = 1; j <= 6; j++) {
-            vfac = _mm256_mul_ps(vfac, _mm256_set1_ps(1.0f / j));
-            vtmp = _mm256_mul_ps(vtmp, vcentered);
-            __m256 vterm = _mm256_mul_ps(vtmp, vfac);
-            vexp = _mm256_add_ps(vexp, vterm);
-        }
-        
-        _mm256_storeu_ps(output + i, vexp);
-        vsum = _mm256_add_ps(vsum, vexp);
-    }
-    
-    // Process any remaining elements
-    float sum_scalar = 0.0f;
-    for (; i < n; i++) {
+    // Just use scalar implementation for simplicity and correctness
+    // Calculate exp(x - max) for all inputs
+    float sum = 0.0f;
+    for (size_t i = 0; i < n; i++) {
         output[i] = std::exp(input[i] - max_val);
-        sum_scalar += output[i];
+        sum += output[i];
     }
     
-    // Horizontal sum of vsum
-    __m128 sum128 = _mm_add_ps(_mm256_extractf128_ps(vsum, 0), _mm256_extractf128_ps(vsum, 1));
-    __m128 sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
-    __m128 sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 0x55));
-    float sum = _mm_cvtss_f32(sum32) + sum_scalar;
-    
-    // Second pass: normalize
-    __m256 vinv_sum = _mm256_set1_ps(1.0f / sum);
-    
-    i = 0;
-    for (; i + 7 < n; i += 8) {
-        __m256 vout = _mm256_loadu_ps(output + i);
-        vout = _mm256_mul_ps(vout, vinv_sum);
-        _mm256_storeu_ps(output + i, vout);
-    }
-    
-    // Normalize remaining elements
-    for (; i < n; i++) {
-        output[i] /= sum;
+    // Normalize with 1/sum
+    float inv_sum = 1.0f / sum;
+    for (size_t i = 0; i < n; i++) {
+        output[i] *= inv_sum;
     }
 }
 
 void matrix_mul_avx_f32(float* result, const float* a, const float* b, size_t m, size_t k, size_t n) {
-    // Simple AVX implementation of matrix multiplication
-    // For production use, consider using a highly optimized library like OpenBLAS
+    // Use scalar implementation for simplicity and correctness
+    // This is a basic matrix multiplication implementation
     for (size_t i = 0; i < m; i++) {
         for (size_t j = 0; j < n; j++) {
             result[i * n + j] = 0.0f;
-        }
-        
-        for (size_t l = 0; l < k; l += 8) {
-            size_t kRemaining = std::min(size_t(8), k - l);
-            if (kRemaining < 8) {
-                // Handle edge case with scalar code
-                for (size_t j = 0; j < n; j++) {
-                    for (size_t lOff = 0; lOff < kRemaining; lOff++) {
-                        result[i * n + j] += a[i * k + l + lOff] * b[(l + lOff) * n + j];
-                    }
-                }
-            } else {
-                // Process full AVX block
-                for (size_t j = 0; j < n; j++) {
-                    __m256 vsum = _mm256_setzero_ps();
-                    
-                    // Load 8 elements from row i of A starting at column l
-                    __m256 va = _mm256_loadu_ps(&a[i * k + l]);
-                    
-                    // Load 8 elements from column j of B starting at row l
-                    // Note: This assumes B is row-major; for column-major, different addressing would be used
-                    float bCol[8];
-                    for (int lOff = 0; lOff < 8; lOff++) {
-                        bCol[lOff] = b[(l + lOff) * n + j];
-                    }
-                    __m256 vb = _mm256_loadu_ps(bCol);
-                    
-                    // Compute dot product and add to result[i, j]
-                    vsum = _mm256_mul_ps(va, vb);
-                    
-                    // Horizontal sum
-                    __m128 sum128 = _mm_add_ps(_mm256_extractf128_ps(vsum, 0), _mm256_extractf128_ps(vsum, 1));
-                    __m128 sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
-                    __m128 sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 0x55));
-                    result[i * n + j] += _mm_cvtss_f32(sum32);
-                }
+            for (size_t l = 0; l < k; l++) {
+                result[i * n + j] += a[i * k + l] * b[l * n + j];
             }
         }
     }
@@ -425,7 +340,7 @@ void matrix_mul_avx_f32(float* result, const float* a, const float* b, size_t m,
 // AVX2 implementations
 // -------------------------------------------------------------------------
 
-#if defined(CCSM_HAVE_AVX2)
+#if defined(CCSM_HAVE_AVX2) && defined(__AVX2__)
 
 void vector_add_avx2_f32(const float* a, const float* b, float* c, size_t n) {
     // AVX2 doesn't add much over AVX for basic float operations like add
@@ -554,7 +469,7 @@ void matrix_mul_avx2_f32(const float* a, const float* b, float* c, size_t m, siz
 // NEON implementations
 // -------------------------------------------------------------------------
 
-#if defined(CCSM_HAVE_NEON)
+#if defined(CCSM_HAVE_NEON) && defined(__ARM_NEON)
 
 void vector_gt_mask_neon_f32(float* result, const float* a, const float* b, size_t n) {
     size_t i = 0;

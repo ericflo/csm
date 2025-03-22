@@ -128,48 +128,87 @@ private:
 
 // Mock context for testing
 class MockContext : public Context {
+private:
+    // Check if broadcasting is possible between two shapes
+    bool can_broadcast(const std::vector<size_t>& shape_a, const std::vector<size_t>& shape_b, 
+                       std::vector<size_t>& result_shape) {
+        // Handle scalar case
+        if (shape_a.empty() || shape_b.empty()) {
+            result_shape = shape_a.empty() ? shape_b : shape_a;
+            return true;
+        }
+        
+        // Get the number of dimensions of each tensor
+        size_t ndim_a = shape_a.size();
+        size_t ndim_b = shape_b.size();
+        
+        // Get the maximum number of dimensions
+        size_t max_ndim = std::max(ndim_a, ndim_b);
+        
+        // Resize result shape to maximum dimensions
+        result_shape.resize(max_ndim);
+        
+        // Check if broadcasting is possible and calculate the result shape
+        for (size_t i = 0; i < max_ndim; i++) {
+            size_t dim_a = (i < ndim_a) ? shape_a[ndim_a - 1 - i] : 1;
+            size_t dim_b = (i < ndim_b) ? shape_b[ndim_b - 1 - i] : 1;
+            
+            if (dim_a != dim_b && dim_a != 1 && dim_b != 1) {
+                return false; // Incompatible dimensions
+            }
+            
+            result_shape[max_ndim - 1 - i] = std::max(dim_a, dim_b);
+        }
+        
+        return true;
+    }
+
 public:
     Tensor add(const Tensor& a, const Tensor& b) override {
-        // Ensure shapes match
-        if (a.shape() != b.shape()) {
+        // Check for broadcasting compatibility
+        std::vector<size_t> result_shape;
+        if (!can_broadcast(a.shape(), b.shape(), result_shape)) {
             throw std::runtime_error("Shape mismatch for addition");
         }
         
-        // Create result tensor
-        auto result = std::make_shared<MockTensorImpl>(a.shape(), a.dtype());
+        // Create result tensor with broadcasted shape
+        auto result = std::make_shared<MockTensorImpl>(result_shape, a.dtype());
         return Tensor(result);
     }
     
     Tensor subtract(const Tensor& a, const Tensor& b) override {
-        // Ensure shapes match
-        if (a.shape() != b.shape()) {
+        // Check for broadcasting compatibility
+        std::vector<size_t> result_shape;
+        if (!can_broadcast(a.shape(), b.shape(), result_shape)) {
             throw std::runtime_error("Shape mismatch for subtraction");
         }
         
-        // Create result tensor
-        auto result = std::make_shared<MockTensorImpl>(a.shape(), a.dtype());
+        // Create result tensor with broadcasted shape
+        auto result = std::make_shared<MockTensorImpl>(result_shape, a.dtype());
         return Tensor(result);
     }
     
     Tensor multiply(const Tensor& a, const Tensor& b) override {
-        // Ensure shapes match
-        if (a.shape() != b.shape()) {
+        // Check for broadcasting compatibility
+        std::vector<size_t> result_shape;
+        if (!can_broadcast(a.shape(), b.shape(), result_shape)) {
             throw std::runtime_error("Shape mismatch for multiplication");
         }
         
-        // Create result tensor
-        auto result = std::make_shared<MockTensorImpl>(a.shape(), a.dtype());
+        // Create result tensor with broadcasted shape
+        auto result = std::make_shared<MockTensorImpl>(result_shape, a.dtype());
         return Tensor(result);
     }
     
     Tensor divide(const Tensor& a, const Tensor& b) override {
-        // Ensure shapes match
-        if (a.shape() != b.shape()) {
+        // Check for broadcasting compatibility
+        std::vector<size_t> result_shape;
+        if (!can_broadcast(a.shape(), b.shape(), result_shape)) {
             throw std::runtime_error("Shape mismatch for division");
         }
         
-        // Create result tensor
-        auto result = std::make_shared<MockTensorImpl>(a.shape(), a.dtype());
+        // Create result tensor with broadcasted shape
+        auto result = std::make_shared<MockTensorImpl>(result_shape, a.dtype());
         return Tensor(result);
     }
     
@@ -508,6 +547,48 @@ TEST_F(TensorTest, ContextOperations) {
     
     // Check backend name
     EXPECT_EQ(context->backend(), "mock");
+}
+
+// Test tensor broadcasting operations
+TEST_F(TensorTest, TensorBroadcasting) {
+    // Create tensors with different shapes
+    Tensor scalar = test_helpers::createMockOnes({}, default_dtype);         // scalar
+    Tensor vector = test_helpers::createMockOnes({5}, default_dtype);        // 1D
+    Tensor matrix = test_helpers::createMockOnes({3, 4}, default_dtype);     // 2D
+    Tensor tensor3d = test_helpers::createMockOnes({2, 3, 4}, default_dtype); // 3D
+    
+    // Test scalar broadcasting
+    Tensor result1 = context->add(scalar, vector);
+    EXPECT_TRUE(result1.is_valid());
+    EXPECT_EQ(result1.shape(), vector.shape());
+    
+    Tensor result2 = context->multiply(scalar, matrix);
+    EXPECT_TRUE(result2.is_valid());
+    EXPECT_EQ(result2.shape(), matrix.shape());
+    
+    Tensor result3 = context->subtract(tensor3d, scalar);
+    EXPECT_TRUE(result3.is_valid());
+    EXPECT_EQ(result3.shape(), tensor3d.shape());
+    
+    // Test broadcasting 1D with 2D
+    Tensor row_vector = test_helpers::createMockOnes({1, 4}, default_dtype);   // shape [1, 4]
+    Tensor result4 = context->add(row_vector, matrix);  // should broadcast to [3, 4]
+    EXPECT_TRUE(result4.is_valid());
+    EXPECT_EQ(result4.shape(), matrix.shape());
+    
+    Tensor col_vector = test_helpers::createMockOnes({3, 1}, default_dtype);   // shape [3, 1]
+    Tensor result5 = context->multiply(col_vector, matrix);  // should broadcast to [3, 4]
+    EXPECT_TRUE(result5.is_valid());
+    EXPECT_EQ(result5.shape(), matrix.shape());
+    
+    // Test broadcasting 2D with 3D
+    Tensor result6 = context->add(matrix, tensor3d);  // should broadcast to [2, 3, 4]
+    EXPECT_TRUE(result6.is_valid());
+    EXPECT_EQ(result6.shape(), tensor3d.shape());
+    
+    // Test incompatible shapes (should trigger exception)
+    Tensor incompatible = test_helpers::createMockOnes({5, 5}, default_dtype);  // shape [5, 5]
+    EXPECT_THROW(context->add(matrix, incompatible), std::runtime_error);  // shapes [3, 4] and [5, 5] aren't compatible
 }
 
 // Test tensor backend conversion
