@@ -342,8 +342,8 @@ TEST_F(GGMLTensorTest, ErrorHandling) {
     EXPECT_THROW(a.shape(5), std::out_of_range); // Dimension out of range
 }
 
-// Test tensor allocation without using ggml_graph_compute_with_ctx
-TEST_F(GGMLTensorTest, AllocationOnly) {
+// Test tensor allocation and ggml_graph_compute_with_ctx
+TEST_F(GGMLTensorTest, AllocationAndComputation) {
     // Test tensor allocation
     int64_t dims[3] = {2, 3, 4};
     struct ggml_tensor* tensor = context->alloc_tensor(GGML_TYPE_F32, 3, dims);
@@ -361,7 +361,39 @@ TEST_F(GGMLTensorTest, AllocationOnly) {
     EXPECT_TRUE(c.is_valid());
     EXPECT_EQ(c.size(), 5);
     
-    // GGML context will handle cleanup when the context is freed
+    // Test graph computation (using ggml_graph_compute_with_ctx)
+    struct ggml_cgraph* graph = ggml_new_graph(context->ggml_ctx());
+    EXPECT_NE(graph, nullptr);
+    
+    // Add nodes to the graph
+    struct ggml_tensor* a_tensor = static_cast<GGMLTensorImpl*>(a.impl().get())->ggml_tensor();
+    struct ggml_tensor* b_tensor = static_cast<GGMLTensorImpl*>(b.impl().get())->ggml_tensor();
+    
+    struct ggml_tensor* op_tensor = ggml_add(context->ggml_ctx(), a_tensor, b_tensor);
+    EXPECT_NE(op_tensor, nullptr);
+    
+    ggml_build_forward_expand(graph, op_tensor);
+    
+    // Compute the graph using our new implementation
+    try {
+        context->compute(graph);
+        
+        // Verify computation was successful
+        float* op_data = static_cast<float*>(op_tensor->data);
+        EXPECT_NE(op_data, nullptr);
+        
+        // Expected values: zeros + ones = ones
+        for (int i = 0; i < 5; i++) {
+            EXPECT_FLOAT_EQ(op_data[i], 1.0f);
+        }
+        
+    } catch (const std::exception& e) {
+        ADD_FAILURE() << "Graph computation failed: " << e.what();
+    }
+    
+    // GGML context owns the graph, no need to free it separately
+    
+    // GGML context will handle tensor cleanup when the context is freed
 }
 
 // New: Test performance and thread pool integration

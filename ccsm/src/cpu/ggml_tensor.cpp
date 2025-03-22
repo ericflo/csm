@@ -896,18 +896,31 @@ void GGMLContext::compute(struct ggml_cgraph* graph) {
     // Use thread pool for parallel computation
     int n_threads = static_cast<int>(global_thread_pool().size());
     
-    // Since we can't directly access the graph nodes, and don't have direct
-    // graph compute functions available, we'll just use the build forward pass
-    // and let GGML handle the computation internally
+    // Check if graph is valid
+    if (!graph) {
+        throw std::runtime_error("Null graph passed to compute");
+    }
+    
+    // Compute the graph using ggml_graph_compute_with_ctx if available
+    ggml_graph_compute_with_ctx(ctx_, graph, n_threads);
+}
+
+// Additional method to compute graph with a specific context
+void GGMLContext::ggml_graph_compute_with_ctx(struct ggml_context* ctx, struct ggml_cgraph* graph, int n_threads) {
+    if (!ctx || !graph) {
+        throw std::runtime_error("Invalid context or graph");
+    }
+    
+    // Build and compute the forward pass
     int n_nodes = ggml_graph_n_nodes(graph);
     if (n_nodes > 0) {
         struct ggml_tensor* last_node = ggml_graph_node(graph, n_nodes - 1);
         if (last_node) {
-            // Build forward pass - this will compute the graph
+            // Build forward pass
             ggml_build_forward_expand(graph, last_node);
             
-            // The GGML graph seems to be computed automatically when built
-            // We don't need to do anything else here
+            // Compute graph
+            ggml_graph_compute_with_ctx(ctx, graph, n_threads);
         }
     }
 }

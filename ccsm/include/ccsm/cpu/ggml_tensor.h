@@ -93,6 +93,9 @@ public:
     // Compute the graph
     void compute(struct ggml_cgraph* graph);
     
+    // Implementation of the missing ggml_graph_compute_with_ctx function
+    void ggml_graph_compute_with_ctx(struct ggml_context* ctx, struct ggml_cgraph* graph, int n_threads);
+    
 private:
     struct ggml_context* ctx_;
     
