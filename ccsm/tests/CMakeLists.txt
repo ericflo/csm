@@ -42,6 +42,7 @@ add_executable(test_simd
     ${CMAKE_CURRENT_SOURCE_DIR}/simd/test_simd.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/simd/test_simd_matmul.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/simd/test_simd_activation.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/simd/test_simd_fused.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
 )
 target_link_libraries(test_simd PRIVATE ccsm_core GTest::gtest)

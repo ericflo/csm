@@ -1713,6 +1713,421 @@ void matrix_mul_neon_f32(float* c, const float* a, const float* b, size_t m, siz
 
 #endif // CCSM_HAVE_NEON
 
+//
+// Fused Operation Implementations
+//
+
+#if defined(CCSM_HAVE_AVX)
+// AVX approximation of exponential function
+// Using a fast polynomial approximation for exp(x)
+static inline __m256 exp256_ps(__m256 x) {
+    // Clamp the input to prevent overflow/underflow
+    x = _mm256_min_ps(_mm256_max_ps(x, _mm256_set1_ps(-88.0f)), _mm256_set1_ps(88.0f));
+    
+    // Constants for the polynomial approximation
+    const __m256 vlog2e = _mm256_set1_ps(1.442695f);       // log2(e)
+    const __m256 vone = _mm256_set1_ps(1.0f);
+    const __m256 vc0 = _mm256_set1_ps(0.99992522f);
+    const __m256 vc1 = _mm256_set1_ps(0.69583354f);
+    const __m256 vc2 = _mm256_set1_ps(0.22606716f);
+    const __m256 vc3 = _mm256_set1_ps(0.07944154f);
+    const __m256 vc4 = _mm256_set1_ps(0.01386268f);
+    
+    // Scale by log2(e)
+    __m256 z = _mm256_mul_ps(x, vlog2e);
+    
+    // Round to nearest integer
+    __m256 floor_x = _mm256_floor_ps(z);
+    
+    // Compute 2^i
+    __m256i emm0 = _mm256_cvttps_epi32(floor_x);
+    emm0 = _mm256_add_epi32(emm0, _mm256_set1_epi32(127));
+    emm0 = _mm256_slli_epi32(emm0, 23);
+    __m256 pow2i = _mm256_castsi256_ps(emm0);
+    
+    // Compute fractional part
+    __m256 frac = _mm256_sub_ps(z, floor_x);
+    
+    // Polynomial approximation of 2^frac
+    __m256 poly = _mm256_add_ps(vc4, _mm256_mul_ps(frac, vc3));
+    poly = _mm256_add_ps(poly, _mm256_mul_ps(frac, vc2));
+    poly = _mm256_add_ps(poly, _mm256_mul_ps(frac, vc1));
+    poly = _mm256_add_ps(poly, _mm256_mul_ps(frac, vc0));
+    poly = _mm256_add_ps(poly, vone);
+    
+    // Combine: 2^i * 2^frac
+    return _mm256_mul_ps(pow2i, poly);
+}
+
+void fused_rms_norm_silu_avx_f32(float* output, const float* input, const float* weight, float epsilon, size_t n) {
+    // Constants needed for AVX operations
+    const __m256 vzero = _mm256_setzero_ps();
+    const __m256 vones = _mm256_set1_ps(1.0f);
+    const __m256 vepsilon = _mm256_set1_ps(epsilon);
+    const __m256 vinv_n = _mm256_set1_ps(1.0f / n);
+    
+    // First pass: calculate sum of squares
+    __m256 vsum_sq = _mm256_setzero_ps();
+    
+    // Process 8 elements at a time using AVX
+    size_t i = 0;
+    for (; i + 7 < n; i += 8) {
+        __m256 vin = _mm256_loadu_ps(&input[i]);
+        __m256 vsquared = _mm256_mul_ps(vin, vin);
+        vsum_sq = _mm256_add_ps(vsum_sq, vsquared);
+    }
+    
+    // Reduce vsum_sq to a single value
+    // Horizontal sum of 8 floats in avx register
+    __m128 vlow = _mm256_castps256_ps128(vsum_sq);
+    __m128 vhigh = _mm256_extractf128_ps(vsum_sq, 1);
+    __m128 vsum = _mm_add_ps(vlow, vhigh);
+    __m128 vshuf = _mm_movehdup_ps(vsum);        // Broadcast elements 1,3 to 0,2
+    __m128 vshufs = _mm_add_ps(vsum, vshuf);     // Add pairs
+    __m128 vshuf2 = _mm_movehl_ps(vshuf, vshufs); // High half -> low half
+    __m128 vsums = _mm_add_ss(vshufs, vshuf2);   // Add remaining elements
+    float sum_sq = _mm_cvtss_f32(vsums);
+    
+    // Process any remaining elements
+    for (; i < n; i++) {
+        sum_sq += input[i] * input[i];
+    }
+    
+    // Calculate normalization factor: 1 / sqrt(sum_sq / n + epsilon)
+    float inv_rms = 1.0f / std::sqrt(sum_sq / n + epsilon);
+    __m256 vinv_rms = _mm256_set1_ps(inv_rms);
+    
+    // Second pass: normalize each element, apply weight, and SiLU activation
+    i = 0;
+    for (; i + 7 < n; i += 8) {
+        // Load input and weights
+        __m256 vin = _mm256_loadu_ps(&input[i]);
+        __m256 vw = _mm256_loadu_ps(&weight[i]);
+        
+        // Apply normalization and weights
+        __m256 vnormalized = _mm256_mul_ps(_mm256_mul_ps(vin, vinv_rms), vw);
+        
+        // Apply SiLU activation: x * sigmoid(x)
+        // Compute sigmoid using optimized approximation: 1 / (1 + exp(-x))
+        __m256 vneg = _mm256_sub_ps(vzero, vnormalized);
+        __m256 vexp_neg = exp256_ps(vneg);
+        __m256 vdenom = _mm256_add_ps(vones, vexp_neg);
+        __m256 vsigmoid = _mm256_div_ps(vones, vdenom);
+        
+        // Final SiLU: x * sigmoid(x)
+        __m256 vout = _mm256_mul_ps(vnormalized, vsigmoid);
+        
+        // Store result
+        _mm256_storeu_ps(&output[i], vout);
+    }
+    
+    // Process remaining elements
+    for (; i < n; i++) {
+        float normalized = input[i] * inv_rms * weight[i];
+        output[i] = normalized / (1.0f + std::exp(-normalized)) * normalized;
+    }
+}
+
+void fused_layer_norm_relu_avx_f32(float* output, const float* input, const float* weight, const float* bias, float epsilon, size_t n) {
+    // Constants needed for AVX operations
+    const __m256 vzero = _mm256_setzero_ps();
+    const __m256 vepsilon = _mm256_set1_ps(epsilon);
+    const __m256 vinv_n = _mm256_set1_ps(1.0f / n);
+    
+    // First pass: calculate mean
+    __m256 vsum = _mm256_setzero_ps();
+    
+    // Process 8 elements at a time using AVX
+    size_t i = 0;
+    for (; i + 7 < n; i += 8) {
+        __m256 vin = _mm256_loadu_ps(&input[i]);
+        vsum = _mm256_add_ps(vsum, vin);
+    }
+    
+    // Horizontal sum of vsum to get total sum
+    __m128 vlow = _mm256_castps256_ps128(vsum);
+    __m128 vhigh = _mm256_extractf128_ps(vsum, 1);
+    __m128 vsum128 = _mm_add_ps(vlow, vhigh);
+    __m128 vshuf = _mm_movehdup_ps(vsum128);     // Broadcast elements 1,3 to 0,2
+    __m128 vshufs = _mm_add_ps(vsum128, vshuf);  // Add pairs
+    __m128 vshuf2 = _mm_movehl_ps(vshuf, vshufs); // High half -> low half
+    __m128 vsums = _mm_add_ss(vshufs, vshuf2);   // Add remaining elements
+    float sum = _mm_cvtss_f32(vsums);
+    
+    // Process any remaining elements
+    for (; i < n; i++) {
+        sum += input[i];
+    }
+    
+    // Calculate mean
+    float mean = sum / n;
+    __m256 vmean = _mm256_set1_ps(mean);
+    
+    // Second pass: calculate variance
+    __m256 vvar = _mm256_setzero_ps();
+    
+    i = 0;
+    for (; i + 7 < n; i += 8) {
+        __m256 vin = _mm256_loadu_ps(&input[i]);
+        __m256 vdiff = _mm256_sub_ps(vin, vmean);
+        __m256 vsquared = _mm256_mul_ps(vdiff, vdiff);
+        vvar = _mm256_add_ps(vvar, vsquared);
+    }
+    
+    // Horizontal sum of vvar to get sum of squared differences
+    vlow = _mm256_castps256_ps128(vvar);
+    vhigh = _mm256_extractf128_ps(vvar, 1);
+    vsum128 = _mm_add_ps(vlow, vhigh);
+    vshuf = _mm_movehdup_ps(vsum128);
+    vshufs = _mm_add_ps(vsum128, vshuf);
+    vshuf2 = _mm_movehl_ps(vshuf, vshufs);
+    vsums = _mm_add_ss(vshufs, vshuf2);
+    float variance_sum = _mm_cvtss_f32(vsums);
+    
+    // Process any remaining elements
+    for (; i < n; i++) {
+        float diff = input[i] - mean;
+        variance_sum += diff * diff;
+    }
+    
+    // Calculate variance and normalization factor
+    float variance = variance_sum / n;
+    float inv_std = 1.0f / std::sqrt(variance + epsilon);
+    __m256 vinv_std = _mm256_set1_ps(inv_std);
+    
+    // Third pass: normalize, scale, shift, and apply ReLU
+    i = 0;
+    for (; i + 7 < n; i += 8) {
+        // Load input, weights, and bias
+        __m256 vin = _mm256_loadu_ps(&input[i]);
+        __m256 vw = _mm256_loadu_ps(&weight[i]);
+        __m256 vb = _mm256_loadu_ps(&bias[i]);
+        
+        // Normalize: (x - mean) * inv_std
+        __m256 vdiff = _mm256_sub_ps(vin, vmean);
+        __m256 vnormalized = _mm256_mul_ps(vdiff, vinv_std);
+        
+        // Scale and shift
+        __m256 vscaled = _mm256_mul_ps(vnormalized, vw);
+        __m256 vbiased = _mm256_add_ps(vscaled, vb);
+        
+        // Apply ReLU: max(0, x)
+        __m256 vout = _mm256_max_ps(vzero, vbiased);
+        
+        // Store result
+        _mm256_storeu_ps(&output[i], vout);
+    }
+    
+    // Process remaining elements
+    for (; i < n; i++) {
+        float normalized = (input[i] - mean) * inv_std;
+        float scaled = normalized * weight[i] + bias[i];
+        output[i] = (scaled > 0) ? scaled : 0;
+    }
+}
+#endif // CCSM_HAVE_AVX
+
+#if defined(CCSM_HAVE_NEON)
+// NEON approximation of exponential function
+// Using a fast polynomial approximation for exp(x)
+static inline float32x4_t exp_ps_neon(float32x4_t x) {
+    // Clamp the input to prevent overflow/underflow
+    const float32x4_t vmax = vdupq_n_f32(88.0f);
+    const float32x4_t vmin = vdupq_n_f32(-88.0f);
+    x = vminq_f32(vmaxq_f32(x, vmin), vmax);
+    
+    // Constants for polynomial approximation
+    const float32x4_t vlog2e = vdupq_n_f32(1.442695f); // log2(e)
+    const float32x4_t vone = vdupq_n_f32(1.0f);
+    
+    // Polynomial coefficients for 2^x over the interval [0, 1)
+    const float32x4_t vc0 = vdupq_n_f32(0.99992522f);
+    const float32x4_t vc1 = vdupq_n_f32(0.69583354f);
+    const float32x4_t vc2 = vdupq_n_f32(0.22606716f);
+    const float32x4_t vc3 = vdupq_n_f32(0.07944154f);
+    const float32x4_t vc4 = vdupq_n_f32(0.01386268f);
+    
+    // Scale by log2(e)
+    float32x4_t z = vmulq_f32(x, vlog2e);
+    
+    // Split into integer and fractional parts
+    float32x4_t floor_x = vcvtq_f32_s32(vcvtq_s32_f32(z));
+    float32x4_t frac = vsubq_f32(z, floor_x);
+    
+    // Calculate 2^i where i is the integer part
+    int32x4_t emm0 = vaddq_s32(vcvtq_s32_f32(floor_x), vdupq_n_s32(127));
+    emm0 = vshlq_n_s32(emm0, 23);
+    float32x4_t pow2i = vreinterpretq_f32_s32(emm0);
+    
+    // Polynomial approximation of 2^frac
+    float32x4_t poly = vaddq_f32(vc4, vmulq_f32(frac, vc3));
+    poly = vaddq_f32(poly, vmulq_f32(frac, vc2));
+    poly = vaddq_f32(poly, vmulq_f32(frac, vc1));
+    poly = vaddq_f32(poly, vmulq_f32(frac, vc0));
+    poly = vaddq_f32(poly, vone);
+    
+    // Combine: 2^i * 2^frac
+    return vmulq_f32(pow2i, poly);
+}
+
+void fused_rms_norm_silu_neon_f32(float* output, const float* input, const float* weight, float epsilon, size_t n) {
+    // Constants needed for NEON operations
+    const float32x4_t vzero = vdupq_n_f32(0.0f);
+    const float32x4_t vones = vdupq_n_f32(1.0f);
+    const float32x4_t vepsilon = vdupq_n_f32(epsilon);
+    const float32x4_t vinv_n = vdupq_n_f32(1.0f / n);
+    
+    // First pass: calculate sum of squares
+    float32x4_t vsum_sq = vdupq_n_f32(0.0f);
+    
+    // Process 4 elements at a time using NEON
+    size_t i = 0;
+    for (; i + 3 < n; i += 4) {
+        float32x4_t vin = vld1q_f32(&input[i]);
+        float32x4_t vsquared = vmulq_f32(vin, vin);
+        vsum_sq = vaddq_f32(vsum_sq, vsquared);
+    }
+    
+    // Horizontal sum of vsum_sq to get total sum of squares
+    float32x2_t vsum_low = vget_low_f32(vsum_sq);
+    float32x2_t vsum_high = vget_high_f32(vsum_sq);
+    float32x2_t vsum = vadd_f32(vsum_low, vsum_high);
+    vsum = vpadd_f32(vsum, vsum);  // Pair-wise add to get horizontal sum
+    float sum_sq = vget_lane_f32(vsum, 0);
+    
+    // Process remaining elements
+    for (; i < n; i++) {
+        sum_sq += input[i] * input[i];
+    }
+    
+    // Calculate normalization factor: 1 / sqrt(sum_sq / n + epsilon)
+    float inv_rms = 1.0f / std::sqrt(sum_sq / n + epsilon);
+    float32x4_t vinv_rms = vdupq_n_f32(inv_rms);
+    
+    // Second pass: normalize each element, apply weight, and SiLU activation
+    i = 0;
+    for (; i + 3 < n; i += 4) {
+        // Load input and weights
+        float32x4_t vin = vld1q_f32(&input[i]);
+        float32x4_t vw = vld1q_f32(&weight[i]);
+        
+        // Apply normalization and weights
+        float32x4_t vnormalized = vmulq_f32(vmulq_f32(vin, vinv_rms), vw);
+        
+        // Apply SiLU activation: x * sigmoid(x)
+        // For sigmoid, we'll use approximation: 1 / (1 + exp(-x))
+        float32x4_t vneg = vsubq_f32(vzero, vnormalized);
+        float32x4_t vexp_neg = exp_ps_neon(vneg);
+        float32x4_t vdenom = vaddq_f32(vones, vexp_neg);
+        float32x4_t vsigmoid = vdivq_f32(vones, vdenom);
+        
+        // Final SiLU: x * sigmoid(x)
+        float32x4_t vout = vmulq_f32(vnormalized, vsigmoid);
+        
+        // Store result
+        vst1q_f32(&output[i], vout);
+    }
+    
+    // Process remaining elements
+    for (; i < n; i++) {
+        float normalized = input[i] * inv_rms * weight[i];
+        output[i] = normalized / (1.0f + std::exp(-normalized)) * normalized;
+    }
+}
+
+void fused_layer_norm_relu_neon_f32(float* output, const float* input, const float* weight, const float* bias, float epsilon, size_t n) {
+    // Constants needed for NEON operations
+    const float32x4_t vzero = vdupq_n_f32(0.0f);
+    const float32x4_t vepsilon = vdupq_n_f32(epsilon);
+    const float32x4_t vinv_n = vdupq_n_f32(1.0f / n);
+    
+    // First pass: calculate mean
+    float32x4_t vsum = vdupq_n_f32(0.0f);
+    
+    // Process 4 elements at a time using NEON
+    size_t i = 0;
+    for (; i + 3 < n; i += 4) {
+        float32x4_t vin = vld1q_f32(&input[i]);
+        vsum = vaddq_f32(vsum, vin);
+    }
+    
+    // Horizontal sum of vsum to get total sum
+    float32x2_t vsum_low = vget_low_f32(vsum);
+    float32x2_t vsum_high = vget_high_f32(vsum);
+    float32x2_t vsum2 = vadd_f32(vsum_low, vsum_high);
+    vsum2 = vpadd_f32(vsum2, vsum2);  // Pair-wise add to get horizontal sum
+    float sum = vget_lane_f32(vsum2, 0);
+    
+    // Process remaining elements
+    for (; i < n; i++) {
+        sum += input[i];
+    }
+    
+    // Calculate mean
+    float mean = sum / n;
+    float32x4_t vmean = vdupq_n_f32(mean);
+    
+    // Second pass: calculate variance
+    float32x4_t vvar = vdupq_n_f32(0.0f);
+    
+    i = 0;
+    for (; i + 3 < n; i += 4) {
+        float32x4_t vin = vld1q_f32(&input[i]);
+        float32x4_t vdiff = vsubq_f32(vin, vmean);
+        float32x4_t vsquared = vmulq_f32(vdiff, vdiff);
+        vvar = vaddq_f32(vvar, vsquared);
+    }
+    
+    // Horizontal sum of vvar to get total variance
+    float32x2_t vvar_low = vget_low_f32(vvar);
+    float32x2_t vvar_high = vget_high_f32(vvar);
+    float32x2_t vvar2 = vadd_f32(vvar_low, vvar_high);
+    vvar2 = vpadd_f32(vvar2, vvar2);  // Pair-wise add to get horizontal sum
+    float variance_sum = vget_lane_f32(vvar2, 0);
+    
+    // Process remaining elements
+    for (; i < n; i++) {
+        float diff = input[i] - mean;
+        variance_sum += diff * diff;
+    }
+    
+    // Calculate variance and normalization factor
+    float variance = variance_sum / n;
+    float inv_std = 1.0f / std::sqrt(variance + epsilon);
+    float32x4_t vinv_std = vdupq_n_f32(inv_std);
+    
+    // Third pass: normalize, scale, shift, and apply ReLU
+    i = 0;
+    for (; i + 3 < n; i += 4) {
+        // Load input, weights, and bias
+        float32x4_t vin = vld1q_f32(&input[i]);
+        float32x4_t vw = vld1q_f32(&weight[i]);
+        float32x4_t vb = vld1q_f32(&bias[i]);
+        
+        // Normalize: (x - mean) * inv_std
+        float32x4_t vdiff = vsubq_f32(vin, vmean);
+        float32x4_t vnormalized = vmulq_f32(vdiff, vinv_std);
+        
+        // Scale and shift
+        float32x4_t vscaled = vmulq_f32(vnormalized, vw);
+        float32x4_t vbiased = vaddq_f32(vscaled, vb);
+        
+        // Apply ReLU: max(0, x)
+        float32x4_t vout = vmaxq_f32(vzero, vbiased);
+        
+        // Store result
+        vst1q_f32(&output[i], vout);
+    }
+    
+    // Process remaining elements
+    for (; i < n; i++) {
+        float normalized = (input[i] - mean) * inv_std;
+        float scaled = normalized * weight[i] + bias[i];
+        output[i] = (scaled > 0) ? scaled : 0;
+    }
+}
+#endif // CCSM_HAVE_NEON
+
 } // namespace detail
 } // namespace simd
 } // namespace ccsm
