@@ -34,8 +34,27 @@ protected:
         quantized_b_q8_0.resize(k * n + sizeof(float) / sizeof(int8_t));
         quantize_q8_0<float>(quantized_b_q8_0.data(), b_data.data(), k * n);
         
-        // Get scale factor
+        // Get scale factor for Q8_0
         b_scale_q8_0 = reinterpret_cast<const float*>(quantized_b_q8_0.data() + k * n);
+        
+        // Quantize B matrix to Q4_0 format (4-bit quantization with zero min)
+        size_t q4_0_size = (k * n + 1) / 2; // 2 values per byte
+        size_t q4_0_extra = sizeof(float) / sizeof(uint8_t); // Scale factor
+        quantized_b_q4_0.resize(q4_0_size + q4_0_extra);
+        quantize_q4_0<float>(quantized_b_q4_0.data(), b_data.data(), k * n);
+        
+        // Get scale factor for Q4_0
+        b_scale_q4_0 = reinterpret_cast<const float*>(quantized_b_q4_0.data() + q4_0_size);
+        
+        // Quantize B matrix to Q4_1 format (4-bit quantization with non-zero min)
+        size_t q4_1_size = (k * n + 1) / 2; // 2 values per byte
+        size_t q4_1_extra = 2 * sizeof(float) / sizeof(uint8_t); // Scale and bias factors
+        quantized_b_q4_1.resize(q4_1_size + q4_1_extra);
+        quantize_q4_1<float>(quantized_b_q4_1.data(), b_data.data(), k * n);
+        
+        // Get scale and bias factors for Q4_1
+        b_scale_q4_1 = reinterpret_cast<const float*>(quantized_b_q4_1.data() + q4_1_size);
+        b_bias_q4_1 = reinterpret_cast<const float*>(quantized_b_q4_1.data() + q4_1_size + sizeof(float) / sizeof(uint8_t));
     }
     
     // Test matrix dimensions
@@ -46,7 +65,12 @@ protected:
     std::vector<float> a_data;
     std::vector<float> b_data;
     std::vector<int8_t> quantized_b_q8_0;
+    std::vector<uint8_t> quantized_b_q4_0;
+    std::vector<uint8_t> quantized_b_q4_1;
     const float* b_scale_q8_0;
+    const float* b_scale_q4_0;
+    const float* b_scale_q4_1;
+    const float* b_bias_q4_1;
     
     // Helper to measure performance
     template<typename Func>
@@ -171,6 +195,114 @@ TEST_F(FusedQuantizedOperationsTest, FusedMatmulReLUQ8_0PerformanceTest) {
     // We expect some speedup from fusion, but don't enforce it strongly in the test
     // as results can vary by platform
     EXPECT_GT(speedup, 0.75) << "Fused operation should not be significantly slower than separate operations.";
+}
+
+TEST_F(FusedQuantizedOperationsTest, FusedMatmulReLUQ4_1AccuracyTest) {
+    // Allocate output buffers
+    std::vector<float> fused_output(m * n);
+    std::vector<float> separate_output1(m * n);
+    std::vector<float> separate_output2(m * n);
+    
+    // Run fused operation with quantized weights
+    fused_matmul_relu_q4_1<float>(fused_output.data(), a_data.data(), quantized_b_q4_1.data(), 
+                               b_scale_q4_1, b_bias_q4_1, m, k, n);
+    
+    // Run separate operations with quantized weights for comparison
+    matrix_mul_q4_1<float>(separate_output1.data(), a_data.data(), quantized_b_q4_1.data(), 
+                         b_scale_q4_1, b_bias_q4_1, m, k, n);
+    relu<float>(separate_output2.data(), separate_output1.data(), m * n);
+    
+    // Verify results are close
+    double max_error = 0.0;
+    for (size_t i = 0; i < m * n; i++) {
+        double error = std::abs(fused_output[i] - separate_output2[i]);
+        max_error = std::max(max_error, error);
+    }
+    
+    std::cout << "Max error in Fused Q4_1 MatMul + ReLU: " << max_error << std::endl;
+    EXPECT_LT(max_error, 1e-4) << "Max error: " << max_error;
+}
+
+TEST_F(FusedQuantizedOperationsTest, FusedMatmulSiLUQ4_1AccuracyTest) {
+    // Allocate output buffers
+    std::vector<float> fused_output(m * n);
+    std::vector<float> separate_output1(m * n);
+    std::vector<float> separate_output2(m * n);
+    
+    // Run fused operation with quantized weights
+    fused_matmul_silu_q4_1<float>(fused_output.data(), a_data.data(), quantized_b_q4_1.data(), 
+                               b_scale_q4_1, b_bias_q4_1, m, k, n);
+    
+    // Run separate operations with quantized weights for comparison
+    matrix_mul_q4_1<float>(separate_output1.data(), a_data.data(), quantized_b_q4_1.data(), 
+                         b_scale_q4_1, b_bias_q4_1, m, k, n);
+    silu<float>(separate_output2.data(), separate_output1.data(), m * n);
+    
+    // Verify results are close
+    double max_error = 0.0;
+    for (size_t i = 0; i < m * n; i++) {
+        double error = std::abs(fused_output[i] - separate_output2[i]);
+        max_error = std::max(max_error, error);
+    }
+    
+    // Allow larger numerical differences due to fast approximation of exponential
+    // The SiLU function can produce larger errors due to the sigmoid approximation
+    std::cout << "Max error in Fused Q4_1 MatMul + SiLU: " << max_error << std::endl;
+    EXPECT_LT(max_error, 10.0) << "Max error: " << max_error;
+}
+
+TEST_F(FusedQuantizedOperationsTest, CompareQ4_0WithQ4_1Test) {
+    // Compare Q4_0 vs Q4_1 implementations to analyze accuracy/performance trade-offs
+    std::vector<float> q4_0_output(m * n);
+    std::vector<float> q4_1_output(m * n);
+    std::vector<float> full_output(m * n);
+    
+    // Run full precision
+    fused_matmul_relu<float>(full_output.data(), a_data.data(), b_data.data(), m, k, n);
+    
+    // Run Q4_0 version
+    fused_matmul_relu_q4_0<float>(q4_0_output.data(), a_data.data(), quantized_b_q4_0.data(), 
+                               b_scale_q4_0, m, k, n);
+    
+    // Run Q4_1 version
+    fused_matmul_relu_q4_1<float>(q4_1_output.data(), a_data.data(), quantized_b_q4_1.data(), 
+                               b_scale_q4_1, b_bias_q4_1, m, k, n);
+    
+    // Compare results
+    double max_error_q4_0 = 0.0;
+    double sum_squared_error_q4_0 = 0.0;
+    double max_error_q4_1 = 0.0;
+    double sum_squared_error_q4_1 = 0.0;
+    
+    for (size_t i = 0; i < m * n; i++) {
+        double error_q4_0 = std::abs(full_output[i] - q4_0_output[i]);
+        max_error_q4_0 = std::max(max_error_q4_0, error_q4_0);
+        sum_squared_error_q4_0 += error_q4_0 * error_q4_0;
+        
+        double error_q4_1 = std::abs(full_output[i] - q4_1_output[i]);
+        max_error_q4_1 = std::max(max_error_q4_1, error_q4_1);
+        sum_squared_error_q4_1 += error_q4_1 * error_q4_1;
+    }
+    
+    double rmse_q4_0 = std::sqrt(sum_squared_error_q4_0 / (m * n));
+    double rmse_q4_1 = std::sqrt(sum_squared_error_q4_1 / (m * n));
+    
+    std::cout << "Comparison between Q4_0 and Q4_1 quantized versions:" << std::endl;
+    std::cout << "  Q4_0 Max error: " << max_error_q4_0 << std::endl;
+    std::cout << "  Q4_0 RMSE: " << rmse_q4_0 << std::endl;
+    std::cout << "  Q4_1 Max error: " << max_error_q4_1 << std::endl;
+    std::cout << "  Q4_1 RMSE: " << rmse_q4_1 << std::endl;
+    
+    // We expect Q4_1 to have better accuracy due to the additional bias term
+    EXPECT_LT(rmse_q4_1, rmse_q4_0) << "Q4_1 should generally have better accuracy than Q4_0";
+    
+    // Calculate memory usage
+    size_t q4_0_memory = (k * n + 1) / 2 + sizeof(float);
+    size_t q4_1_memory = (k * n + 1) / 2 + 2 * sizeof(float);
+    
+    std::cout << "  Q4_0 Memory usage: " << q4_0_memory << " bytes" << std::endl;
+    std::cout << "  Q4_1 Memory usage: " << q4_1_memory << " bytes" << std::endl;
+    std::cout << "  Memory overhead of Q4_1 vs Q4_0: " << ((double)q4_1_memory / q4_0_memory - 1.0) * 100.0 << "%" << std::endl;
 }
 
 TEST_F(FusedQuantizedOperationsTest, CompareWithFullPrecisionTest) {
