@@ -251,6 +251,61 @@ TEST_F(FusedQuantizedOperationsTest, FusedMatmulSiLUQ4_1AccuracyTest) {
     EXPECT_LT(max_error, 10.0) << "Max error: " << max_error;
 }
 
+TEST_F(FusedQuantizedOperationsTest, FusedMatmulReLUQ4_0AccuracyTest) {
+    // Allocate output buffers
+    std::vector<float> fused_output(m * n);
+    std::vector<float> separate_output1(m * n);
+    std::vector<float> separate_output2(m * n);
+    
+    // Run fused operation with quantized weights
+    fused_matmul_relu_q4_0<float>(fused_output.data(), a_data.data(), quantized_b_q4_0.data(), 
+                               b_scale_q4_0, m, k, n);
+    
+    // Run separate operations with quantized weights for comparison
+    matrix_mul_q4_0<float>(separate_output1.data(), a_data.data(), quantized_b_q4_0.data(), 
+                         b_scale_q4_0, m, k, n);
+    relu<float>(separate_output2.data(), separate_output1.data(), m * n);
+    
+    // Verify results are close
+    double max_error = 0.0;
+    for (size_t i = 0; i < m * n; i++) {
+        double error = std::abs(fused_output[i] - separate_output2[i]);
+        max_error = std::max(max_error, error);
+    }
+    
+    std::cout << "Max error in Fused Q4_0 MatMul + ReLU: " << max_error << std::endl;
+    // Q4_0 quantization has lower precision, so allow for greater error tolerance
+    EXPECT_LT(max_error, 10.0) << "Max error: " << max_error;
+}
+
+TEST_F(FusedQuantizedOperationsTest, FusedMatmulSiLUQ4_0AccuracyTest) {
+    // Allocate output buffers
+    std::vector<float> fused_output(m * n);
+    std::vector<float> separate_output1(m * n);
+    std::vector<float> separate_output2(m * n);
+    
+    // Run fused operation with quantized weights
+    fused_matmul_silu_q4_0<float>(fused_output.data(), a_data.data(), quantized_b_q4_0.data(), 
+                               b_scale_q4_0, m, k, n);
+    
+    // Run separate operations with quantized weights for comparison
+    matrix_mul_q4_0<float>(separate_output1.data(), a_data.data(), quantized_b_q4_0.data(), 
+                         b_scale_q4_0, m, k, n);
+    silu<float>(separate_output2.data(), separate_output1.data(), m * n);
+    
+    // Verify results are close
+    double max_error = 0.0;
+    for (size_t i = 0; i < m * n; i++) {
+        double error = std::abs(fused_output[i] - separate_output2[i]);
+        max_error = std::max(max_error, error);
+    }
+    
+    // Allow larger numerical differences due to fast approximation of exponential
+    // The SiLU function can produce larger errors due to the sigmoid approximation
+    std::cout << "Max error in Fused Q4_0 MatMul + SiLU: " << max_error << std::endl;
+    EXPECT_LT(max_error, 10.0) << "Max error: " << max_error;
+}
+
 TEST_F(FusedQuantizedOperationsTest, CompareQ4_0WithQ4_1Test) {
     // Compare Q4_0 vs Q4_1 implementations to analyze accuracy/performance trade-offs
     std::vector<float> q4_0_output(m * n);
