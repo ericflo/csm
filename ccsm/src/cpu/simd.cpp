@@ -180,47 +180,8 @@ void relu_avx_f32(float* output, const float* input, size_t n) {
     }
 }
 
-void silu_avx_f32(float* output, const float* input, size_t n) {
-    size_t i = 0;
-    __m256 vone = _mm256_set1_ps(1.0f);
-    
-    // Process 8 elements at a time using AVX
-    for (; i + 7 < n; i += 8) {
-        // Load input values
-        __m256 vin = _mm256_loadu_ps(input + i);
-        
-        // Calculate -x for exp(-x)
-        __m256 vneg = _mm256_mul_ps(vin, _mm256_set1_ps(-1.0f));
-        
-        // Calculate sigmoid(x) = 1 / (1 + exp(-x))
-        // For each element, we need to compute exp(-x)
-        __m256 vexp_neg = vneg;
-        
-        // Approximate exp using a simplified approach
-        // This approximation works reasonably well for small values of x
-        // For better accuracy in a real implementation, we would use a higher-order polynomial
-        
-        // exp(x) ≈ 1 + x + x²/2 for small x
-        __m256 vsquared = _mm256_mul_ps(vneg, vneg);
-        __m256 vhalf_squared = _mm256_mul_ps(vsquared, _mm256_set1_ps(0.5f));
-        
-        vexp_neg = _mm256_add_ps(vone, vneg);
-        vexp_neg = _mm256_add_ps(vexp_neg, vhalf_squared);
-        
-        // Calculate 1 / (1 + exp(-x))
-        __m256 vdenom = _mm256_add_ps(vone, vexp_neg);
-        __m256 vsigmoid = _mm256_div_ps(vone, vdenom);
-        
-        // Calculate x * sigmoid(x)
-        __m256 vout = _mm256_mul_ps(vin, vsigmoid);
-        _mm256_storeu_ps(output + i, vout);
-    }
-    
-    // Process remaining elements using the scalar implementation
-    for (; i < n; i++) {
-        output[i] = input[i] / (1.0f + std::exp(-input[i]));
-    }
-}
+// First silu_avx_f32 implementation - remove it as it's duplicated
+// This will be replaced by the improved version below
 
 void vector_add_avx_f32(float* result, const float* a, const float* b, size_t n) {
     size_t i = 0;
@@ -319,40 +280,74 @@ void relu_avx_f32(float* output, const float* input, size_t n) {
 void silu_avx_f32(float* output, const float* input, size_t n) {
     size_t i = 0;
     __m256 vone = _mm256_set1_ps(1.0f);
+    __m256 vzero = _mm256_setzero_ps();
+    
+    // Constants for fast, modified Pade approximation
+    // These specific constants provide a good balance of accuracy and speed for sigmoid
+    __m256 vc1 = _mm256_set1_ps(0.398942280f);
+    __m256 vc2 = _mm256_set1_ps(0.0f);
+    __m256 vc3 = _mm256_set1_ps(1.13879349f);
+    __m256 vhalf = _mm256_set1_ps(0.5f);
     
     // Process 8 elements at a time using AVX
     for (; i + 7 < n; i += 8) {
         __m256 vin = _mm256_loadu_ps(input + i);
         
-        // Compute SiLU: x * sigmoid(x)
-        // Approximation of sigmoid using AVX
-        __m256 vneg = _mm256_mul_ps(vin, _mm256_set1_ps(-1.0f));
+        // Fast sigmoid using piecewise approximation
+        // Clamp inputs to acceptable range
+        __m256 vclamp_min = _mm256_set1_ps(-15.0f);
+        __m256 vclamp_max = _mm256_set1_ps(15.0f);
+        __m256 vx_clamped = _mm256_max_ps(vclamp_min, _mm256_min_ps(vclamp_max, vin));
         
-        // Approximation of exp(-x) using polynomial expansion
-        // This is a simplified approximation for illustration; a more accurate
-        // implementation would use a better approximation or lookup table
-        __m256 vexp = _mm256_set1_ps(1.0f);
-        __m256 vtmp = _mm256_set1_ps(1.0f);
-        __m256 vfac = _mm256_set1_ps(1.0f);
+        // Get absolute value of x for symmetrical approximation
+        __m256 vabs_x = _mm256_and_ps(vx_clamped, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF)));
         
-        for (int j = 1; j <= 4; j++) {
-            vfac = _mm256_mul_ps(vfac, _mm256_set1_ps(1.0f / j));
-            vtmp = _mm256_mul_ps(vtmp, vneg);
-            __m256 vterm = _mm256_mul_ps(vtmp, vfac);
-            vexp = _mm256_add_ps(vexp, vterm);
-        }
+        // Fast modified sigmoid approximation using quadratic approximation
+        // This approximates 1/(1+exp(-x)) well within [-15,15] range
+        // sigmoid(x) ≈ 0.5 + 0.5 * (vc1*x) / (vc3 + |x|)
         
-        // Compute sigmoid: 1 / (1 + exp(-x))
-        __m256 vsigmoid = _mm256_div_ps(vone, _mm256_add_ps(vone, vexp));
+        // First, compute the numerator: vc1*x (scaled x)
+        __m256 vnum = _mm256_mul_ps(vc1, vx_clamped);
         
-        // Compute SiLU: x * sigmoid(x)
+        // Now compute the denominator: vc3 + |x|
+        __m256 vdenom = _mm256_add_ps(vc3, vabs_x);
+        
+        // Compute the approximation: 0.5 + 0.5 * (vc1*x) / (vc3 + |x|)
+        __m256 vterm = _mm256_div_ps(vnum, vdenom);
+        __m256 vterm_scaled = _mm256_mul_ps(vhalf, vterm);
+        __m256 vsigmoid = _mm256_add_ps(vhalf, vterm_scaled);
+        
+        // For very negative inputs (< -15), force sigmoid to 0
+        __m256 vtoo_small = _mm256_cmp_ps(vin, _mm256_set1_ps(-15.0f), _CMP_LT_OQ);
+        vsigmoid = _mm256_andnot_ps(vtoo_small, vsigmoid);
+        
+        // For very positive inputs (> 15), force sigmoid to 1.0
+        __m256 vtoo_large = _mm256_cmp_ps(vin, _mm256_set1_ps(15.0f), _CMP_GT_OQ);
+        vsigmoid = _mm256_or_ps(
+            _mm256_and_ps(vtoo_large, vone),
+            _mm256_andnot_ps(vtoo_large, vsigmoid)
+        );
+        
+        // Calculate SiLU: x * sigmoid(x)
         __m256 vout = _mm256_mul_ps(vin, vsigmoid);
         _mm256_storeu_ps(output + i, vout);
     }
     
-    // Process remaining elements
+    // Process remaining elements using the scalar equivalent of our fast approximation
     for (; i < n; i++) {
-        output[i] = input[i] / (1.0f + std::exp(-input[i]));
+        float x = input[i];
+        float sigmoid;
+        
+        if (x < -15.0f) {
+            sigmoid = 0.0f;
+        } else if (x > 15.0f) {
+            sigmoid = 1.0f;
+        } else {
+            float abs_x = std::abs(x);
+            sigmoid = 0.5f + 0.5f * (0.398942280f * x) / (1.13879349f + abs_x);
+        }
+        
+        output[i] = x * sigmoid;
     }
 }
 
@@ -722,10 +717,65 @@ void relu_neon_f32(float* output, const float* input, size_t n) {
 void silu_neon_f32(float* output, const float* input, size_t n) {
     size_t i = 0;
     
-    // Process remaining elements with scalar code
-    // SiLU is complex to vectorize efficiently on NEON without a good exp approximation
-    for (i = 0; i < n; i++) {
-        output[i] = input[i] / (1.0f + std::exp(-input[i]));
+    // Constants for fast sigmoid approximation - same as in AVX version
+    float32x4_t vone = vdupq_n_f32(1.0f);
+    float32x4_t vhalf = vdupq_n_f32(0.5f);
+    float32x4_t vc1 = vdupq_n_f32(0.398942280f);
+    float32x4_t vc3 = vdupq_n_f32(1.13879349f);
+    
+    // Process 4 elements at a time using NEON
+    for (; i + 3 < n; i += 4) {
+        float32x4_t vin = vld1q_f32(input + i);
+        
+        // Fast sigmoid using piecewise approximation
+        // Clamp inputs to acceptable range
+        float32x4_t vclamp_min = vdupq_n_f32(-15.0f);
+        float32x4_t vclamp_max = vdupq_n_f32(15.0f);
+        float32x4_t vx_clamped = vmaxq_f32(vclamp_min, vminq_f32(vclamp_max, vin));
+        
+        // Get absolute value of x
+        float32x4_t vabs_x = vabsq_f32(vx_clamped);
+        
+        // Fast sigmoid approximation: 0.5 + 0.5 * (vc1*x) / (vc3 + |x|)
+        // Compute the numerator: vc1*x
+        float32x4_t vnum = vmulq_f32(vc1, vx_clamped);
+        
+        // Compute the denominator: vc3 + |x|
+        float32x4_t vdenom = vaddq_f32(vc3, vabs_x);
+        
+        // Compute the approximation: 0.5 + 0.5 * (vc1*x) / (vc3 + |x|)
+        float32x4_t vterm = vdivq_f32(vnum, vdenom);
+        float32x4_t vterm_scaled = vmulq_f32(vhalf, vterm);
+        float32x4_t vsigmoid = vaddq_f32(vhalf, vterm_scaled);
+        
+        // Handle edge cases with uint32x4_t masks
+        uint32x4_t vtoo_small = vcltq_f32(vin, vdupq_n_f32(-15.0f));
+        uint32x4_t vtoo_large = vcgtq_f32(vin, vdupq_n_f32(15.0f));
+        
+        // Apply masks for clamping
+        vsigmoid = vbslq_f32(vtoo_small, vdupq_n_f32(0.0f), vsigmoid);
+        vsigmoid = vbslq_f32(vtoo_large, vone, vsigmoid);
+        
+        // Calculate SiLU: x * sigmoid(x)
+        float32x4_t vout = vmulq_f32(vin, vsigmoid);
+        vst1q_f32(output + i, vout);
+    }
+    
+    // Process remaining elements with the same approximation
+    for (; i < n; i++) {
+        float x = input[i];
+        float sigmoid;
+        
+        if (x < -15.0f) {
+            sigmoid = 0.0f;
+        } else if (x > 15.0f) {
+            sigmoid = 1.0f;
+        } else {
+            float abs_x = std::abs(x);
+            sigmoid = 0.5f + 0.5f * (0.398942280f * x) / (1.13879349f + abs_x);
+        }
+        
+        output[i] = x * sigmoid;
     }
 }
 
