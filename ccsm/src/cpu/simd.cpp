@@ -2521,6 +2521,350 @@ void fused_layer_norm_relu_neon_f32(float* output, const float* input, const flo
 }
 #endif // CCSM_HAVE_NEON
 
+#if defined(CCSM_HAVE_AVX) && defined(__AVX__)
+
+void quantize_q8_0_avx_f32(int8_t* output, const float* input, size_t n) {
+    // Process in blocks of 32 for better AVX performance
+    constexpr size_t block_size = 32;
+    
+    // First, find the absolute maximum value for scaling
+    __m256 vmax_abs = _mm256_setzero_ps();
+    size_t i = 0;
+    
+    // Process 8 elements at a time using AVX to find max
+    for (; i + 7 < n; i += 8) {
+        __m256 vin = _mm256_loadu_ps(input + i);
+        __m256 vabs = _mm256_and_ps(vin, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF))); // abs value
+        vmax_abs = _mm256_max_ps(vmax_abs, vabs);
+    }
+    
+    // Horizontal maximum
+    __m128 vmax_high = _mm256_extractf128_ps(vmax_abs, 1);
+    __m128 vmax_low = _mm256_castps256_ps128(vmax_abs);
+    __m128 vmax_combined = _mm_max_ps(vmax_low, vmax_high);
+    
+    // Shuffle and max to get horizontal maximum
+    __m128 vmax_shuffle = _mm_shuffle_ps(vmax_combined, vmax_combined, _MM_SHUFFLE(1, 0, 3, 2));
+    vmax_combined = _mm_max_ps(vmax_combined, vmax_shuffle);
+    vmax_shuffle = _mm_shuffle_ps(vmax_combined, vmax_combined, _MM_SHUFFLE(0, 1, 0, 1));
+    vmax_combined = _mm_max_ps(vmax_combined, vmax_shuffle);
+    
+    float max_abs = _mm_cvtss_f32(vmax_combined);
+    
+    // Process remaining elements (tail)
+    for (; i < n; i++) {
+        max_abs = std::max(max_abs, std::abs(input[i]));
+    }
+    
+    // Calculate scale to map range [-max_abs, max_abs] to [-127, 127]
+    float scale = max_abs > 0 ? 127.0f / max_abs : 1.0f;
+    float inv_scale = 1.0f / scale;
+    
+    // Store scale value
+    float* scale_ptr = reinterpret_cast<float*>(output + n);
+    *scale_ptr = inv_scale;
+    
+    // Quantize values in blocks
+    i = 0;
+    __m256 vscale = _mm256_set1_ps(scale);
+    
+    // Process 32 elements at a time for better AVX performance
+    for (; i + block_size - 1 < n; i += block_size) {
+        // Process blocks of 8 float values
+        for (size_t j = 0; j < block_size; j += 8) {
+            __m256 vin = _mm256_loadu_ps(input + i + j);
+            __m256 vscaled = _mm256_mul_ps(vin, vscale);
+            
+            // Convert to int32 with rounding
+            __m256i vint = _mm256_cvtps_epi32(vscaled);
+            
+            // Clamp to [-127, 127]
+            __m256i vmin = _mm256_set1_epi32(-127);
+            __m256i vmax = _mm256_set1_epi32(127);
+            vint = _mm256_min_epi32(_mm256_max_epi32(vint, vmin), vmax);
+            
+            // Convert to int16
+            vint = _mm256_packs_epi32(vint, _mm256_setzero_si256());
+            
+            // Extract lower 128 bits and convert to int8
+            __m128i vlow = _mm256_castsi256_si128(vint);
+            
+            // Shuffle to correct order (AVX introduces lane crossing issues with packs)
+            vlow = _mm_shuffle_epi8(vlow, _mm_set_epi8(
+                15, 13, 11, 9, 7, 5, 3, 1, 14, 12, 10, 8, 6, 4, 2, 0
+            ));
+            
+            // Extract only the low 8 values (int8)
+            __m128i vint8 = _mm_shuffle_epi8(vlow, _mm_set_epi8(
+                -1, -1, -1, -1, -1, -1, -1, -1, 14, 12, 10, 8, 6, 4, 2, 0
+            ));
+            
+            // Store int8 values
+            _mm_storel_epi64((__m128i*)(output + i + j), vint8);
+        }
+    }
+    
+    // Process remaining elements (tail)
+    for (; i < n; i++) {
+        int32_t val = static_cast<int32_t>(input[i] * scale);
+        val = std::min(127, std::max(-127, val));
+        output[i] = static_cast<int8_t>(val);
+    }
+}
+
+void dequantize_q8_0_avx_f32(float* output, const int8_t* input, const float* scale, size_t n) {
+    const float inv_scale = *scale;
+    __m256 vscale = _mm256_set1_ps(inv_scale);
+    
+    size_t i = 0;
+    
+    // Process 32 elements at a time for better AVX performance
+    constexpr size_t block_size = 32;
+    
+    for (; i + block_size - 1 < n; i += block_size) {
+        // Process blocks of 8 int8 values at a time
+        for (size_t j = 0; j < block_size; j += 8) {
+            // Load 8 int8 values and convert to int32
+            __m128i vint8 = _mm_loadl_epi64((__m128i*)(input + i + j));
+            __m256i vint32 = _mm256_cvtepi8_epi32(vint8);
+            
+            // Convert to float and multiply by scale
+            __m256 vfloat = _mm256_cvtepi32_ps(vint32);
+            __m256 vscaled = _mm256_mul_ps(vfloat, vscale);
+            
+            // Store results
+            _mm256_storeu_ps(output + i + j, vscaled);
+        }
+    }
+    
+    // Process remaining elements (tail)
+    for (; i < n; i++) {
+        output[i] = static_cast<float>(input[i]) * inv_scale;
+    }
+}
+
+void matrix_mul_q8_0_avx_f32(float* result, const float* a, const int8_t* b, const float* b_scale, 
+                           size_t m, size_t k, size_t n) {
+    // Initialize result matrix to zero
+    for (size_t i = 0; i < m * n; i++) {
+        result[i] = 0.0f;
+    }
+    
+    const float inv_scale = *b_scale;
+    __m256 vscale = _mm256_set1_ps(inv_scale);
+    
+    // Process one row of A at a time
+    for (size_t i = 0; i < m; i++) {
+        // Process 8 columns of B at a time
+        for (size_t j = 0; j < n; j += 8) {
+            // Handle edge case: if we don't have 8 columns left
+            if (j + 8 > n) {
+                // Process columns one by one for the tail
+                for (size_t jj = j; jj < n; jj++) {
+                    float sum = 0.0f;
+                    for (size_t l = 0; l < k; l++) {
+                        float b_val = static_cast<float>(b[l * n + jj]) * inv_scale;
+                        sum += a[i * k + l] * b_val;
+                    }
+                    result[i * n + jj] = sum;
+                }
+                break;
+            }
+            
+            // Initialize sum accumulator
+            __m256 vsum = _mm256_setzero_ps();
+            
+            // Accumulate products across all k elements
+            for (size_t l = 0; l < k; l++) {
+                // Load 8 quantized values from matrix B's column
+                __m128i vb_int8 = _mm_loadl_epi64((__m128i*)&b[l * n + j]);
+                
+                // Convert int8 to int32
+                __m256i vb_int32 = _mm256_cvtepi8_epi32(vb_int8);
+                
+                // Convert int32 to float
+                __m256 vb_float = _mm256_cvtepi32_ps(vb_int32);
+                
+                // Dequantize by multiplying with scale
+                __m256 vb = _mm256_mul_ps(vb_float, vscale);
+                
+                // Load a single value from A and broadcast
+                __m256 va = _mm256_set1_ps(a[i * k + l]);
+                
+                // Multiply and accumulate
+                vsum = _mm256_add_ps(vsum, _mm256_mul_ps(va, vb));
+            }
+            
+            // Store the result
+            _mm256_storeu_ps(&result[i * n + j], vsum);
+        }
+    }
+}
+
+#endif
+
+#if defined(CCSM_HAVE_NEON) && defined(__ARM_NEON)
+
+void quantize_q8_0_neon_f32(int8_t* output, const float* input, size_t n) {
+    // Process in blocks of 16 for better NEON performance
+    constexpr size_t block_size = 16;
+    
+    // First, find the absolute maximum value for scaling
+    float32x4_t vmax_abs = vdupq_n_f32(0.0f);
+    size_t i = 0;
+    
+    // Process 4 elements at a time using NEON to find max
+    for (; i + 3 < n; i += 4) {
+        float32x4_t vin = vld1q_f32(input + i);
+        float32x4_t vabs = vabsq_f32(vin);
+        vmax_abs = vmaxq_f32(vmax_abs, vabs);
+    }
+    
+    // Horizontal maximum
+    float32x2_t vmax_fold = vmax_f32(vget_high_f32(vmax_abs), vget_low_f32(vmax_abs));
+    vmax_fold = vpmax_f32(vmax_fold, vmax_fold);
+    float max_abs = vget_lane_f32(vmax_fold, 0);
+    
+    // Process remaining elements (tail)
+    for (; i < n; i++) {
+        max_abs = std::max(max_abs, std::abs(input[i]));
+    }
+    
+    // Calculate scale to map range [-max_abs, max_abs] to [-127, 127]
+    float scale = max_abs > 0 ? 127.0f / max_abs : 1.0f;
+    float inv_scale = 1.0f / scale;
+    
+    // Store scale value
+    float* scale_ptr = reinterpret_cast<float*>(output + n);
+    *scale_ptr = inv_scale;
+    
+    // Quantize values in blocks
+    i = 0;
+    float32x4_t vscale = vdupq_n_f32(scale);
+    
+    // Process 16 elements at a time for better NEON performance
+    for (; i + block_size - 1 < n; i += block_size) {
+        // Process blocks of 4 float values
+        for (size_t j = 0; j < block_size; j += 4) {
+            float32x4_t vin = vld1q_f32(input + i + j);
+            float32x4_t vscaled = vmulq_f32(vin, vscale);
+            
+            // Convert to int32 with rounding
+            int32x4_t vint = vcvtnq_s32_f32(vscaled);
+            
+            // Clamp to [-127, 127]
+            int32x4_t vmin = vdupq_n_s32(-127);
+            int32x4_t vmax = vdupq_n_s32(127);
+            vint = vminq_s32(vmaxq_s32(vint, vmin), vmax);
+            
+            // Convert to int16 then to int8
+            int16x4_t vint16 = vmovn_s32(vint);
+            int8x8_t vint8 = vmovn_s16(vcombine_s16(vint16, vint16));
+            
+            // Store the lower 4 int8 values
+            vst1_lane_s32((int32_t*)(output + i + j), vreinterpret_s32_s8(vint8), 0);
+        }
+    }
+    
+    // Process remaining elements (tail)
+    for (; i < n; i++) {
+        int32_t val = static_cast<int32_t>(input[i] * scale);
+        val = std::min(127, std::max(-127, val));
+        output[i] = static_cast<int8_t>(val);
+    }
+}
+
+void dequantize_q8_0_neon_f32(float* output, const int8_t* input, const float* scale, size_t n) {
+    const float inv_scale = *scale;
+    float32x4_t vscale = vdupq_n_f32(inv_scale);
+    
+    size_t i = 0;
+    
+    // Process 16 elements at a time for better NEON performance
+    constexpr size_t block_size = 16;
+    
+    for (; i + block_size - 1 < n; i += block_size) {
+        // Process blocks of 4 int8 values at a time
+        for (size_t j = 0; j < block_size; j += 4) {
+            // Load 4 int8 values and convert to int32
+            int8x8_t vint8 = vld1_s8(input + i + j);
+            int16x8_t vint16 = vmovl_s8(vint8);
+            int32x4_t vint32_low = vmovl_s16(vget_low_s16(vint16));
+            
+            // Convert to float and multiply by scale
+            float32x4_t vfloat = vcvtq_f32_s32(vint32_low);
+            float32x4_t vscaled = vmulq_f32(vfloat, vscale);
+            
+            // Store results
+            vst1q_f32(output + i + j, vscaled);
+        }
+    }
+    
+    // Process remaining elements (tail)
+    for (; i < n; i++) {
+        output[i] = static_cast<float>(input[i]) * inv_scale;
+    }
+}
+
+void matrix_mul_q8_0_neon_f32(float* result, const float* a, const int8_t* b, const float* b_scale, 
+                            size_t m, size_t k, size_t n) {
+    // Initialize result matrix to zero
+    for (size_t i = 0; i < m * n; i++) {
+        result[i] = 0.0f;
+    }
+    
+    const float inv_scale = *b_scale;
+    float32x4_t vscale = vdupq_n_f32(inv_scale);
+    
+    // Process one row of A at a time
+    for (size_t i = 0; i < m; i++) {
+        // Process 4 columns of B at a time
+        for (size_t j = 0; j < n; j += 4) {
+            // Handle edge case: if we don't have 4 columns left
+            if (j + 4 > n) {
+                // Process columns one by one for the tail
+                for (size_t jj = j; jj < n; jj++) {
+                    float sum = 0.0f;
+                    for (size_t l = 0; l < k; l++) {
+                        float b_val = static_cast<float>(b[l * n + jj]) * inv_scale;
+                        sum += a[i * k + l] * b_val;
+                    }
+                    result[i * n + jj] = sum;
+                }
+                break;
+            }
+            
+            // Initialize sum accumulator
+            float32x4_t vsum = vdupq_n_f32(0.0f);
+            
+            // Accumulate products across all k elements
+            for (size_t l = 0; l < k; l++) {
+                // Load 4 quantized values from matrix B's column
+                int8x8_t vb_int8 = vld1_s8(&b[l * n + j]);
+                int16x8_t vb_int16 = vmovl_s8(vb_int8);
+                int32x4_t vb_int32 = vmovl_s16(vget_low_s16(vb_int16));
+                
+                // Convert int32 to float
+                float32x4_t vb_float = vcvtq_f32_s32(vb_int32);
+                
+                // Dequantize by multiplying with scale
+                float32x4_t vb = vmulq_f32(vb_float, vscale);
+                
+                // Load a single value from A and broadcast
+                float32x4_t va = vdupq_n_f32(a[i * k + l]);
+                
+                // Multiply and accumulate
+                vsum = vmlaq_f32(vsum, va, vb);
+            }
+            
+            // Store the result
+            vst1q_f32(&result[i * n + j], vsum);
+        }
+    }
+}
+
+#endif
+
 } // namespace detail
 } // namespace simd
 } // namespace ccsm
