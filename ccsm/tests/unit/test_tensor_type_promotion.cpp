@@ -248,3 +248,174 @@ TEST_F(TensorTypePromotionTest, ReductionTypePromotion) {
     // Just test the reduction functionality, not the specific type promotion behavior
     EXPECT_EQ(result5.size(), 1);  // Should be a single value for dim=0 reduction
 }
+
+// Test comprehensive type promotion for all data type pairs
+TEST_F(TensorTypePromotionTest, ComprehensiveTypePairs) {
+    // Create an array of all data types to test
+    DataType all_types[] = {
+        DataType::F32, DataType::F16, DataType::BF16,
+        DataType::I32, DataType::I16, DataType::I8,
+        DataType::Q8_0, DataType::Q4_0, DataType::Q4_1
+    };
+    
+    // Expected type promotion priority (from highest to lowest)
+    // F32 > F16 > BF16 > I32 > I16 > I8 > Q8_0 > Q4_1 > Q4_0
+    
+    // Test all pairs of data types
+    for (DataType type_a : all_types) {
+        for (DataType type_b : all_types) {
+            DataType promoted = context->promote_types(type_a, type_b);
+            
+            // For each pair, check that promotion follows expected rules
+            if (type_a == type_b) {
+                // Same types should promote to themselves
+                EXPECT_EQ(promoted, type_a) << "Failed self-promotion for type " 
+                    << static_cast<int>(type_a);
+            } else {
+                // Verify promotion hierarchy
+                if (type_a == DataType::F32 || type_b == DataType::F32) {
+                    EXPECT_EQ(promoted, DataType::F32) << "Failed promotion to F32";
+                } else if (type_a == DataType::F16 || type_b == DataType::F16) {
+                    EXPECT_EQ(promoted, DataType::F16) << "Failed promotion to F16";
+                } else if (type_a == DataType::BF16 || type_b == DataType::BF16) {
+                    EXPECT_EQ(promoted, DataType::BF16) << "Failed promotion to BF16";
+                } else if (type_a == DataType::I32 || type_b == DataType::I32) {
+                    EXPECT_EQ(promoted, DataType::I32) << "Failed promotion to I32";
+                } else if (type_a == DataType::I16 || type_b == DataType::I16) {
+                    EXPECT_EQ(promoted, DataType::I16) << "Failed promotion to I16";
+                } else if (type_a == DataType::I8 || type_b == DataType::I8) {
+                    EXPECT_EQ(promoted, DataType::I8) << "Failed promotion to I8";
+                } else if (type_a == DataType::Q8_0 || type_b == DataType::Q8_0) {
+                    EXPECT_EQ(promoted, DataType::Q8_0) << "Failed promotion to Q8_0";
+                } else if (type_a == DataType::Q4_1 || type_b == DataType::Q4_1) {
+                    EXPECT_EQ(promoted, DataType::Q4_1) << "Failed promotion to Q4_1";
+                } else {
+                    EXPECT_EQ(promoted, DataType::Q4_0) << "Failed promotion to Q4_0";
+                }
+            }
+        }
+    }
+}
+
+// Test type promotion with complex operations chain
+TEST_F(TensorTypePromotionTest, ComplexOperationsChain) {
+    // Create tensors with different data types
+    Tensor f32_tensor = createTensor(vector_shape, DataType::F32);
+    Tensor i16_tensor = createTensor(vector_shape, DataType::I16);
+    Tensor q8_0_tensor = createTensor(vector_shape, DataType::Q8_0);
+    Tensor q4_1_tensor = createTensor(vector_shape, DataType::Q4_1);
+    
+    // Complex chain of operations with different type promotion
+    // (F32 + I16) * (Q8_0 + Q4_1) => F32 * Q8_0 => F32
+    Tensor op1 = context->add(f32_tensor, i16_tensor);  // Result: F32
+    Tensor op2 = context->add(q8_0_tensor, q4_1_tensor); // Result: Q8_0
+    Tensor result = context->multiply(op1, op2);        // Result: F32
+    
+    // Verify final result data type
+    EXPECT_EQ(result.dtype(), DataType::F32);
+    
+    // Verify intermediate operation types
+    EXPECT_EQ(op1.dtype(), DataType::F32);
+    EXPECT_EQ(op2.dtype(), DataType::Q8_0);
+    
+    // Test implicit conversions through operations
+    // This tests if operations correctly handle type differences internally
+    // I32 + Q4_0 => I32, then relu(I32) => I32, then mean(I32) => I32
+    Tensor i32_tensor = createTensor(vector_shape, DataType::I32);
+    Tensor q4_0_tensor = createTensor(vector_shape, DataType::Q4_0);
+    
+    Tensor op3 = context->add(i32_tensor, q4_0_tensor);  // Result: I32
+    Tensor op4 = context->relu(op3);                     // Result: I32
+    Tensor op5 = context->mean(op4, 0);                  // Result: I32
+    
+    EXPECT_EQ(op3.dtype(), DataType::I32);
+    EXPECT_EQ(op4.dtype(), DataType::I32);
+    EXPECT_EQ(op5.dtype(), DataType::I32);
+}
+
+// Test edge cases for type promotion with operations that have special handling
+TEST_F(TensorTypePromotionTest, MixedPrecisionAndEdgeCases) {
+    // Create mixed precision matrices for special operations like matrix multiplication
+    std::vector<size_t> matrix_shape1 = {3, 4};
+    std::vector<size_t> matrix_shape2 = {4, 5};
+    
+    // Create mixed precision tensors
+    Tensor f32_matrix = createTensor(matrix_shape1, DataType::F32);
+    Tensor f16_matrix = createTensor(matrix_shape2, DataType::F16);
+    Tensor q8_0_matrix = createTensor(matrix_shape2, DataType::Q8_0);
+    
+    // Test matmul with mixed precision and verify the type promotion
+    // F32 @ F16 -> F32
+    Tensor mm_result1 = context->matmul(f32_matrix, f16_matrix);
+    EXPECT_EQ(mm_result1.dtype(), DataType::F32);
+    EXPECT_EQ(mm_result1.shape(0), 3);
+    EXPECT_EQ(mm_result1.shape(1), 5);
+    
+    // F16 @ F32 -> F32 (even though F16 is the first tensor)
+    Tensor f16_matrix1 = createTensor(matrix_shape1, DataType::F16);
+    Tensor f32_matrix2 = createTensor(matrix_shape2, DataType::F32);
+    Tensor mm_result2 = context->matmul(f16_matrix1, f32_matrix2);
+    EXPECT_EQ(mm_result2.dtype(), DataType::F32);
+    
+    // Test matrix multiplication with quantized types
+    // F32 @ Q8_0 -> F32 (dequantize)
+    Tensor mm_result3 = context->matmul(f32_matrix, q8_0_matrix);
+    EXPECT_EQ(mm_result3.dtype(), DataType::F32);
+    
+    // Test operations with mixed quantized types
+    Tensor q4_0_tensor = createTensor(vector_shape, DataType::Q4_0);
+    Tensor q4_1_tensor = createTensor(vector_shape, DataType::Q4_1);
+    Tensor q8_0_tensor = createTensor(vector_shape, DataType::Q8_0);
+    
+    // Quantized type promotion: Q4_0 + Q4_1 -> Q4_1 (better precision)
+    Tensor op1 = context->add(q4_0_tensor, q4_1_tensor);
+    EXPECT_EQ(op1.dtype(), DataType::Q4_1);
+    
+    // Quantized type promotion: Q4_1 + Q8_0 -> Q8_0 (better precision)
+    Tensor op2 = context->add(q4_1_tensor, q8_0_tensor);
+    EXPECT_EQ(op2.dtype(), DataType::Q8_0);
+    
+    // Test more complex mixed precision scenarios
+    Tensor i16_tensor = createTensor(vector_shape, DataType::I16);
+    Tensor bf16_tensor = createTensor(vector_shape, DataType::BF16);
+    
+    // I16 + BF16 -> BF16 (float over int)
+    Tensor op3 = context->add(i16_tensor, bf16_tensor);
+    EXPECT_EQ(op3.dtype(), DataType::BF16);
+    
+    // Q8_0 + BF16 -> BF16 (float over quantized)
+    Tensor op4 = context->add(q8_0_tensor, bf16_tensor);
+    EXPECT_EQ(op4.dtype(), DataType::BF16);
+    
+    // Complex case with softmax on a quantized tensor
+    // Implementation-dependent, but likely to be F32 or stay as quantized
+    Tensor result = context->softmax(q8_0_tensor, 0);
+    // We don't assert on the exact type since it's implementation-dependent
+    
+    // Test direct promotion between all types
+    // This explicitly calls promote_types to verify all combinations work
+    DataType all_types[] = {
+        DataType::F32, DataType::F16, DataType::BF16,
+        DataType::I32, DataType::I16, DataType::I8,
+        DataType::Q8_0, DataType::Q4_1, DataType::Q4_0
+    };
+    
+    // Expected promotion results for each pair
+    for (size_t i = 0; i < sizeof(all_types)/sizeof(all_types[0]); ++i) {
+        for (size_t j = 0; j < sizeof(all_types)/sizeof(all_types[0]); ++j) {
+            DataType type_a = all_types[i];
+            DataType type_b = all_types[j];
+            DataType promoted = context->promote_types(type_a, type_b);
+            
+            // Verify promotion follows our defined hierarchy
+            if (i == j) {
+                // Same type promotes to itself
+                EXPECT_EQ(promoted, type_a);
+            } else {
+                // Check which type should win
+                size_t winning_index = std::min(i, j); // Lower index = higher priority
+                EXPECT_EQ(promoted, all_types[winning_index]);
+            }
+        }
+    }
+}

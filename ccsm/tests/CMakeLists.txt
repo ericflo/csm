@@ -23,6 +23,7 @@ file(GLOB TEST_SOURCES
 set(ADDITIONAL_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_type_promotion.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_serialization.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_quantized_operations.cpp"
 )
 
 # Append any missing files
@@ -68,6 +69,7 @@ add_executable(test_tensor_only
     ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_type_promotion.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_serialization.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_quantized_operations.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
 )
 target_link_libraries(test_tensor_only PRIVATE ccsm_core GTest::gtest)
