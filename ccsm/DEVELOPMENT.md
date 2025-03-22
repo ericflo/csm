@@ -235,10 +235,13 @@ Once basic functionality is working, focus on these performance optimizations:
 - Optimize attention implementations ✅
 - Add kernel fusion where possible ✅
 - Additional kernel fusion opportunities:
-  - Matrix multiplication + activation functions
-  - Further attention fusion optimizations
+  - Matrix multiplication + activation functions ✅
+  - Further attention fusion optimizations ✅
   - In-place operations to reduce memory traffic
-- Implement quantization-aware operations
+- Implement quantization-aware operations ✅
+  - Q8_0 quantization (8-bit with zero bias) ✅
+  - Q4_0 quantization (4-bit with zero bias) ✅
+  - Q4_1 quantization (4-bit with non-zero bias) ✅
 
 ## Running Tests
 
