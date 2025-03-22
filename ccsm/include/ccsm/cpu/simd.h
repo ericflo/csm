@@ -221,6 +221,23 @@ void fused_matmul_relu(T* output, const T* a, const T* b, size_t m, size_t k, si
 template<typename T>
 void fused_matmul_silu(T* output, const T* a, const T* b, size_t m, size_t k, size_t n);
 
+// Fused matrix multiplication with quantized weights and activation functions
+template<typename T>
+void fused_matmul_relu_q8_0(T* output, const T* a, const int8_t* b, const float* b_scale, 
+                          size_t m, size_t k, size_t n);
+
+template<typename T>
+void fused_matmul_silu_q8_0(T* output, const T* a, const int8_t* b, const float* b_scale, 
+                           size_t m, size_t k, size_t n);
+
+template<typename T>
+void fused_matmul_relu_q4_0(T* output, const T* a, const uint8_t* b, const float* b_scale, 
+                          size_t m, size_t k, size_t n);
+
+template<typename T>
+void fused_matmul_silu_q4_0(T* output, const T* a, const uint8_t* b, const float* b_scale, 
+                           size_t m, size_t k, size_t n);
+
 // Implementation details namespace (not part of public API)
 namespace detail {
 
@@ -1017,6 +1034,178 @@ void fused_matmul_silu_avx_f32(float* output, const float* a, const float* b, si
 void fused_matmul_silu_neon_f32(float* output, const float* a, const float* b, size_t m, size_t k, size_t n);
 #endif
 
+// Fused matrix multiplication with quantized weights and ReLU activation - scalar implementation
+template<typename T>
+void fused_matmul_relu_q8_0_scalar(T* output, const T* a, const int8_t* b, const float* b_scale, 
+                                 size_t m, size_t k, size_t n) {
+    // Get scale factor for dequantization
+    const float inv_scale = *b_scale;
+    
+    // Initialize output matrix to zero
+    for (size_t i = 0; i < m * n; i++) {
+        output[i] = 0;
+    }
+    
+    // Perform matrix multiplication with dequantization and ReLU in one pass
+    for (size_t i = 0; i < m; i++) {
+        for (size_t j = 0; j < n; j++) {
+            T sum = 0;
+            for (size_t l = 0; l < k; l++) {
+                // Dequantize b on-the-fly
+                T b_val = static_cast<T>(b[l * n + j]) * inv_scale;
+                sum += a[i * k + l] * b_val;
+            }
+            // Apply ReLU activation directly: max(0, x)
+            output[i * n + j] = (sum > 0) ? sum : 0;
+        }
+    }
+}
+
+// Fused matrix multiplication with quantized weights and SiLU activation - scalar implementation
+template<typename T>
+void fused_matmul_silu_q8_0_scalar(T* output, const T* a, const int8_t* b, const float* b_scale, 
+                                  size_t m, size_t k, size_t n) {
+    // Get scale factor for dequantization
+    const float inv_scale = *b_scale;
+    
+    // Initialize output matrix to zero
+    for (size_t i = 0; i < m * n; i++) {
+        output[i] = 0;
+    }
+    
+    // Perform matrix multiplication with dequantization and SiLU in one pass
+    for (size_t i = 0; i < m; i++) {
+        for (size_t j = 0; j < n; j++) {
+            T sum = 0;
+            for (size_t l = 0; l < k; l++) {
+                // Dequantize b on-the-fly
+                T b_val = static_cast<T>(b[l * n + j]) * inv_scale;
+                sum += a[i * k + l] * b_val;
+            }
+            // Apply SiLU activation directly: x * sigmoid(x)
+            output[i * n + j] = sum / (1.0 + std::exp(-sum));
+        }
+    }
+}
+
+// Fused matrix multiplication with 4-bit quantized weights (Q4_0) and ReLU activation - scalar implementation
+template<typename T>
+void fused_matmul_relu_q4_0_scalar(T* output, const T* a, const uint8_t* b, const float* b_scale,
+                                 size_t m, size_t k, size_t n) {
+    // Get scale factor for dequantization
+    const float inv_scale = *b_scale;
+    
+    // Initialize output matrix to zero
+    for (size_t i = 0; i < m * n; i++) {
+        output[i] = 0;
+    }
+    
+    // Perform matrix multiplication with dequantization and ReLU in one pass
+    for (size_t i = 0; i < m; i++) {
+        for (size_t j = 0; j < n; j++) {
+            T sum = 0;
+            for (size_t l = 0; l < k; l++) {
+                // Calculate index for accessing b
+                size_t b_idx = l * n + j;
+                size_t byte_idx = b_idx / 2;
+                bool is_upper = (b_idx % 2) != 0;
+                
+                // Extract the appropriate 4-bit value
+                int8_t q4_val;
+                if (is_upper) {
+                    q4_val = static_cast<int8_t>((b[byte_idx] >> 4) & 0xF);
+                    // Sign extend if the high bit is set
+                    if (q4_val & 0x8) {
+                        q4_val |= 0xF0; // Extend to 8 bits
+                    }
+                } else {
+                    q4_val = static_cast<int8_t>(b[byte_idx] & 0xF);
+                    // Sign extend if the high bit is set
+                    if (q4_val & 0x8) {
+                        q4_val |= 0xF0; // Extend to 8 bits
+                    }
+                }
+                
+                // Dequantize and multiply
+                T b_val = static_cast<T>(q4_val) * inv_scale;
+                sum += a[i * k + l] * b_val;
+            }
+            // Apply ReLU activation directly: max(0, x)
+            output[i * n + j] = (sum > 0) ? sum : 0;
+        }
+    }
+}
+
+// Fused matrix multiplication with 4-bit quantized weights (Q4_0) and SiLU activation - scalar implementation
+template<typename T>
+void fused_matmul_silu_q4_0_scalar(T* output, const T* a, const uint8_t* b, const float* b_scale,
+                                  size_t m, size_t k, size_t n) {
+    // Get scale factor for dequantization
+    const float inv_scale = *b_scale;
+    
+    // Initialize output matrix to zero
+    for (size_t i = 0; i < m * n; i++) {
+        output[i] = 0;
+    }
+    
+    // Perform matrix multiplication with dequantization and SiLU in one pass
+    for (size_t i = 0; i < m; i++) {
+        for (size_t j = 0; j < n; j++) {
+            T sum = 0;
+            for (size_t l = 0; l < k; l++) {
+                // Calculate index for accessing b
+                size_t b_idx = l * n + j;
+                size_t byte_idx = b_idx / 2;
+                bool is_upper = (b_idx % 2) != 0;
+                
+                // Extract the appropriate 4-bit value
+                int8_t q4_val;
+                if (is_upper) {
+                    q4_val = static_cast<int8_t>((b[byte_idx] >> 4) & 0xF);
+                    // Sign extend if the high bit is set
+                    if (q4_val & 0x8) {
+                        q4_val |= 0xF0; // Extend to 8 bits
+                    }
+                } else {
+                    q4_val = static_cast<int8_t>(b[byte_idx] & 0xF);
+                    // Sign extend if the high bit is set
+                    if (q4_val & 0x8) {
+                        q4_val |= 0xF0; // Extend to 8 bits
+                    }
+                }
+                
+                // Dequantize and multiply
+                T b_val = static_cast<T>(q4_val) * inv_scale;
+                sum += a[i * k + l] * b_val;
+            }
+            // Apply SiLU activation directly: x * sigmoid(x)
+            output[i * n + j] = sum / (1.0 + std::exp(-sum));
+        }
+    }
+}
+
+#if defined(CCSM_HAVE_AVX)
+void fused_matmul_relu_q8_0_avx_f32(float* output, const float* a, const int8_t* b, const float* b_scale, 
+                                  size_t m, size_t k, size_t n);
+void fused_matmul_silu_q8_0_avx_f32(float* output, const float* a, const int8_t* b, const float* b_scale, 
+                                   size_t m, size_t k, size_t n);
+void fused_matmul_relu_q4_0_avx_f32(float* output, const float* a, const uint8_t* b, const float* b_scale, 
+                                  size_t m, size_t k, size_t n);
+void fused_matmul_silu_q4_0_avx_f32(float* output, const float* a, const uint8_t* b, const float* b_scale, 
+                                   size_t m, size_t k, size_t n);
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+void fused_matmul_relu_q8_0_neon_f32(float* output, const float* a, const int8_t* b, const float* b_scale, 
+                                   size_t m, size_t k, size_t n);
+void fused_matmul_silu_q8_0_neon_f32(float* output, const float* a, const int8_t* b, const float* b_scale, 
+                                    size_t m, size_t k, size_t n);
+void fused_matmul_relu_q4_0_neon_f32(float* output, const float* a, const uint8_t* b, const float* b_scale, 
+                                   size_t m, size_t k, size_t n);
+void fused_matmul_silu_q4_0_neon_f32(float* output, const float* a, const uint8_t* b, const float* b_scale, 
+                                    size_t m, size_t k, size_t n);
+#endif
+
 } // namespace detail
 
 // Template specialization for fused matrix multiplication with ReLU
@@ -1572,6 +1761,102 @@ inline void matrix_mul_q4_1<float>(float* result, const float* a, const uint8_t*
     
     // Fallback to scalar implementation
     detail::matrix_mul_q4_1_scalar(result, a, b, b_scale, b_bias, m, k, n);
+}
+
+// Template specialization for fused matrix multiplication with quantized weights (Q8_0) and ReLU activation
+template<>
+inline void fused_matmul_relu_q8_0<float>(float* output, const float* a, const int8_t* b, const float* b_scale, 
+                                        size_t m, size_t k, size_t n) {
+    const auto& features = CPUFeatures::get();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (features.avx) {
+        detail::fused_matmul_relu_q8_0_avx_f32(output, a, b, b_scale, m, k, n);
+        return;
+    }
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+    if (features.neon) {
+        detail::fused_matmul_relu_q8_0_neon_f32(output, a, b, b_scale, m, k, n);
+        return;
+    }
+#endif
+
+    // Fallback to scalar implementation
+    detail::fused_matmul_relu_q8_0_scalar(output, a, b, b_scale, m, k, n);
+}
+
+// Template specialization for fused matrix multiplication with quantized weights (Q8_0) and SiLU activation
+template<>
+inline void fused_matmul_silu_q8_0<float>(float* output, const float* a, const int8_t* b, const float* b_scale, 
+                                         size_t m, size_t k, size_t n) {
+    const auto& features = CPUFeatures::get();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (features.avx) {
+        detail::fused_matmul_silu_q8_0_avx_f32(output, a, b, b_scale, m, k, n);
+        return;
+    }
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+    if (features.neon) {
+        detail::fused_matmul_silu_q8_0_neon_f32(output, a, b, b_scale, m, k, n);
+        return;
+    }
+#endif
+
+    // Fallback to scalar implementation
+    detail::fused_matmul_silu_q8_0_scalar(output, a, b, b_scale, m, k, n);
+}
+
+// Template specialization for fused matrix multiplication with 4-bit quantized weights (Q4_0) and ReLU activation
+template<>
+inline void fused_matmul_relu_q4_0<float>(float* output, const float* a, const uint8_t* b, const float* b_scale, 
+                                        size_t m, size_t k, size_t n) {
+    const auto& features = CPUFeatures::get();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (features.avx) {
+        detail::fused_matmul_relu_q4_0_avx_f32(output, a, b, b_scale, m, k, n);
+        return;
+    }
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+    if (features.neon) {
+        detail::fused_matmul_relu_q4_0_neon_f32(output, a, b, b_scale, m, k, n);
+        return;
+    }
+#endif
+
+    // Fallback to scalar implementation
+    detail::fused_matmul_relu_q4_0_scalar(output, a, b, b_scale, m, k, n);
+}
+
+// Template specialization for fused matrix multiplication with 4-bit quantized weights (Q4_0) and SiLU activation
+template<>
+inline void fused_matmul_silu_q4_0<float>(float* output, const float* a, const uint8_t* b, const float* b_scale, 
+                                         size_t m, size_t k, size_t n) {
+    const auto& features = CPUFeatures::get();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (features.avx) {
+        detail::fused_matmul_silu_q4_0_avx_f32(output, a, b, b_scale, m, k, n);
+        return;
+    }
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+    if (features.neon) {
+        detail::fused_matmul_silu_q4_0_neon_f32(output, a, b, b_scale, m, k, n);
+        return;
+    }
+#endif
+
+    // Fallback to scalar implementation
+    detail::fused_matmul_silu_q4_0_scalar(output, a, b, b_scale, m, k, n);
 }
 
 // Cache-aware memory layout utilities
