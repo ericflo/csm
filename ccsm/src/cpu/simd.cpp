@@ -1,17 +1,77 @@
+#include <ccsm/cpu/simd.h>
+#include <cstddef>
+#include <cstdint>
+#include <algorithm>
+#include <cmath>
+
+#if defined(__x86_64__) || defined(_M_X64)
+#define CCSM_HAVE_AVX
+#include <immintrin.h>
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+#include <arm_neon.h>
+#endif
+
+namespace ccsm {
+namespace simd {
+namespace detail {
+
+// Implementation of exp256_ps for AVX
+#ifdef CCSM_HAVE_AVX
+__m256 exp256_ps(__m256 x) {
+    // Simple exponential approximation for AVX
+    // Note: This is a very basic implementation and could be improved for accuracy
+    
+    // Constants for exponential approximation
+    const __m256 c1 = _mm256_set1_ps(1.0f);
+    const __m256 c2 = _mm256_set1_ps(1.0f);
+    const __m256 c3 = _mm256_set1_ps(0.5f);
+    const __m256 c4 = _mm256_set1_ps(0.1666666f);
+    const __m256 c5 = _mm256_set1_ps(0.0416666f);
+    
+    // Clamp x to prevent overflow/underflow
+    const __m256 max_x = _mm256_set1_ps(88.3762626647949f);
+    const __m256 min_x = _mm256_set1_ps(-88.3762626647949f);
+    x = _mm256_max_ps(_mm256_min_ps(x, max_x), min_x);
+    
+    // Calculate exp(x) using Taylor series: 1 + x + x^2/2 + x^3/6 + x^4/24
+    __m256 result = c1;
+    __m256 term = x;
+    result = _mm256_add_ps(result, term);
+    
+    term = _mm256_mul_ps(term, x);
+    term = _mm256_mul_ps(term, c3);
+    result = _mm256_add_ps(result, term);
+    
+    term = _mm256_mul_ps(term, x);
+    term = _mm256_mul_ps(term, c4);
+    result = _mm256_add_ps(result, term);
+    
+    term = _mm256_mul_ps(term, x);
+    term = _mm256_mul_ps(term, c5);
+    result = _mm256_add_ps(result, term);
+    
+    return result;
+}
+#endif
+
 // Fused matrix multiplication with Q4_0 quantized weights and ReLU activation
 void fused_matmul_relu_q4_0_avx_f32(float* output, const float* a, const uint8_t* b, const float* b_scale, 
                                   size_t m, size_t k, size_t n) {
     // Get scale factor for dequantization
     const float inv_scale = *b_scale;
-    const __m256 vscale = _mm256_set1_ps(inv_scale);
-    
-    // Zero vector for ReLU
-    const __m256 vzero = _mm256_setzero_ps();
     
     // Initialize result matrix to zeros
     for (size_t i = 0; i < m * n; i++) {
         output[i] = 0.0f;
     }
+    
+#ifdef CCSM_HAVE_AVX
+    // AVX-specific variables
+    const __m256 vscale = _mm256_set1_ps(inv_scale);
+    const __m256 vzero = _mm256_setzero_ps();
+#endif
     
     // Process each row of A and corresponding output row
     for (size_t i = 0; i < m; i++) {
@@ -20,8 +80,15 @@ void fused_matmul_relu_q4_0_avx_f32(float* output, const float* a, const uint8_t
             // Handle boundary condition
             size_t block_size = std::min(size_t(8), n - j);
             
+#if !defined(CCSM_HAVE_AVX)
+            // If AVX is not available, always use scalar code
+            {
+#else
+            // With AVX, only use scalar for partial vectors
             if (block_size < 8) {
-                // If we don't have a full vector, process the rest using scalar code
+#endif
+                // If we don't have a full vector or AVX is not available, 
+                // process using scalar code
                 for (size_t jj = j; jj < j + block_size; jj++) {
                     float sum = 0.0f;
                     for (size_t l = 0; l < k; l++) {
@@ -54,8 +121,12 @@ void fused_matmul_relu_q4_0_avx_f32(float* output, const float* a, const uint8_t
                     output[i * n + jj] = (sum > 0.0f) ? sum : 0.0f;
                 }
                 continue;
+#if !defined(CCSM_HAVE_AVX)
+            }
+#else
             }
             
+            // With AVX, continue with vector processing
             // Use 8 accumulators for better instruction-level parallelism
             __m256 sum = _mm256_setzero_ps();
             
@@ -124,6 +195,7 @@ void fused_matmul_relu_q4_0_avx_f32(float* output, const float* a, const uint8_t
             
             // Store the result
             _mm256_storeu_ps(&output[i * n + j], result);
+#endif // CCSM_HAVE_AVX
         }
     }
 }
@@ -133,16 +205,18 @@ void fused_matmul_silu_q4_0_avx_f32(float* output, const float* a, const uint8_t
                                    size_t m, size_t k, size_t n) {
     // Get scale factor for dequantization
     const float inv_scale = *b_scale;
-    const __m256 vscale = _mm256_set1_ps(inv_scale);
-    
-    // Constants for SiLU calculation
-    const __m256 vones = _mm256_set1_ps(1.0f);
-    const __m256 vzero = _mm256_setzero_ps();
     
     // Initialize result matrix to zeros
     for (size_t i = 0; i < m * n; i++) {
         output[i] = 0.0f;
     }
+    
+#ifdef CCSM_HAVE_AVX
+    // Constants for SiLU calculation
+    const __m256 vscale = _mm256_set1_ps(inv_scale);
+    const __m256 vones = _mm256_set1_ps(1.0f);
+    const __m256 vzero = _mm256_setzero_ps();
+#endif
     
     // Process each row of A and corresponding output row
     for (size_t i = 0; i < m; i++) {
@@ -151,8 +225,15 @@ void fused_matmul_silu_q4_0_avx_f32(float* output, const float* a, const uint8_t
             // Handle boundary condition
             size_t block_size = std::min(size_t(8), n - j);
             
+#if !defined(CCSM_HAVE_AVX)
+            // If AVX is not available, always use scalar code
+            {
+#else
+            // With AVX, only use scalar for partial vectors
             if (block_size < 8) {
-                // If we don't have a full vector, process the rest using scalar code
+#endif
+                // If we don't have a full vector or AVX is not available,
+                // process using scalar code
                 for (size_t jj = j; jj < j + block_size; jj++) {
                     float sum = 0.0f;
                     for (size_t l = 0; l < k; l++) {
@@ -185,8 +266,12 @@ void fused_matmul_silu_q4_0_avx_f32(float* output, const float* a, const uint8_t
                     output[i * n + jj] = sum / (1.0f + std::exp(-sum));
                 }
                 continue;
+#if !defined(CCSM_HAVE_AVX)
+            }
+#else
             }
             
+            // With AVX, continue with vector processing
             // Use 8 accumulators for better instruction-level parallelism
             __m256 sum = _mm256_setzero_ps();
             
@@ -262,6 +347,11 @@ void fused_matmul_silu_q4_0_avx_f32(float* output, const float* a, const uint8_t
             
             // Store the result
             _mm256_storeu_ps(&output[i * n + j], result);
+#endif // CCSM_HAVE_AVX
         }
     }
 }
+
+} // namespace detail
+} // namespace simd
+} // namespace ccsm

@@ -72,6 +72,12 @@ public:
     Tensor sum(const Tensor& x, int dim) override;
     Tensor mean(const Tensor& x, int dim) override;
     
+    // Type casting
+    Tensor cast(const Tensor& x, DataType dtype) override;
+    
+    // Type promotion helpers
+    DataType promote_types(DataType a, DataType b) override;
+    
     // Get the backend name
     std::string backend() const override { return "ggml"; }
     

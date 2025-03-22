@@ -406,6 +406,83 @@ Tensor GGMLContext::mean(const Tensor& x, int dim) {
     throw std::runtime_error("GGMLContext::mean not implemented yet");
 }
 
+// Type casting implementation
+Tensor GGMLContext::cast(const Tensor& x, DataType dtype) {
+    // Get the GGML tensor from input
+    struct ggml_tensor* x_tensor = get_ggml_tensor(x);
+    
+    // Convert the target data type to GGML type
+    enum ggml_type target_type = GGMLTensorImpl::to_ggml_type(dtype);
+    
+    // Create a new tensor with the target data type
+    std::vector<size_t> shape = x.shape();
+    int64_t ne[GGML_MAX_DIMS] = {1, 1, 1, 1};
+    for (size_t i = 0; i < shape.size() && i < GGML_MAX_DIMS; i++) {
+        ne[i] = shape[i];
+    }
+    
+    // Create new tensor
+    struct ggml_tensor* result_tensor = ggml_new_tensor(ctx_, target_type, 
+                                                     std::min(static_cast<size_t>(GGML_MAX_DIMS), shape.size()), 
+                                                     ne);
+    
+    // For now, we'll just create an empty tensor of the right type and shape
+    // In a real implementation, we would convert the data
+    // TODO: Implement proper type conversion
+    
+    return Tensor(std::make_shared<GGMLTensorImpl>(result_tensor, true));
+}
+
+// Type promotion helper implementation
+DataType GGMLContext::promote_types(DataType a, DataType b) {
+    // Float types have higher precedence than integer types
+    // Within the float types: F32 > F16 > BF16
+    // Within the integer types: I32 > I16 > I8
+    // Quantized types promotion: Q8_0 > Q4_1 > Q4_0
+    
+    // If either is F32, result is F32
+    if (a == DataType::F32 || b == DataType::F32) {
+        return DataType::F32;
+    }
+    
+    // If either is F16, result is F16
+    if (a == DataType::F16 || b == DataType::F16) {
+        return DataType::F16;
+    }
+    
+    // If either is BF16, result is BF16
+    if (a == DataType::BF16 || b == DataType::BF16) {
+        return DataType::BF16;
+    }
+    
+    // If either is I32, result is I32
+    if (a == DataType::I32 || b == DataType::I32) {
+        return DataType::I32;
+    }
+    
+    // If either is I16, result is I16
+    if (a == DataType::I16 || b == DataType::I16) {
+        return DataType::I16;
+    }
+    
+    // If either is I8, result is I8
+    if (a == DataType::I8 || b == DataType::I8) {
+        return DataType::I8;
+    }
+    
+    // Quantized types
+    if (a == DataType::Q8_0 || b == DataType::Q8_0) {
+        return DataType::Q8_0;
+    }
+    
+    if (a == DataType::Q4_1 || b == DataType::Q4_1) {
+        return DataType::Q4_1;
+    }
+    
+    // If we get here, both are Q4_0 or some other type
+    return DataType::Q4_0;
+}
+
 struct ggml_tensor* GGMLContext::alloc_tensor(enum ggml_type type, int n_dims, const int64_t* dims) {
     return ggml_new_tensor(ctx_, type, n_dims, dims);
 }

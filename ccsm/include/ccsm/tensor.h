@@ -6,8 +6,32 @@
 #include <string>
 #include <stdexcept>
 #include <iostream>
+#include <map>
 
 namespace ccsm {
+
+// Endian format for serialization
+enum class EndianFormat {
+    NATIVE, // Use native system endianness
+    LITTLE, // Force little endian
+    BIG     // Force big endian
+};
+
+// Compression level for serialization
+enum class CompressionLevel {
+    NONE,    // No compression
+    FAST,    // Fast compression (less effective)
+    DEFAULT, // Default compression
+    BEST     // Best compression (slower)
+};
+
+// Metadata for tensor serialization
+struct TensorMetadata {
+    std::string name;
+    std::string description;
+    int version = 0;
+    std::map<std::string, std::string> custom_fields;
+};
 
 // Forward declarations
 class TensorImpl;
@@ -99,6 +123,24 @@ public:
     
     // Conversion between backends
     static Tensor convert(const Tensor& tensor, const std::string& to_backend);
+    
+    // Serialization functions
+    static bool save(const Tensor& tensor, const std::string& filepath, 
+                    EndianFormat endian = EndianFormat::NATIVE,
+                    CompressionLevel compression = CompressionLevel::NONE);
+    
+    static Tensor load(const std::string& filepath, 
+                     EndianFormat endian = EndianFormat::NATIVE);
+    
+    // Serialization with metadata
+    static bool save_with_metadata(const Tensor& tensor, const std::string& filepath,
+                                  const TensorMetadata& metadata,
+                                  EndianFormat endian = EndianFormat::NATIVE,
+                                  CompressionLevel compression = CompressionLevel::NONE);
+    
+    static Tensor load_with_metadata(const std::string& filepath, 
+                                   TensorMetadata& metadata,
+                                   EndianFormat endian = EndianFormat::NATIVE);
 };
 
 // Context for tensor operations
@@ -128,6 +170,12 @@ public:
     // Reductions
     virtual Tensor sum(const Tensor& x, int dim) = 0;
     virtual Tensor mean(const Tensor& x, int dim) = 0;
+    
+    // Type casting
+    virtual Tensor cast(const Tensor& x, DataType dtype) = 0;
+    
+    // Type promotion helpers
+    virtual DataType promote_types(DataType a, DataType b) = 0;
     
     // Get the backend name
     virtual std::string backend() const = 0;

@@ -19,6 +19,19 @@ file(GLOB TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp"
 )
 
+# Make sure our specific test files are included
+set(ADDITIONAL_TEST_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_type_promotion.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_serialization.cpp"
+)
+
+# Append any missing files
+foreach(SRC ${ADDITIONAL_TEST_SOURCES})
+    if(NOT "${TEST_SOURCES}" MATCHES "${SRC}")
+        list(APPEND TEST_SOURCES "${SRC}")
+    endif()
+endforeach()
+
 # Make sure test_thread_pool.cpp is included
 if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_thread_pool.cpp")
     message(WARNING "test_thread_pool.cpp not found. Thread pool tests will not be included.")
@@ -50,6 +63,16 @@ add_executable(test_simd
 target_link_libraries(test_simd PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_simd PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# Add a separate target for tensor tests only (for development)
+add_executable(test_tensor_only
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_type_promotion.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_serialization.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_tensor_only PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_tensor_only PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # We'll add integration tests after defining coverage targets
 
 # Add MLX tests conditionally
@@ -69,6 +92,7 @@ endif()
 add_test(NAME UnitTests COMMAND ${CMAKE_CURRENT_BINARY_DIR}/ccsm_unit_tests)
 add_test(NAME TokenizerTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_tokenizer)
 add_test(NAME SIMDTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_simd)
+add_test(NAME TensorTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_tensor_only)
 
 if(WITH_MLX AND MLX_TEST_SOURCES)
     add_test(NAME MLXTests COMMAND ccsm_mlx_tests)

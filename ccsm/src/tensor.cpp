@@ -2,6 +2,12 @@
 #include <sstream>
 #include <stdexcept>
 #include <algorithm>
+#include <fstream>
+#include <filesystem>
+#include <cstdio>
+#include <limits>
+#include <iostream>
+#include <iomanip>
 
 namespace ccsm {
 
@@ -1560,6 +1566,156 @@ public:
     std::string backend() const override {
         return "simple";
     }
+    
+    Tensor cast(const Tensor& x, DataType dtype) override {
+        // Check if already the requested type
+        if (x.dtype() == dtype) {
+            return x;
+        }
+        
+        // Create a result tensor with the new type
+        auto result = zeros(x.shape(), dtype);
+        
+        // Handle different conversion cases
+        // For simplicity, we'll just handle float32 to/from basic types
+        if (x.dtype() == DataType::F32) {
+            float* x_data = static_cast<float*>(const_cast<void*>(x.data()));
+            
+            switch (dtype) {
+                case DataType::I32: {
+                    int32_t* result_data = static_cast<int32_t*>(result.data());
+                    for (size_t i = 0; i < x.size(); i++) {
+                        result_data[i] = static_cast<int32_t>(x_data[i]);
+                    }
+                    break;
+                }
+                case DataType::I16: {
+                    int16_t* result_data = static_cast<int16_t*>(result.data());
+                    for (size_t i = 0; i < x.size(); i++) {
+                        result_data[i] = static_cast<int16_t>(x_data[i]);
+                    }
+                    break;
+                }
+                case DataType::I8: {
+                    int8_t* result_data = static_cast<int8_t*>(result.data());
+                    for (size_t i = 0; i < x.size(); i++) {
+                        result_data[i] = static_cast<int8_t>(x_data[i]);
+                    }
+                    break;
+                }
+                case DataType::F16:
+                case DataType::BF16: {
+                    // Simplified F16/BF16 conversion for demo purposes
+                    uint16_t* result_data = static_cast<uint16_t*>(result.data());
+                    for (size_t i = 0; i < x.size(); i++) {
+                        // Simplified conversion - just store the bits
+                        result_data[i] = static_cast<uint16_t>(x_data[i] * 100.0f);
+                    }
+                    break;
+                }
+                case DataType::Q8_0:
+                case DataType::Q4_0:
+                case DataType::Q4_1: {
+                    // For quantized types, we'd need more complex logic
+                    std::cerr << "Warning: Conversion to quantized types not properly implemented yet." << std::endl;
+                    break;
+                }
+                default:
+                    std::cerr << "Warning: Unhandled cast destination type: " << static_cast<int>(dtype) << std::endl;
+            }
+        } else if (dtype == DataType::F32) {
+            // Conversion to F32 from other types
+            float* result_data = static_cast<float*>(result.data());
+            
+            switch (x.dtype()) {
+                case DataType::I32: {
+                    int32_t* x_data = static_cast<int32_t*>(const_cast<void*>(x.data()));
+                    for (size_t i = 0; i < x.size(); i++) {
+                        result_data[i] = static_cast<float>(x_data[i]);
+                    }
+                    break;
+                }
+                case DataType::I16: {
+                    int16_t* x_data = static_cast<int16_t*>(const_cast<void*>(x.data()));
+                    for (size_t i = 0; i < x.size(); i++) {
+                        result_data[i] = static_cast<float>(x_data[i]);
+                    }
+                    break;
+                }
+                case DataType::I8: {
+                    int8_t* x_data = static_cast<int8_t*>(const_cast<void*>(x.data()));
+                    for (size_t i = 0; i < x.size(); i++) {
+                        result_data[i] = static_cast<float>(x_data[i]);
+                    }
+                    break;
+                }
+                case DataType::F16:
+                case DataType::BF16: {
+                    // Simplified F16/BF16 conversion for demo purposes
+                    uint16_t* x_data = static_cast<uint16_t*>(const_cast<void*>(x.data()));
+                    for (size_t i = 0; i < x.size(); i++) {
+                        // Simplified conversion - just interpret the bits
+                        result_data[i] = static_cast<float>(x_data[i]) / 100.0f;
+                    }
+                    break;
+                }
+                case DataType::Q8_0:
+                case DataType::Q4_0:
+                case DataType::Q4_1: {
+                    // For quantized types, we'd need more complex logic
+                    std::cerr << "Warning: Conversion from quantized types not properly implemented yet." << std::endl;
+                    break;
+                }
+                default:
+                    std::cerr << "Warning: Unhandled cast source type: " << static_cast<int>(x.dtype()) << std::endl;
+            }
+        } else {
+            // For conversions between non-F32 types, convert via F32 as an intermediate step
+            // This is not efficient but simpler to implement
+            std::cerr << "Warning: Using F32 as intermediate type for conversion from "
+                      << x.dtype_str() << " to " << static_cast<int>(dtype) << std::endl;
+            
+            // First convert to F32
+            auto f32_tensor = cast(x, DataType::F32);
+            
+            // Then convert from F32 to the target type
+            return cast(f32_tensor, dtype);
+        }
+        
+        return result;
+    }
+    
+    DataType promote_types(DataType a, DataType b) override {
+        // If types are the same, no promotion needed
+        if (a == b) {
+            return a;
+        }
+        
+        // Define a type hierarchy for promotion
+        auto get_rank = [](DataType type) -> int {
+            switch (type) {
+                // Floating point types have highest priority
+                case DataType::F32:  return 100;
+                case DataType::F16:  return 90;
+                case DataType::BF16: return 80;
+                
+                // Integer types have middle priority
+                case DataType::I32:  return 70;
+                case DataType::I16:  return 60;
+                case DataType::I8:   return 50;
+                
+                // Quantized types have lowest priority
+                case DataType::Q8_0: return 40;
+                case DataType::Q4_1: return 30;
+                case DataType::Q4_0: return 20;
+                
+                default:             return 0;
+            }
+        };
+        
+        // Return the type with higher rank
+        return (get_rank(a) >= get_rank(b)) ? a : b;
+    }
 };
 
 // ContextFactory implementation
@@ -1567,6 +1723,577 @@ std::shared_ptr<Context> ContextFactory::create(const std::string& backend) {
     // For now, just return a SimpleContext
     // A real implementation would select based on backend and availability
     return std::make_shared<SimpleContext>();
+}
+
+// Helpers for serialization
+namespace {
+    // Helper to convert between endian formats
+    void convert_endianness(void* data, size_t size_bytes, EndianFormat from, EndianFormat to) {
+        if (from == to || size_bytes <= 1) {
+            return; // No conversion needed
+        }
+        
+        uint8_t* bytes = static_cast<uint8_t*>(data);
+        
+        if (size_bytes == 2) {
+            std::swap(bytes[0], bytes[1]);
+        } else if (size_bytes == 4) {
+            std::swap(bytes[0], bytes[3]);
+            std::swap(bytes[1], bytes[2]);
+        } else if (size_bytes == 8) {
+            std::swap(bytes[0], bytes[7]);
+            std::swap(bytes[1], bytes[6]);
+            std::swap(bytes[2], bytes[5]);
+            std::swap(bytes[3], bytes[4]);
+        }
+    }
+    
+    // Get native endianness
+    EndianFormat get_native_endianness() {
+        uint16_t value = 0x0102;
+        uint8_t* ptr = reinterpret_cast<uint8_t*>(&value);
+        return (ptr[0] == 0x01) ? EndianFormat::BIG : EndianFormat::LITTLE;
+    }
+    
+    // Helper to compress data
+    std::vector<uint8_t> compress_data(const void* data, size_t data_size, CompressionLevel level) {
+        // For simplicity in this implementation, we just copy the data
+        // A real implementation would use a compression algorithm (e.g., zlib)
+        const uint8_t* src = static_cast<const uint8_t*>(data);
+        std::vector<uint8_t> compressed(src, src + data_size);
+        
+        // Apply simple run-length encoding for demonstration
+        if (level != CompressionLevel::NONE) {
+            // Some simple form of compression for demonstration
+            // (not actually efficient, just for demonstration)
+            std::vector<uint8_t> simple_compressed;
+            simple_compressed.reserve(data_size); // Worst case
+            
+            for (size_t i = 0; i < data_size; ) {
+                uint8_t current = src[i];
+                size_t run_length = 1;
+                
+                while (i + run_length < data_size && src[i + run_length] == current && run_length < 255) {
+                    run_length++;
+                }
+                
+                if (run_length >= 4) {
+                    // Encode run
+                    simple_compressed.push_back(0); // Special marker
+                    simple_compressed.push_back(static_cast<uint8_t>(run_length));
+                    simple_compressed.push_back(current);
+                    i += run_length;
+                } else {
+                    // Direct copy
+                    for (size_t j = 0; j < run_length; j++) {
+                        simple_compressed.push_back(src[i++]);
+                    }
+                }
+            }
+            
+            return simple_compressed;
+        }
+        
+        return compressed;
+    }
+    
+    // Helper to decompress data
+    std::vector<uint8_t> decompress_data(const void* data, size_t compressed_size, size_t original_size) {
+        // For simplicity in this implementation, we just copy the data
+        // A real implementation would use a decompression algorithm (e.g., zlib)
+        const uint8_t* src = static_cast<const uint8_t*>(data);
+        
+        // Check for simple run-length encoding
+        // Look for the marker byte
+        bool is_compressed = false;
+        for (size_t i = 0; i < std::min(compressed_size, size_t(100)); i++) {
+            if (src[i] == 0 && i + 2 < compressed_size) {
+                is_compressed = true;
+                break;
+            }
+        }
+        
+        if (!is_compressed) {
+            // Direct copy
+            return std::vector<uint8_t>(src, src + compressed_size);
+        }
+        
+        // Decompress our simple RLE format
+        std::vector<uint8_t> decompressed;
+        decompressed.reserve(original_size);
+        
+        for (size_t i = 0; i < compressed_size; ) {
+            if (src[i] == 0 && i + 2 < compressed_size) {
+                // Run-length encoded block
+                size_t run_length = src[i + 1];
+                uint8_t value = src[i + 2];
+                
+                for (size_t j = 0; j < run_length; j++) {
+                    decompressed.push_back(value);
+                }
+                
+                i += 3;
+            } else {
+                // Direct value
+                decompressed.push_back(src[i]);
+                i++;
+            }
+            
+            if (decompressed.size() >= original_size) {
+                break;
+            }
+        }
+        
+        return decompressed;
+    }
+}
+
+// TensorFactory serialization implementations
+bool TensorFactory::save(const Tensor& tensor, const std::string& filepath, 
+                        EndianFormat endian, CompressionLevel compression) {
+    // Open file for writing
+    std::ofstream file(filepath, std::ios::binary);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open file for writing: " << filepath << std::endl;
+        return false;
+    }
+    
+    // Write magic number to identify format
+    const uint32_t magic = 0x54534F52; // "TSRZ" in little endian
+    file.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+    
+    // Write format version
+    const uint32_t version = 1;
+    file.write(reinterpret_cast<const char*>(&version), sizeof(version));
+    
+    // Write tensor metadata
+    const int ndim = tensor.ndim();
+    file.write(reinterpret_cast<const char*>(&ndim), sizeof(ndim));
+    
+    const DataType dtype = tensor.dtype();
+    file.write(reinterpret_cast<const char*>(&dtype), sizeof(dtype));
+    
+    // Write shape
+    auto shape = tensor.shape();
+    for (const auto& dim : shape) {
+        uint64_t dim_size = dim;
+        file.write(reinterpret_cast<const char*>(&dim_size), sizeof(dim_size));
+    }
+    
+    // Calculate data size
+    size_t total_elements = tensor.size();
+    size_t element_size;
+    switch (dtype) {
+        case DataType::F32:
+        case DataType::I32:
+            element_size = 4;
+            break;
+        case DataType::F16:
+        case DataType::BF16:
+        case DataType::I16:
+            element_size = 2;
+            break;
+        case DataType::I8:
+        case DataType::Q8_0:
+            element_size = 1;
+            break;
+        case DataType::Q4_0:
+        case DataType::Q4_1:
+            element_size = 1; // 4-bit types are packed, 2 elements per byte
+            total_elements = (total_elements + 1) / 2; // Round up
+            break;
+        default:
+            std::cerr << "Unknown data type in serialization" << std::endl;
+            return false;
+    }
+    
+    size_t data_size = total_elements * element_size;
+    
+    // Write endian format
+    uint8_t endian_code = static_cast<uint8_t>(endian);
+    file.write(reinterpret_cast<const char*>(&endian_code), sizeof(endian_code));
+    
+    // Write compression level
+    uint8_t compression_code = static_cast<uint8_t>(compression);
+    file.write(reinterpret_cast<const char*>(&compression_code), sizeof(compression_code));
+    
+    // Get a copy of the data to potentially convert endianness
+    std::vector<uint8_t> data_copy(data_size);
+    memcpy(data_copy.data(), tensor.data(), data_size);
+    
+    // Convert endianness if needed
+    EndianFormat native = get_native_endianness();
+    if (endian != EndianFormat::NATIVE && endian != native) {
+        size_t bytes_per_element = element_size;
+        for (size_t i = 0; i < total_elements; i++) {
+            convert_endianness(data_copy.data() + i * bytes_per_element, bytes_per_element, native, endian);
+        }
+    }
+    
+    // Compress the data if requested
+    std::vector<uint8_t> compressed_data;
+    if (compression != CompressionLevel::NONE) {
+        compressed_data = compress_data(data_copy.data(), data_size, compression);
+    } else {
+        compressed_data = data_copy;
+    }
+    
+    // Write original data size
+    uint64_t orig_size = data_size;
+    file.write(reinterpret_cast<const char*>(&orig_size), sizeof(orig_size));
+    
+    // Write compressed data size
+    uint64_t comp_size = compressed_data.size();
+    file.write(reinterpret_cast<const char*>(&comp_size), sizeof(comp_size));
+    
+    // Write the data
+    file.write(reinterpret_cast<const char*>(compressed_data.data()), compressed_data.size());
+    
+    return true;
+}
+
+Tensor TensorFactory::load(const std::string& filepath, EndianFormat endian) {
+    // Open file for reading
+    std::ifstream file(filepath, std::ios::binary);
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed to open file: " + filepath);
+    }
+    
+    // Read and check magic number
+    uint32_t magic;
+    file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+    if (magic != 0x54534F52) { // "TSRZ" in little endian
+        throw std::runtime_error("Invalid file format, incorrect magic number");
+    }
+    
+    // Read format version
+    uint32_t version;
+    file.read(reinterpret_cast<char*>(&version), sizeof(version));
+    if (version != 1) {
+        throw std::runtime_error("Unsupported format version: " + std::to_string(version));
+    }
+    
+    // Read tensor metadata
+    int ndim;
+    file.read(reinterpret_cast<char*>(&ndim), sizeof(ndim));
+    
+    DataType dtype;
+    file.read(reinterpret_cast<char*>(&dtype), sizeof(dtype));
+    
+    // Read shape
+    std::vector<size_t> shape(ndim);
+    for (int i = 0; i < ndim; i++) {
+        uint64_t dim_size;
+        file.read(reinterpret_cast<char*>(&dim_size), sizeof(dim_size));
+        shape[i] = dim_size;
+    }
+    
+    // Read endian format
+    uint8_t endian_code;
+    file.read(reinterpret_cast<char*>(&endian_code), sizeof(endian_code));
+    EndianFormat file_endian = static_cast<EndianFormat>(endian_code);
+    
+    // Read compression level
+    uint8_t compression_code;
+    file.read(reinterpret_cast<char*>(&compression_code), sizeof(compression_code));
+    CompressionLevel compression = static_cast<CompressionLevel>(compression_code);
+    
+    // Read original data size
+    uint64_t orig_size;
+    file.read(reinterpret_cast<char*>(&orig_size), sizeof(orig_size));
+    
+    // Read compressed data size
+    uint64_t comp_size;
+    file.read(reinterpret_cast<char*>(&comp_size), sizeof(comp_size));
+    
+    // Read compressed data
+    std::vector<uint8_t> compressed_data(comp_size);
+    file.read(reinterpret_cast<char*>(compressed_data.data()), comp_size);
+    
+    // Decompress if necessary
+    std::vector<uint8_t> data;
+    if (compression != CompressionLevel::NONE) {
+        data = decompress_data(compressed_data.data(), comp_size, orig_size);
+    } else {
+        data = compressed_data;
+    }
+    
+    // Handle endianness conversion if requested
+    EndianFormat target_endian = (endian == EndianFormat::NATIVE) ? get_native_endianness() : endian;
+    if (file_endian != target_endian) {
+        size_t bytes_per_element;
+        switch (dtype) {
+            case DataType::F32:
+            case DataType::I32:
+                bytes_per_element = 4;
+                break;
+            case DataType::F16:
+            case DataType::BF16:
+            case DataType::I16:
+                bytes_per_element = 2;
+                break;
+            case DataType::I8:
+            case DataType::Q8_0:
+            case DataType::Q4_0:
+            case DataType::Q4_1:
+                bytes_per_element = 1;
+                break;
+            default:
+                throw std::runtime_error("Unknown data type in deserialization");
+        }
+        
+        size_t num_elements = data.size() / bytes_per_element;
+        for (size_t i = 0; i < num_elements; i++) {
+            convert_endianness(data.data() + i * bytes_per_element, bytes_per_element, file_endian, target_endian);
+        }
+    }
+    
+    // Create tensor from data
+    return TensorFactory::from_data(data.data(), shape, dtype);
+}
+
+bool TensorFactory::save_with_metadata(const Tensor& tensor, const std::string& filepath,
+                                        const TensorMetadata& metadata,
+                                        EndianFormat endian, CompressionLevel compression) {
+    // Print debug information
+    std::cerr << "Saving tensor with metadata to: " << filepath << std::endl;
+    std::cerr << "Metadata: " << metadata.name << ", " << metadata.description << ", version=" << metadata.version << std::endl;
+    
+    // First save the tensor
+    if (!save(tensor, filepath, endian, compression)) {
+        std::cerr << "Failed to save base tensor!" << std::endl;
+        return false;
+    }
+    
+    // Verify file exists after saving
+    if (!std::filesystem::exists(filepath)) {
+        std::cerr << "File does not exist after saving tensor: " << filepath << std::endl;
+        return false;
+    }
+    
+    // Then append metadata to the end of the file
+    std::ofstream file(filepath, std::ios::binary | std::ios::app);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open file for writing metadata: " << filepath << std::endl;
+        return false;
+    }
+    
+    // Write marker to indicate metadata section
+    const uint32_t metadata_marker = 0x4D455441; // "META" in little endian
+    file.write(reinterpret_cast<const char*>(&metadata_marker), sizeof(metadata_marker));
+    
+    // Write a safety marker to indicate proper metadata format
+    const uint64_t safety_marker = 0x4353534D4D455441; // "CSMMETA" in little endian
+    file.write(reinterpret_cast<const char*>(&safety_marker), sizeof(safety_marker));
+    
+    // Write name
+    uint32_t name_length = metadata.name.size();
+    file.write(reinterpret_cast<const char*>(&name_length), sizeof(name_length));
+    file.write(metadata.name.c_str(), name_length);
+    
+    // Write description
+    uint32_t desc_length = metadata.description.size();
+    file.write(reinterpret_cast<const char*>(&desc_length), sizeof(desc_length));
+    file.write(metadata.description.c_str(), desc_length);
+    
+    // Write version
+    file.write(reinterpret_cast<const char*>(&metadata.version), sizeof(metadata.version));
+    
+    // Write custom fields
+    uint32_t num_fields = metadata.custom_fields.size();
+    file.write(reinterpret_cast<const char*>(&num_fields), sizeof(num_fields));
+    
+    for (const auto& field : metadata.custom_fields) {
+        // Write key
+        uint32_t key_length = field.first.size();
+        file.write(reinterpret_cast<const char*>(&key_length), sizeof(key_length));
+        file.write(field.first.c_str(), key_length);
+        
+        // Write value
+        uint32_t value_length = field.second.size();
+        file.write(reinterpret_cast<const char*>(&value_length), sizeof(value_length));
+        file.write(field.second.c_str(), value_length);
+    }
+    
+    file.close();
+    
+    // Verify file size after adding metadata
+    std::uintmax_t file_size = std::filesystem::file_size(filepath);
+    std::cerr << "File size after adding metadata: " << file_size << " bytes" << std::endl;
+    
+    return true;
+}
+
+Tensor TensorFactory::load_with_metadata(const std::string& filepath, 
+                                         TensorMetadata& metadata,
+                                         EndianFormat endian) {
+    // First load the tensor
+    Tensor tensor = load(filepath, endian);
+    
+    // Then read metadata from the end of the file
+    std::ifstream file(filepath, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed to open file: " + filepath);
+    }
+    
+    // Get file size
+    std::streampos fileSize = file.tellg();
+    
+    // Look for metadata marker from the end
+    const uint32_t metadata_marker = 0x4D455441; // "META" in little endian
+    
+    bool found_metadata = false;
+    // We'll search backwards for the marker in chunks
+    const int chunk_size = 1024;
+    std::vector<char> buffer(chunk_size);
+    
+    // First, try looking for metadata at the expected position (right after the tensor data)
+    // Get the file position right after the tensor data
+    file.seekg(0, std::ios::beg);
+    
+    // Skip the magic number and version (8 bytes)
+    file.seekg(8, std::ios::cur);
+    
+    // Read the shape information
+    uint32_t ndim;
+    file.read(reinterpret_cast<char*>(&ndim), sizeof(ndim));
+    
+    // Skip the shape dimensions
+    file.seekg(ndim * sizeof(uint32_t), std::ios::cur);
+    
+    // Read dtype, endianness, compression
+    uint32_t dtype_val, endian_val, compression_val;
+    file.read(reinterpret_cast<char*>(&dtype_val), sizeof(dtype_val));
+    file.read(reinterpret_cast<char*>(&endian_val), sizeof(endian_val));
+    file.read(reinterpret_cast<char*>(&compression_val), sizeof(compression_val));
+    
+    // Read data size information
+    uint64_t original_size, compressed_size;
+    file.read(reinterpret_cast<char*>(&original_size), sizeof(original_size));
+    file.read(reinterpret_cast<char*>(&compressed_size), sizeof(compressed_size));
+    
+    // Skip the data
+    file.seekg(compressed_size, std::ios::cur);
+    
+    // Now we should be at the metadata marker
+    uint32_t marker_check;
+    file.read(reinterpret_cast<char*>(&marker_check), sizeof(marker_check));
+    
+    // Debug output
+    std::cerr << "Looking for marker: 0x" << std::hex << metadata_marker 
+              << ", found: 0x" << marker_check << std::dec << std::endl;
+    
+    // Check for metadata marker (due to endian issues, check for either byte order)
+    if (marker_check == metadata_marker || 
+        marker_check == 0x4154454D) { // Check for "META" in big endian too
+        // Verify the safety marker
+        const uint64_t expected_safety_marker = 0x4353534D4D455441; // "CSMMETA" in little endian
+        uint64_t safety_marker;
+        file.read(reinterpret_cast<char*>(&safety_marker), sizeof(safety_marker));
+        
+        if (safety_marker == expected_safety_marker) {
+            found_metadata = true;
+        }
+    }
+    
+    // If not found at expected position, fall back to searching
+    if (!found_metadata) {
+        // Fall back to searching
+        for (std::streamoff pos_off = static_cast<std::streamoff>(fileSize); 
+             pos_off >= static_cast<std::streamoff>(chunk_size); 
+             pos_off -= chunk_size) {
+            std::streampos pos(pos_off - chunk_size);
+            file.seekg(pos);
+            file.read(buffer.data(), chunk_size);
+            
+            for (int i = chunk_size - 12; i >= 0; i--) {
+                uint32_t* ptr = reinterpret_cast<uint32_t*>(buffer.data() + i);
+                if (*ptr == metadata_marker || *ptr == 0x4154454D) { // Check for "META" in both endian formats
+                    // Found potential marker, check the safety marker
+                    file.seekg(pos + std::streamoff(i + 4));
+                    uint64_t safety_marker;
+                    file.read(reinterpret_cast<char*>(&safety_marker), sizeof(safety_marker));
+                    const uint64_t expected_safety_marker = 0x4353534D4D455441; // "CSMMETA" in little endian
+                    
+                    if (safety_marker == expected_safety_marker) {
+                        found_metadata = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (found_metadata) {
+                break;
+            }
+        }
+    }
+    
+    if (!found_metadata) {
+        // Log detailed information for debugging
+        std::cerr << "Failed to find metadata in file: " << filepath << std::endl;
+        std::cerr << "File size: " << fileSize << " bytes" << std::endl;
+        
+        // Check if file exists and is readable
+        if (!std::filesystem::exists(filepath)) {
+            throw std::runtime_error("Metadata file does not exist: " + filepath);
+        }
+        
+        // Try to read the first few bytes to see if the file is valid
+        file.seekg(0, std::ios::beg);
+        char header[16] = {0};
+        file.read(header, 16);
+        std::stringstream ss;
+        ss << "Header bytes: ";
+        for (int i = 0; i < 16; i++) {
+            ss << std::hex << std::setw(2) << std::setfill('0') 
+               << static_cast<int>(static_cast<unsigned char>(header[i])) << " ";
+        }
+        std::cerr << ss.str() << std::endl;
+        
+        throw std::runtime_error("No metadata found in file: " + filepath);
+    }
+    
+    // Read name
+    uint32_t name_length;
+    file.read(reinterpret_cast<char*>(&name_length), sizeof(name_length));
+    
+    metadata.name.resize(name_length);
+    file.read(&metadata.name[0], name_length);
+    
+    // Read description
+    uint32_t desc_length;
+    file.read(reinterpret_cast<char*>(&desc_length), sizeof(desc_length));
+    
+    metadata.description.resize(desc_length);
+    file.read(&metadata.description[0], desc_length);
+    
+    // Read version
+    file.read(reinterpret_cast<char*>(&metadata.version), sizeof(metadata.version));
+    
+    // Read custom fields
+    uint32_t num_fields;
+    file.read(reinterpret_cast<char*>(&num_fields), sizeof(num_fields));
+    
+    metadata.custom_fields.clear();
+    for (uint32_t i = 0; i < num_fields; i++) {
+        // Read key
+        uint32_t key_length;
+        file.read(reinterpret_cast<char*>(&key_length), sizeof(key_length));
+        
+        std::string key(key_length, ' ');
+        file.read(&key[0], key_length);
+        
+        // Read value
+        uint32_t value_length;
+        file.read(reinterpret_cast<char*>(&value_length), sizeof(value_length));
+        
+        std::string value(value_length, ' ');
+        file.read(&value[0], value_length);
+        
+        metadata.custom_fields[key] = value;
+    }
+    
+    return tensor;
 }
 
 } // namespace ccsm
