@@ -109,7 +109,10 @@ private:
     struct ggml_tensor* get_weight(const std::string& name) const;
     
     // Create computation context (temporary context for graph building)
-    struct ggml_context* create_computation_context(size_t mem_size);
+    struct ggml_context* create_computation_context(size_t mem_size = 16 * 1024 * 1024);
+    
+    // Helper function to compute GGML graph
+    void compute_graph(struct ggml_context* ctx, struct ggml_cgraph* graph);
     
     // Load backbone weights
     bool load_backbone_weights(const WeightMap& weights);
