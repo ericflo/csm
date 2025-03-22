@@ -156,6 +156,9 @@ void silu(T* output, const T* input, size_t n);
 template<typename T>
 void rms_norm(T* output, const T* input, const T* weight, T epsilon, size_t n);
 
+template<typename T>
+void layer_norm(T* output, const T* input, const T* weight, const T* bias, T epsilon, size_t n);
+
 // Implementation details namespace (not part of public API)
 namespace detail {
 
@@ -390,6 +393,41 @@ void rms_norm_avx_f32(float* output, const float* input, const float* weight, fl
 
 #if defined(CCSM_HAVE_NEON)
 void rms_norm_neon_f32(float* output, const float* input, const float* weight, float epsilon, size_t n);
+#endif
+
+// Layer Normalization implementations
+template<typename T>
+void layer_norm_scalar(T* output, const T* input, const T* weight, const T* bias, T epsilon, size_t n) {
+    // Calculate mean
+    T sum = 0;
+    for (size_t i = 0; i < n; i++) {
+        sum += input[i];
+    }
+    T mean = sum / n;
+    
+    // Calculate variance
+    T variance = 0;
+    for (size_t i = 0; i < n; i++) {
+        T diff = input[i] - mean;
+        variance += diff * diff;
+    }
+    variance /= n;
+    
+    // Calculate normalization factor
+    T norm_factor = 1.0f / std::sqrt(variance + epsilon);
+    
+    // Apply normalization with weights and bias
+    for (size_t i = 0; i < n; i++) {
+        output[i] = (input[i] - mean) * norm_factor * weight[i] + bias[i];
+    }
+}
+
+#if defined(CCSM_HAVE_AVX)
+void layer_norm_avx_f32(float* output, const float* input, const float* weight, const float* bias, float epsilon, size_t n);
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+void layer_norm_neon_f32(float* output, const float* input, const float* weight, const float* bias, float epsilon, size_t n);
 #endif
 
 } // namespace detail
@@ -667,6 +705,28 @@ inline void rms_norm<float>(float* output, const float* input, const float* weig
 
     // Fallback to scalar implementation
     detail::rms_norm_scalar(output, input, weight, epsilon, n);
+}
+
+template<>
+inline void layer_norm<float>(float* output, const float* input, const float* weight, const float* bias, float epsilon, size_t n) {
+    const auto& features = CPUFeatures::get();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (features.avx) {
+        detail::layer_norm_avx_f32(output, input, weight, bias, epsilon, n);
+        return;
+    }
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+    if (features.neon) {
+        detail::layer_norm_neon_f32(output, input, weight, bias, epsilon, n);
+        return;
+    }
+#endif
+
+    // Fallback to scalar implementation
+    detail::layer_norm_scalar(output, input, weight, bias, epsilon, n);
 }
 
 // Cache-aware memory layout utilities

@@ -412,6 +412,103 @@ void rms_norm_avx_f32(float* output, const float* input, const float* weight, fl
     }
 }
 
+void layer_norm_avx_f32(float* output, const float* input, const float* weight, const float* bias, float epsilon, size_t n) {
+    if (n == 0) return;
+    
+    // First pass: calculate mean using AVX
+    __m256 vsum = _mm256_setzero_ps();
+    size_t i = 0;
+    
+    // Process 8 elements at a time
+    for (; i + 7 < n; i += 8) {
+        __m256 vin = _mm256_loadu_ps(input + i);
+        vsum = _mm256_add_ps(vsum, vin);
+    }
+    
+    // Horizontal sum
+    // Extract high and low 128-bit parts
+    __m128 high = _mm256_extractf128_ps(vsum, 1);
+    __m128 low = _mm256_extractf128_ps(vsum, 0);
+    
+    // Add high and low parts
+    __m128 sum128 = _mm_add_ps(high, low);
+    
+    // Add upper and lower halves of 128-bit register
+    __m128 sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
+    
+    // Add upper and lower 32-bits
+    __m128 sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 0x1));
+    
+    // Extract the final result
+    float sum = _mm_cvtss_f32(sum32);
+    
+    // Add remaining elements
+    for (; i < n; i++) {
+        sum += input[i];
+    }
+    
+    // Calculate mean
+    float mean = sum / n;
+    __m256 vmean = _mm256_set1_ps(mean);
+    
+    // Second pass: calculate variance
+    __m256 vvar = _mm256_setzero_ps();
+    i = 0;
+    
+    // Process 8 elements at a time
+    for (; i + 7 < n; i += 8) {
+        __m256 vin = _mm256_loadu_ps(input + i);
+        __m256 vdiff = _mm256_sub_ps(vin, vmean);
+        vvar = _mm256_add_ps(vvar, _mm256_mul_ps(vdiff, vdiff));
+    }
+    
+    // Horizontal sum for variance
+    high = _mm256_extractf128_ps(vvar, 1);
+    low = _mm256_extractf128_ps(vvar, 0);
+    sum128 = _mm_add_ps(high, low);
+    sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
+    sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 0x1));
+    float variance = _mm_cvtss_f32(sum32);
+    
+    // Add remaining elements
+    for (; i < n; i++) {
+        float diff = input[i] - mean;
+        variance += diff * diff;
+    }
+    
+    // Calculate variance
+    variance /= n;
+    
+    // Calculate normalization factor: 1/sqrt(variance + epsilon)
+    float inv_norm = 1.0f / std::sqrt(variance + epsilon);
+    __m256 vinv_norm = _mm256_set1_ps(inv_norm);
+    
+    // Third pass: normalize, scale with weights, and add bias
+    i = 0;
+    for (; i + 7 < n; i += 8) {
+        __m256 vin = _mm256_loadu_ps(input + i);
+        __m256 vw = _mm256_loadu_ps(weight + i);
+        __m256 vb = _mm256_loadu_ps(bias + i);
+        
+        // x_norm = (x - mean) * inv_std
+        __m256 vcentered = _mm256_sub_ps(vin, vmean);
+        __m256 vnorm = _mm256_mul_ps(vcentered, vinv_norm);
+        
+        // y = x_norm * weight + bias
+        __m256 vscaled = _mm256_mul_ps(vnorm, vw);
+        __m256 vout = _mm256_add_ps(vscaled, vb);
+        
+        // Store result
+        _mm256_storeu_ps(output + i, vout);
+    }
+    
+    // Process remaining elements
+    for (; i < n; i++) {
+        float normalized = (input[i] - mean) * inv_norm;
+        output[i] = normalized * weight[i] + bias[i];
+    }
+}
+
 void softmax_avx_f32(float* output, const float* input, size_t n) {
     if (n == 0) return;
     
@@ -1151,6 +1248,88 @@ void rms_norm_neon_f32(float* output, const float* input, const float* weight, f
     // Process remaining elements
     for (; i < n; i++) {
         output[i] = input[i] * inv_norm * weight[i];
+    }
+}
+
+void layer_norm_neon_f32(float* output, const float* input, const float* weight, const float* bias, float epsilon, size_t n) {
+    if (n == 0) return;
+    
+    // First pass: calculate mean using NEON
+    float32x4_t vsum = vdupq_n_f32(0.0f);
+    size_t i = 0;
+    
+    // Process 4 elements at a time
+    for (; i + 3 < n; i += 4) {
+        float32x4_t vin = vld1q_f32(input + i);
+        vsum = vaddq_f32(vsum, vin);
+    }
+    
+    // Horizontal sum
+    float32x2_t vsum2 = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
+    vsum2 = vpadd_f32(vsum2, vsum2);
+    float sum = vget_lane_f32(vsum2, 0);
+    
+    // Add remaining elements
+    for (; i < n; i++) {
+        sum += input[i];
+    }
+    
+    // Calculate mean
+    float mean = sum / n;
+    float32x4_t vmean = vdupq_n_f32(mean);
+    
+    // Second pass: calculate variance
+    float32x4_t vvar = vdupq_n_f32(0.0f);
+    i = 0;
+    
+    // Process 4 elements at a time
+    for (; i + 3 < n; i += 4) {
+        float32x4_t vin = vld1q_f32(input + i);
+        float32x4_t vdiff = vsubq_f32(vin, vmean);
+        vvar = vaddq_f32(vvar, vmulq_f32(vdiff, vdiff));
+    }
+    
+    // Horizontal sum for variance
+    float32x2_t vvar2 = vadd_f32(vget_low_f32(vvar), vget_high_f32(vvar));
+    vvar2 = vpadd_f32(vvar2, vvar2);
+    float variance = vget_lane_f32(vvar2, 0);
+    
+    // Add remaining elements
+    for (; i < n; i++) {
+        float diff = input[i] - mean;
+        variance += diff * diff;
+    }
+    
+    // Calculate variance
+    variance /= n;
+    
+    // Calculate normalization factor: 1/sqrt(variance + epsilon)
+    float inv_norm = 1.0f / std::sqrt(variance + epsilon);
+    float32x4_t vinv_norm = vdupq_n_f32(inv_norm);
+    
+    // Third pass: normalize, scale with weights, and add bias
+    i = 0;
+    for (; i + 3 < n; i += 4) {
+        float32x4_t vin = vld1q_f32(input + i);
+        float32x4_t vw = vld1q_f32(weight + i);
+        float32x4_t vb = vld1q_f32(bias + i);
+        
+        // x_norm = (x - mean) * inv_std
+        float32x4_t vcentered = vsubq_f32(vin, vmean);
+        float32x4_t vnorm = vmulq_f32(vcentered, vinv_norm);
+        
+        // y = x_norm * weight + bias
+        float32x4_t vscaled = vmulq_f32(vnorm, vw);
+        float32x4_t vout = vaddq_f32(vscaled, vb);
+        
+        // Store result
+        vst1q_f32(output + i, vout);
+    }
+    
+    // Process remaining elements
+    for (; i < n; i++) {
+        float normalized = (input[i] - mean) * inv_norm;
+        output[i] = normalized * weight[i] + bias[i];
     }
 }
 

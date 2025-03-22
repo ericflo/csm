@@ -666,3 +666,191 @@ TEST_F(SIMDActivationTest, RMSNormAccuracyAndPerformance) {
     // For vectorized implementations, we expect at least 3x speedup
     EXPECT_GT(speedup, 2.0) << "RMS Norm SIMD implementation should be significantly faster than scalar";
 }
+
+// Test for Layer normalization performance and accuracy
+TEST_F(SIMDActivationTest, LayerNormAccuracyAndPerformance) {
+    // Different sizes for Layer norm testing
+    const std::vector<size_t> sizes = {32, 64, 128, 256, 512, 1024, 2048, 4096};
+    float epsilon = 1e-5f;
+    
+    for (size_t size : sizes) {
+        SCOPED_TRACE("Testing Layer norm with size: " + std::to_string(size));
+        
+        // Input data, weights, bias, and output buffers
+        std::vector<float> input(size);
+        std::vector<float> weights(size);
+        std::vector<float> bias(size);
+        std::vector<float> output_simd(size);
+        std::vector<float> output_scalar(size);
+        
+        // Generate random data for input, weights, and bias
+        generate_test_data(input, size, "mixed");
+        generate_test_data(weights, size, "positive"); // Weights are typically positive
+        generate_test_data(bias, size, "mixed"); // Bias can be positive or negative
+        
+        // Calculate scalar reference implementation
+        // Step 1: Calculate mean
+        float mean = 0.0f;
+        for (size_t i = 0; i < size; i++) {
+            mean += input[i];
+        }
+        mean /= size;
+        
+        // Step 2: Calculate variance
+        float variance = 0.0f;
+        for (size_t i = 0; i < size; i++) {
+            float diff = input[i] - mean;
+            variance += diff * diff;
+        }
+        variance /= size;
+        
+        // Step 3: Normalize with scaling and bias
+        float inv_std = 1.0f / std::sqrt(variance + epsilon);
+        for (size_t i = 0; i < size; i++) {
+            output_scalar[i] = (input[i] - mean) * inv_std * weights[i] + bias[i];
+        }
+        
+        // Calculate using SIMD implementation
+        simd::layer_norm(output_simd.data(), input.data(), weights.data(), bias.data(), epsilon, size);
+        
+        // Compare results
+        EXPECT_TRUE(vector_almost_equal(output_simd, output_scalar, 1e-5f))
+            << "Layer normalization results differ for size " << size;
+    }
+    
+    // Edge case: test with small and large values
+    {
+        const size_t edge_size = 512;
+        std::vector<float> input(edge_size);
+        std::vector<float> weights(edge_size, 1.0f); // Unit weights
+        std::vector<float> bias(edge_size, 0.0f);    // Zero bias
+        std::vector<float> output_simd(edge_size);
+        std::vector<float> output_scalar(edge_size);
+        
+        // Generate very small values
+        generate_test_data(input, edge_size, "small");
+        
+        // Calculate scalar reference
+        float mean = 0.0f;
+        for (size_t i = 0; i < edge_size; i++) {
+            mean += input[i];
+        }
+        mean /= edge_size;
+        
+        float variance = 0.0f;
+        for (size_t i = 0; i < edge_size; i++) {
+            float diff = input[i] - mean;
+            variance += diff * diff;
+        }
+        variance /= edge_size;
+        
+        float inv_std = 1.0f / std::sqrt(variance + epsilon);
+        for (size_t i = 0; i < edge_size; i++) {
+            output_scalar[i] = (input[i] - mean) * inv_std * weights[i] + bias[i];
+        }
+        
+        // Calculate using SIMD implementation
+        simd::layer_norm(output_simd.data(), input.data(), weights.data(), bias.data(), epsilon, edge_size);
+        
+        // Compare results for small values
+        EXPECT_TRUE(vector_almost_equal(output_simd, output_scalar, 1e-5f))
+            << "Layer normalization results differ for small values";
+            
+        // Test with large values
+        generate_test_data(input, edge_size, "mixed");
+        // Scale up values
+        for (size_t i = 0; i < edge_size; i++) {
+            input[i] *= 1000.0f;
+        }
+        
+        // Recalculate scalar reference
+        mean = 0.0f;
+        for (size_t i = 0; i < edge_size; i++) {
+            mean += input[i];
+        }
+        mean /= edge_size;
+        
+        variance = 0.0f;
+        for (size_t i = 0; i < edge_size; i++) {
+            float diff = input[i] - mean;
+            variance += diff * diff;
+        }
+        variance /= edge_size;
+        
+        inv_std = 1.0f / std::sqrt(variance + epsilon);
+        for (size_t i = 0; i < edge_size; i++) {
+            output_scalar[i] = (input[i] - mean) * inv_std * weights[i] + bias[i];
+        }
+        
+        // Calculate using SIMD implementation
+        simd::layer_norm(output_simd.data(), input.data(), weights.data(), bias.data(), epsilon, edge_size);
+        
+        // Compare results for large values
+        EXPECT_TRUE(vector_almost_equal(output_simd, output_scalar, 1e-5f))
+            << "Layer normalization results differ for large values";
+    }
+    
+    // Performance benchmark
+    const size_t perf_size = 8192; // Typical hidden size for transformer models
+    std::vector<float> perf_input(perf_size);
+    std::vector<float> perf_weights(perf_size);
+    std::vector<float> perf_bias(perf_size);
+    std::vector<float> perf_output(perf_size);
+    
+    // Initialize with realistic data
+    generate_test_data(perf_input, perf_size, "mixed");
+    generate_test_data(perf_weights, perf_size, "positive");
+    generate_test_data(perf_bias, perf_size, "mixed");
+    
+    // Benchmark scalar implementation (simplified)
+    auto scalar_start = std::chrono::high_resolution_clock::now();
+    const int num_iterations = 1000;
+    
+    for (int iter = 0; iter < num_iterations; iter++) {
+        // Step 1: Calculate mean
+        float mean = 0.0f;
+        for (size_t i = 0; i < perf_size; i++) {
+            mean += perf_input[i];
+        }
+        mean /= perf_size;
+        
+        // Step 2: Calculate variance
+        float variance = 0.0f;
+        for (size_t i = 0; i < perf_size; i++) {
+            float diff = perf_input[i] - mean;
+            variance += diff * diff;
+        }
+        variance /= perf_size;
+        
+        // Step 3: Normalize with scaling and bias
+        float inv_std = 1.0f / std::sqrt(variance + epsilon);
+        for (size_t i = 0; i < perf_size; i++) {
+            perf_output[i] = (perf_input[i] - mean) * inv_std * perf_weights[i] + perf_bias[i];
+        }
+    }
+    
+    auto scalar_end = std::chrono::high_resolution_clock::now();
+    double scalar_time_ms = std::chrono::duration<double, std::milli>(scalar_end - scalar_start).count() / num_iterations;
+    
+    // Benchmark SIMD implementation
+    auto simd_start = std::chrono::high_resolution_clock::now();
+    
+    for (int iter = 0; iter < num_iterations; iter++) {
+        simd::layer_norm(perf_output.data(), perf_input.data(), perf_weights.data(), perf_bias.data(), epsilon, perf_size);
+    }
+    
+    auto simd_end = std::chrono::high_resolution_clock::now();
+    double simd_time_ms = std::chrono::duration<double, std::milli>(simd_end - simd_start).count() / num_iterations;
+    
+    // Calculate speedup
+    double speedup = scalar_time_ms / simd_time_ms;
+    
+    // Print performance results
+    std::cout << "\nLayer Normalization performance (size = " << perf_size << "):" << std::endl;
+    std::cout << "  Scalar: " << std::fixed << std::setprecision(3) << scalar_time_ms << " ms" << std::endl;
+    std::cout << "  SIMD:   " << std::fixed << std::setprecision(3) << simd_time_ms << " ms" << std::endl;
+    std::cout << "  Speedup: " << std::fixed << std::setprecision(2) << speedup << "x" << std::endl;
+    
+    // For vectorized implementations, we expect at least 2x speedup
+    EXPECT_GT(speedup, 1.5) << "Layer Norm SIMD implementation should be significantly faster than scalar";
+}
