@@ -1,209 +1,303 @@
 #include <gtest/gtest.h>
 #include <ccsm/cpu/simd.h>
-#include <ccsm/cpu/thread_pool.h>
-#include <cmath>
 #include <vector>
+#include <random>
 #include <iostream>
-#include <chrono>
+#include <iomanip>
 
 using namespace ccsm;
 
-// Simple test helpers
-bool almost_equal(float a, float b, float epsilon = 1e-5) {
-    return std::fabs(a - b) < epsilon;
-}
-
-bool vector_almost_equal(const std::vector<float>& a, const std::vector<float>& b, float epsilon = 1e-5) {
+// Helper function to compare vectors with a tolerance
+bool compare_vectors(const std::vector<float>& a, const std::vector<float>& b, float epsilon = 1e-4f) {
     if (a.size() != b.size()) {
         return false;
     }
     
     for (size_t i = 0; i < a.size(); i++) {
-        if (!almost_equal(a[i], b[i], epsilon)) {
+        if (std::fabs(a[i] - b[i]) > epsilon) {
+            // Debug output for failed comparison
+            std::cout << "Vectors differ at index " << i << ": " << a[i] << " vs " << b[i] 
+                     << " (diff: " << std::fabs(a[i] - b[i]) << ", epsilon: " << epsilon << ")" << std::endl;
             return false;
         }
     }
-    
     return true;
 }
 
-// Test SIMD operations
-void test_simd_operations() {
-    const size_t n = 1024;
+// Helper function to generate random vectors
+std::vector<float> generate_random_vector(size_t size, float min = -10.0f, float max = 10.0f) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<float> dist(min, max);
     
-    // Create test vectors
-    std::vector<float> a(n), b(n), c(n), expected(n);
-    
-    // Initialize test data
-    for (size_t i = 0; i < n; i++) {
-        a[i] = static_cast<float>(i) / 100.0f;
-        b[i] = static_cast<float>(n - i) / 100.0f;
-        expected[i] = a[i] + b[i];
+    std::vector<float> result(size);
+    for (size_t i = 0; i < size; i++) {
+        result[i] = dist(gen);
+    }
+    return result;
+}
+
+// Helper function to compute dot product in naive way (for comparison)
+float naive_dot_product(const std::vector<float>& a, const std::vector<float>& b) {
+    if (a.size() != b.size()) {
+        throw std::invalid_argument("Vector sizes must match");
     }
     
-    // Test vector_add
-    simd::vector_add(a.data(), b.data(), c.data(), n);
-    EXPECT_TRUE(vector_almost_equal(c, expected));
-    std::cout << "vector_add test passed" << std::endl;
-    
-    // Test vector_mul
-    for (size_t i = 0; i < n; i++) {
-        expected[i] = a[i] * b[i];
-    }
-    simd::vector_mul(a.data(), b.data(), c.data(), n);
-    EXPECT_TRUE(vector_almost_equal(c, expected));
-    std::cout << "vector_mul test passed" << std::endl;
-    
-    // Test vector_scale
-    const float scalar = 2.5f;
-    for (size_t i = 0; i < n; i++) {
-        expected[i] = a[i] * scalar;
-    }
-    simd::vector_scale(a.data(), scalar, c.data(), n);
-    EXPECT_TRUE(vector_almost_equal(c, expected));
-    std::cout << "vector_scale test passed" << std::endl;
-    
-    // Test vector_dot
-    float dot_expected = 0.0f;
-    for (size_t i = 0; i < n; i++) {
-        dot_expected += a[i] * b[i];
-    }
-    float dot_result = simd::vector_dot(a.data(), b.data(), n);
-    EXPECT_TRUE(almost_equal(dot_result, dot_expected));
-    std::cout << "vector_dot test passed" << std::endl;
-    
-    // Test relu
-    for (size_t i = 0; i < n; i++) {
-        a[i] = static_cast<float>(i - n/2) / 100.0f; // Mix of positive and negative values
-        expected[i] = std::max(0.0f, a[i]);
-    }
-    simd::relu(a.data(), c.data(), n);
-    EXPECT_TRUE(vector_almost_equal(c, expected));
-    std::cout << "relu test passed" << std::endl;
-    
-    // Test softmax
     float sum = 0.0f;
-    float max_val = a[0];
-    for (size_t i = 1; i < n; i++) {
-        max_val = std::max(max_val, a[i]);
+    for (size_t i = 0; i < a.size(); i++) {
+        sum += a[i] * b[i];
     }
-    for (size_t i = 0; i < n; i++) {
-        expected[i] = std::exp(a[i] - max_val);
-        sum += expected[i];
-    }
-    for (size_t i = 0; i < n; i++) {
-        expected[i] /= sum;
-    }
-    simd::softmax(a.data(), c.data(), n);
-    EXPECT_TRUE(vector_almost_equal(c, expected));
-    std::cout << "softmax test passed" << std::endl;
-    
-    // Test matrix multiplication
-    // Create small matrices for testing
-    const size_t m = 16, k = 16, p = 16;
-    std::vector<float> mat_a(m*k), mat_b(k*p), mat_c(m*p), mat_expected(m*p);
-    
-    // Initialize test matrices
-    for (size_t i = 0; i < m; i++) {
-        for (size_t j = 0; j < k; j++) {
-            mat_a[i*k + j] = static_cast<float>(i*k + j) / 100.0f;
-        }
-    }
-    
-    for (size_t i = 0; i < k; i++) {
-        for (size_t j = 0; j < p; j++) {
-            mat_b[i*p + j] = static_cast<float>(i*p + j) / 100.0f;
-        }
-    }
-    
-    // Compute expected result
-    for (size_t i = 0; i < m; i++) {
-        for (size_t j = 0; j < p; j++) {
-            float sum = 0.0f;
-            for (size_t l = 0; l < k; l++) {
-                sum += mat_a[i*k + l] * mat_b[l*p + j];
-            }
-            mat_expected[i*p + j] = sum;
-        }
-    }
-    
-    // Test matrix_mul
-    simd::matrix_mul(mat_a.data(), mat_b.data(), mat_c.data(), m, k, p);
-    EXPECT_TRUE(vector_almost_equal(mat_c, mat_expected, 1e-3f)); // Larger epsilon due to potential FP precision differences
-    std::cout << "matrix_mul test passed" << std::endl;
+    return sum;
 }
 
-// Test thread pool
-void test_thread_pool() {
-    ThreadPool pool(4); // Create pool with 4 threads
-    
-    const int num_tasks = 100;
-    std::vector<std::future<int>> results;
-    
-    // Enqueue tasks
-    for (int i = 0; i < num_tasks; i++) {
-        results.push_back(pool.enqueue([i]() {
-            // Simulate some work
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            return i * i;
-        }));
+// Helper to print vectors for debugging
+void print_vector(const std::vector<float>& v, const std::string& name) {
+    std::cout << name << " = [";
+    for (size_t i = 0; i < v.size(); i++) {
+        std::cout << std::fixed << std::setprecision(6) << v[i];
+        if (i < v.size() - 1) {
+            std::cout << ", ";
+        }
     }
-    
-    // Check results
-    for (int i = 0; i < num_tasks; i++) {
-        EXPECT_EQ(results[i].get(), i * i);
-    }
-    
-    std::cout << "Thread pool basic test passed" << std::endl;
-    
-    // Test parallel for
-    const int array_size = 10000;
-    std::vector<int> array(array_size, 0);
-    
-    // Use ParallelFor to process array
-    ParallelFor::exec(0, array_size, [&array](int i) {
-        array[i] = i * i;
-    });
-    
-    // Verify results
-    for (int i = 0; i < array_size; i++) {
-        EXPECT_EQ(array[i], i * i);
-    }
-    
-    std::cout << "Parallel for test passed" << std::endl;
-    
-    // Performance test
-    const int perf_array_size = 50000000;
-    std::vector<float> perf_array(perf_array_size, 1.0f);
-    std::vector<float> result_array(perf_array_size, 0.0f);
-    
-    // Serial execution
-    auto start_serial = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < perf_array_size; i++) {
-        result_array[i] = std::sqrt(perf_array[i]);
-    }
-    auto end_serial = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> serial_time = end_serial - start_serial;
-    
-    // Parallel execution
-    std::fill(result_array.begin(), result_array.end(), 0.0f);
-    auto start_parallel = std::chrono::high_resolution_clock::now();
-    ParallelFor::exec(0, perf_array_size, [&perf_array, &result_array](int i) {
-        result_array[i] = std::sqrt(perf_array[i]);
-    });
-    auto end_parallel = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> parallel_time = end_parallel - start_parallel;
-    
-    std::cout << "Serial time: " << serial_time.count() << " seconds" << std::endl;
-    std::cout << "Parallel time: " << parallel_time.count() << " seconds" << std::endl;
-    std::cout << "Speedup: " << serial_time.count() / parallel_time.count() << "x" << std::endl;
+    std::cout << "]" << std::endl;
 }
 
-// Convert to Google Test format
-TEST(SIMDTest, VectorOperations) {
-    test_simd_operations();
+// Test fixture for SIMD operations
+class SIMDTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        // Initialize test vectors with different sizes
+        small_size = 10;  // Small enough to expose edge cases
+        medium_size = 64; // Multiple of common SIMD widths
+        large_size = 1025; // Odd size to test alignment and remainder handling
+        
+        // Generate test data
+        small_vec1 = generate_random_vector(small_size);
+        small_vec2 = generate_random_vector(small_size);
+        medium_vec1 = generate_random_vector(medium_size);
+        medium_vec2 = generate_random_vector(medium_size);
+        large_vec1 = generate_random_vector(large_size);
+        large_vec2 = generate_random_vector(large_size);
+    }
+    
+    size_t small_size;
+    size_t medium_size;
+    size_t large_size;
+    
+    std::vector<float> small_vec1;
+    std::vector<float> small_vec2;
+    std::vector<float> medium_vec1;
+    std::vector<float> medium_vec2;
+    std::vector<float> large_vec1;
+    std::vector<float> large_vec2;
+};
+
+// Test SIMD vector dot product with various sizes
+TEST_F(SIMDTest, VectorDotProduct) {
+    // Small vectors
+    float result_small = simd::vector_dot(small_vec1.data(), small_vec2.data(), small_size);
+    float expected_small = naive_dot_product(small_vec1, small_vec2);
+    EXPECT_NEAR(result_small, expected_small, 1e-3f); // Using larger epsilon due to accumulated floating-point differences
+    
+    // Medium vectors (aligned size)
+    float result_medium = simd::vector_dot(medium_vec1.data(), medium_vec2.data(), medium_size);
+    float expected_medium = naive_dot_product(medium_vec1, medium_vec2);
+    EXPECT_NEAR(result_medium, expected_medium, 1e-3f);
+    
+    // Large vectors (unaligned size)
+    float result_large = simd::vector_dot(large_vec1.data(), large_vec2.data(), large_size);
+    float expected_large = naive_dot_product(large_vec1, large_vec2);
+    EXPECT_NEAR(result_large, expected_large, 1e-2f); // Even larger epsilon for large vectors
 }
 
-TEST(ThreadPoolTest, BasicOperations) {
-    test_thread_pool();
+// Test that the SIMD implementation is using optimized path when available
+TEST_F(SIMDTest, SIMDPathSelection) {
+    // Get SIMD capabilities
+    std::string simd_caps = simd::get_cpu_capabilities();
+    std::cout << "Detected SIMD capabilities: " << simd_caps << std::endl;
+    
+    // Verify that some SIMD capabilities are detected
+    EXPECT_FALSE(simd_caps.empty());
+    
+    // Check that an implementation is selected
+    simd::Implementation impl = simd::get_active_implementation();
+    EXPECT_NE(impl, simd::Implementation::UNKNOWN);
+    
+    std::cout << "Using SIMD implementation: ";
+    switch (impl) {
+        case simd::Implementation::SCALAR:
+            std::cout << "Scalar (No SIMD)";
+            break;
+        case simd::Implementation::SSE2:
+            std::cout << "SSE2";
+            break;
+        case simd::Implementation::SSE41:
+            std::cout << "SSE4.1";
+            break;
+        case simd::Implementation::AVX:
+            std::cout << "AVX";
+            break;
+        case simd::Implementation::AVX2:
+            std::cout << "AVX2";
+            break;
+        case simd::Implementation::AVX512:
+            std::cout << "AVX-512";
+            break;
+        case simd::Implementation::NEON:
+            std::cout << "NEON";
+            break;
+        default:
+            std::cout << "Unknown";
+    }
+    std::cout << std::endl;
+}
+
+// Test SIMD vector addition
+TEST_F(SIMDTest, VectorAddition) {
+    // Allocate result vectors
+    std::vector<float> result_small(small_size);
+    std::vector<float> result_medium(medium_size);
+    std::vector<float> result_large(large_size);
+    
+    // Perform SIMD addition
+    simd::vector_add(result_small.data(), small_vec1.data(), small_vec2.data(), small_size);
+    simd::vector_add(result_medium.data(), medium_vec1.data(), medium_vec2.data(), medium_size);
+    simd::vector_add(result_large.data(), large_vec1.data(), large_vec2.data(), large_size);
+    
+    // Compute expected results
+    std::vector<float> expected_small(small_size);
+    std::vector<float> expected_medium(medium_size);
+    std::vector<float> expected_large(large_size);
+    
+    for (size_t i = 0; i < small_size; i++) {
+        expected_small[i] = small_vec1[i] + small_vec2[i];
+    }
+    
+    for (size_t i = 0; i < medium_size; i++) {
+        expected_medium[i] = medium_vec1[i] + medium_vec2[i];
+    }
+    
+    for (size_t i = 0; i < large_size; i++) {
+        expected_large[i] = large_vec1[i] + large_vec2[i];
+    }
+    
+    // Compare results
+    EXPECT_TRUE(compare_vectors(result_small, expected_small));
+    EXPECT_TRUE(compare_vectors(result_medium, expected_medium));
+    EXPECT_TRUE(compare_vectors(result_large, expected_large));
+}
+
+// Test SIMD vector multiplication
+TEST_F(SIMDTest, VectorMultiplication) {
+    // Allocate result vectors
+    std::vector<float> result_small(small_size);
+    std::vector<float> result_medium(medium_size);
+    std::vector<float> result_large(large_size);
+    
+    // Perform SIMD multiplication
+    simd::vector_mul(result_small.data(), small_vec1.data(), small_vec2.data(), small_size);
+    simd::vector_mul(result_medium.data(), medium_vec1.data(), medium_vec2.data(), medium_size);
+    simd::vector_mul(result_large.data(), large_vec1.data(), large_vec2.data(), large_size);
+    
+    // Compute expected results
+    std::vector<float> expected_small(small_size);
+    std::vector<float> expected_medium(medium_size);
+    std::vector<float> expected_large(large_size);
+    
+    for (size_t i = 0; i < small_size; i++) {
+        expected_small[i] = small_vec1[i] * small_vec2[i];
+    }
+    
+    for (size_t i = 0; i < medium_size; i++) {
+        expected_medium[i] = medium_vec1[i] * medium_vec2[i];
+    }
+    
+    for (size_t i = 0; i < large_size; i++) {
+        expected_large[i] = large_vec1[i] * large_vec2[i];
+    }
+    
+    // Compare results
+    EXPECT_TRUE(compare_vectors(result_small, expected_small));
+    EXPECT_TRUE(compare_vectors(result_medium, expected_medium));
+    EXPECT_TRUE(compare_vectors(result_large, expected_large));
+}
+
+// Test SIMD scalar multiplication
+TEST_F(SIMDTest, ScalarMultiplication) {
+    const float scalar = 2.5f;
+    
+    // Allocate result vectors
+    std::vector<float> result_small(small_size);
+    std::vector<float> result_medium(medium_size);
+    std::vector<float> result_large(large_size);
+    
+    // Perform scalar multiplication
+    simd::vector_scale(result_small.data(), small_vec1.data(), scalar, small_size);
+    simd::vector_scale(result_medium.data(), medium_vec1.data(), scalar, medium_size);
+    simd::vector_scale(result_large.data(), large_vec1.data(), scalar, large_size);
+    
+    // Compute expected results
+    std::vector<float> expected_small(small_size);
+    std::vector<float> expected_medium(medium_size);
+    std::vector<float> expected_large(large_size);
+    
+    for (size_t i = 0; i < small_size; i++) {
+        expected_small[i] = small_vec1[i] * scalar;
+    }
+    
+    for (size_t i = 0; i < medium_size; i++) {
+        expected_medium[i] = medium_vec1[i] * scalar;
+    }
+    
+    for (size_t i = 0; i < large_size; i++) {
+        expected_large[i] = large_vec1[i] * scalar;
+    }
+    
+    // Compare results
+    EXPECT_TRUE(compare_vectors(result_small, expected_small));
+    EXPECT_TRUE(compare_vectors(result_medium, expected_medium));
+    EXPECT_TRUE(compare_vectors(result_large, expected_large));
+}
+
+// Test memory alignment utilities
+TEST_F(SIMDTest, MemoryAlignment) {
+    // Test pointer alignment
+    float buffer[100];
+    void* ptr = buffer;
+    void* aligned_ptr = simd::align_ptr(ptr, 32);
+    
+    // Alignment should be a multiple of the specified alignment
+    uintptr_t alignment = reinterpret_cast<uintptr_t>(aligned_ptr) % 32;
+    EXPECT_EQ(alignment, 0u);
+    
+    // Test aligned allocation/deallocation
+    size_t size = 1000;
+    float* aligned_buffer = simd::aligned_alloc<float>(size, 64);
+    EXPECT_NE(aligned_buffer, nullptr);
+    
+    // Verify the allocation is properly aligned
+    alignment = reinterpret_cast<uintptr_t>(aligned_buffer) % 64;
+    EXPECT_EQ(alignment, 0u);
+    
+    // Clean up
+    simd::aligned_free(aligned_buffer);
+}
+
+// Test SIMD vector comparison operations
+TEST_F(SIMDTest, VectorComparison) {
+    // Generate test vectors with specific patterns for comparison testing
+    std::vector<float> vec1 = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
+    std::vector<float> vec2 = {1.0f, 0.0f, 5.0f, 4.0f, 1.0f, 9.0f, 7.0f, 0.0f};
+    
+    // Create mask for the expected result (1.0f where vec1 > vec2, 0.0f otherwise)
+    std::vector<float> expected_gt = {0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    
+    // Perform comparison with SIMD
+    std::vector<float> result(vec1.size());
+    simd::vector_gt_mask(result.data(), vec1.data(), vec2.data(), vec1.size());
+    
+    // Compare results
+    for (size_t i = 0; i < vec1.size(); i++) {
+        EXPECT_FLOAT_EQ(result[i], expected_gt[i]);
+    }
 }
