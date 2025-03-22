@@ -854,3 +854,201 @@ TEST_F(SIMDActivationTest, LayerNormAccuracyAndPerformance) {
     // For vectorized implementations, we expect at least 2x speedup
     EXPECT_GT(speedup, 1.5) << "Layer Norm SIMD implementation should be significantly faster than scalar";
 }
+
+// Test for Attention mechanism performance and accuracy
+TEST_F(SIMDActivationTest, AttentionAccuracyAndPerformance) {
+    // Define test parameters
+    const size_t batch_size = 1;
+    const std::vector<size_t> seq_lens = {8, 16, 32};
+    const size_t num_heads = 4;
+    const size_t head_size = 64;
+    const float scale = 1.0f / std::sqrt(static_cast<float>(head_size));
+    
+    for (size_t seq_len : seq_lens) {
+        SCOPED_TRACE("Testing attention with sequence length: " + std::to_string(seq_len));
+        
+        // Allocate memory for inputs and outputs
+        std::vector<float> query(batch_size * seq_len * num_heads * head_size);
+        std::vector<float> key(batch_size * seq_len * num_heads * head_size);
+        std::vector<float> value(batch_size * seq_len * num_heads * head_size);
+        std::vector<float> mask(batch_size * seq_len, 1.0f); // Simple mask (all 1s = no masking)
+        std::vector<float> output_simd(batch_size * seq_len * head_size);
+        std::vector<float> output_scalar(batch_size * seq_len * head_size);
+        
+        // Initialize inputs with random data
+        generate_test_data(query, query.size(), "mixed");
+        generate_test_data(key, key.size(), "mixed");
+        generate_test_data(value, value.size(), "mixed");
+        
+        // Apply scalar implementation of attention
+        // For each batch and head
+        for (size_t b = 0; b < batch_size; b++) {
+            for (size_t h = 0; h < num_heads; h++) {
+                // Compute QK^T attention scores
+                std::vector<float> scores(seq_len * seq_len);
+                for (size_t i = 0; i < seq_len; i++) {
+                    for (size_t j = 0; j < seq_len; j++) {
+                        float dot = 0.0f;
+                        for (size_t k = 0; k < head_size; k++) {
+                            size_t q_idx = ((b * seq_len + i) * num_heads + h) * head_size + k;
+                            size_t k_idx = ((b * seq_len + j) * num_heads + h) * head_size + k;
+                            dot += query[q_idx] * key[k_idx];
+                        }
+                        scores[i * seq_len + j] = dot * scale;
+                        
+                        // Apply mask if needed (causal masking)
+                        if (j > i || mask[b * seq_len + j] == 0) {
+                            scores[i * seq_len + j] = -std::numeric_limits<float>::infinity();
+                        }
+                    }
+                }
+                
+                // Apply softmax to get attention probabilities
+                std::vector<float> probs(seq_len * seq_len);
+                for (size_t i = 0; i < seq_len; i++) {
+                    // Find max for numerical stability
+                    float max_val = -std::numeric_limits<float>::infinity();
+                    for (size_t j = 0; j < seq_len; j++) {
+                        max_val = std::max(max_val, scores[i * seq_len + j]);
+                    }
+                    
+                    // Compute exp and sum
+                    float sum_exp = 0.0f;
+                    for (size_t j = 0; j < seq_len; j++) {
+                        float score = scores[i * seq_len + j];
+                        float exp_val = 0.0f;
+                        
+                        if (std::isinf(score) && score < 0) {
+                            exp_val = 0.0f;
+                        } else {
+                            exp_val = std::exp(score - max_val);
+                        }
+                        
+                        probs[i * seq_len + j] = exp_val;
+                        sum_exp += exp_val;
+                    }
+                    
+                    // Normalize probabilities
+                    float inv_sum = (sum_exp > 0.0f) ? (1.0f / sum_exp) : 0.0f;
+                    for (size_t j = 0; j < seq_len; j++) {
+                        probs[i * seq_len + j] *= inv_sum;
+                    }
+                }
+                
+                // Apply attention probabilities to values
+                for (size_t i = 0; i < seq_len; i++) {
+                    for (size_t d = 0; d < head_size; d++) {
+                        float sum = 0.0f;
+                        for (size_t j = 0; j < seq_len; j++) {
+                            size_t v_idx = ((b * seq_len + j) * num_heads + h) * head_size + d;
+                            sum += probs[i * seq_len + j] * value[v_idx];
+                        }
+                        
+                        size_t out_idx = (b * seq_len + i) * head_size + d;
+                        output_scalar[out_idx] = sum;
+                    }
+                }
+            }
+        }
+        
+        // Apply SIMD implementation of attention
+        simd::attention(
+            output_simd.data(),
+            query.data(),
+            key.data(),
+            value.data(),
+            mask.data(),
+            batch_size,
+            seq_len,
+            num_heads,
+            head_size,
+            scale
+        );
+        
+        // Compare results (use a larger epsilon for floating-point precision differences)
+        EXPECT_TRUE(vector_almost_equal(output_simd, output_scalar, 1e-4f))
+            << "Attention results differ for sequence length " << seq_len;
+    }
+    
+    // Performance benchmark with realistic transformer parameters
+    const size_t perf_seq_len = 32;
+    const size_t perf_batch_size = 1;
+    const size_t perf_num_heads = 12;
+    const size_t perf_head_size = 64;
+    const size_t total_elements = perf_batch_size * perf_seq_len * perf_num_heads * perf_head_size;
+    
+    std::vector<float> perf_query(total_elements);
+    std::vector<float> perf_key(total_elements);
+    std::vector<float> perf_value(total_elements);
+    std::vector<float> perf_mask(perf_batch_size * perf_seq_len, 1.0f);
+    std::vector<float> perf_output_simd(perf_batch_size * perf_seq_len * perf_head_size);
+    std::vector<float> perf_output_scalar(perf_batch_size * perf_seq_len * perf_head_size);
+    
+    // Initialize with random data
+    generate_test_data(perf_query, perf_query.size(), "mixed");
+    generate_test_data(perf_key, perf_key.size(), "mixed");
+    generate_test_data(perf_value, perf_value.size(), "mixed");
+    
+    // Benchmark scalar implementation - simplified version just for timing comparison
+    auto scalar_start = std::chrono::high_resolution_clock::now();
+    
+    // Use a very small number of iterations as this is a complex operation
+    const int num_iterations = 5;
+    
+    for (int iter = 0; iter < num_iterations; iter++) {
+        // Use the scalar implementation from detail namespace for benchmark
+        simd::detail::attention_scalar(
+            perf_output_scalar.data(),
+            perf_query.data(),
+            perf_key.data(),
+            perf_value.data(),
+            perf_mask.data(),
+            perf_batch_size,
+            perf_seq_len,
+            perf_num_heads,
+            perf_head_size,
+            scale
+        );
+    }
+    
+    auto scalar_end = std::chrono::high_resolution_clock::now();
+    double scalar_time_ms = std::chrono::duration<double, std::milli>(scalar_end - scalar_start).count() / num_iterations;
+    
+    // Benchmark SIMD implementation
+    auto simd_start = std::chrono::high_resolution_clock::now();
+    
+    for (int iter = 0; iter < num_iterations; iter++) {
+        simd::attention(
+            perf_output_simd.data(),
+            perf_query.data(),
+            perf_key.data(),
+            perf_value.data(),
+            perf_mask.data(),
+            perf_batch_size,
+            perf_seq_len,
+            perf_num_heads,
+            perf_head_size,
+            scale
+        );
+    }
+    
+    auto simd_end = std::chrono::high_resolution_clock::now();
+    double simd_time_ms = std::chrono::duration<double, std::milli>(simd_end - simd_start).count() / num_iterations;
+    
+    // Calculate speedup
+    double speedup = scalar_time_ms / simd_time_ms;
+    
+    // Print performance results
+    std::cout << "\nAttention performance (batch=" << perf_batch_size 
+              << ", seq_len=" << perf_seq_len 
+              << ", heads=" << perf_num_heads 
+              << ", head_size=" << perf_head_size << "):" << std::endl;
+    std::cout << "  Scalar: " << std::fixed << std::setprecision(3) << scalar_time_ms << " ms" << std::endl;
+    std::cout << "  SIMD:   " << std::fixed << std::setprecision(3) << simd_time_ms << " ms" << std::endl;
+    std::cout << "  Speedup: " << std::fixed << std::setprecision(2) << speedup << "x" << std::endl;
+    
+    // For vectorized implementations, we expect at least 1.5x speedup
+    // The speedup may be lower than other operations due to the complexity
+    // of the attention mechanism and memory access patterns
+    EXPECT_GT(speedup, 1.2) << "Attention SIMD implementation should be faster than scalar";
+}

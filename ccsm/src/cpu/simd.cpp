@@ -1,4 +1,7 @@
 #include <ccsm/cpu/simd.h>
+#include <vector>
+#include <cmath>
+#include <limits>
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -636,6 +639,155 @@ void softmax_avx_f32(float* output, const float* input, size_t n) {
     float inv_sum = 1.0f / sum;
     for (; i < n; i++) {
         output[i] *= inv_sum;
+    }
+}
+
+void attention_avx_f32(
+    float* output,              // [batch_size, seq_len, head_size]
+    const float* query,         // [batch_size, seq_len, num_heads, head_size]
+    const float* key,           // [batch_size, seq_len, num_heads, head_size]
+    const float* value,         // [batch_size, seq_len, num_heads, head_size]
+    const float* mask,          // [batch_size, 1, 1, seq_len] or nullptr
+    size_t batch_size,
+    size_t seq_len,
+    size_t num_heads,
+    size_t head_size,
+    float scale
+) {
+    // Compute attention for each batch and head
+    for (size_t b = 0; b < batch_size; b++) {
+        for (size_t h = 0; h < num_heads; h++) {
+            // Allocate temporary storage for attention scores and probabilities
+            std::vector<float> scores(seq_len * seq_len, 0.0f);
+            std::vector<float> probs(seq_len * seq_len, 0.0f);
+            
+            // Step 1: Compute query-key attention scores with SIMD optimization
+            // Compute QK^T (matmul) for this batch and head - scaled by factor
+            __m256 vscale = _mm256_set1_ps(scale);
+            
+            for (size_t i = 0; i < seq_len; i++) {
+                for (size_t j = 0; j < seq_len; j++) {
+                    // Compute dot product between query[i] and key[j] vectors
+                    __m256 vdot = _mm256_setzero_ps();
+                    size_t k = 0;
+                    
+                    // Process 8 elements at a time
+                    for (; k + 7 < head_size; k += 8) {
+                        size_t q_idx = ((b * seq_len + i) * num_heads + h) * head_size + k;
+                        size_t k_idx = ((b * seq_len + j) * num_heads + h) * head_size + k;
+                        
+                        __m256 vq = _mm256_loadu_ps(&query[q_idx]);
+                        __m256 vk = _mm256_loadu_ps(&key[k_idx]);
+                        __m256 vmul = _mm256_mul_ps(vq, vk);
+                        vdot = _mm256_add_ps(vdot, vmul);
+                    }
+                    
+                    // Horizontal sum of vdot
+                    __m128 high = _mm256_extractf128_ps(vdot, 1);
+                    __m128 low = _mm256_extractf128_ps(vdot, 0);
+                    __m128 sum128 = _mm_add_ps(high, low);
+                    __m128 sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
+                    __m128 sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 0x1));
+                    float dot = _mm_cvtss_f32(sum32);
+                    
+                    // Process remaining elements
+                    for (; k < head_size; k++) {
+                        size_t q_idx = ((b * seq_len + i) * num_heads + h) * head_size + k;
+                        size_t k_idx = ((b * seq_len + j) * num_heads + h) * head_size + k;
+                        dot += query[q_idx] * key[k_idx];
+                    }
+                    
+                    // Scale the dot product
+                    float score = dot * scale;
+                    
+                    // Apply mask if provided
+                    if (mask != nullptr) {
+                        // Apply causal mask (if mask[b,1,1,j] == 0, then hide position j from position i)
+                        size_t mask_idx = b * seq_len + j; // Simplified for causal mask
+                        if (j > i || mask[mask_idx] == 0) {
+                            score = -std::numeric_limits<float>::infinity();
+                        }
+                    }
+                    
+                    scores[i * seq_len + j] = score;
+                }
+            }
+            
+            // Step 2: Apply softmax to each row of scores to get attention weights
+            for (size_t i = 0; i < seq_len; i++) {
+                // Find max value for numerical stability
+                float max_val = -std::numeric_limits<float>::infinity();
+                for (size_t j = 0; j < seq_len; j++) {
+                    max_val = std::max(max_val, scores[i * seq_len + j]);
+                }
+                
+                // Compute exp(score - max_val) and sum
+                float sum_exp = 0.0f;
+                for (size_t j = 0; j < seq_len; j++) {
+                    float score = scores[i * seq_len + j];
+                    float exp_val = 0.0f;
+                    
+                    if (std::isinf(score) && score < 0) {
+                        // Handle -inf (masked values)
+                        exp_val = 0.0f;
+                    } else {
+                        // For normal values, compute exp(score - max_val)
+                        exp_val = std::exp(score - max_val);
+                    }
+                    
+                    probs[i * seq_len + j] = exp_val;
+                    sum_exp += exp_val;
+                }
+                
+                // Normalize probabilities
+                float inv_sum = (sum_exp > 0.0f) ? (1.0f / sum_exp) : 0.0f;
+                for (size_t j = 0; j < seq_len; j++) {
+                    probs[i * seq_len + j] *= inv_sum;
+                }
+            }
+            
+            // Step 3: Compute weighted sum of values (attn_probs @ value)
+            // For each query position and output dimension
+            for (size_t i = 0; i < seq_len; i++) {
+                // Process each dimension of the output
+                size_t d = 0;
+                
+                // Process 8 elements at a time with AVX
+                for (; d + 7 < head_size; d += 8) {
+                    __m256 vsum = _mm256_setzero_ps();
+                    
+                    // Weighted sum over all value vectors
+                    for (size_t j = 0; j < seq_len; j++) {
+                        size_t v_idx = ((b * seq_len + j) * num_heads + h) * head_size + d;
+                        float attention_weight = probs[i * seq_len + j];
+                        
+                        // Skip computation for near-zero weights
+                        if (attention_weight < 1e-10f) continue;
+                        
+                        __m256 vvalue = _mm256_loadu_ps(&value[v_idx]);
+                        __m256 vweight = _mm256_set1_ps(attention_weight);
+                        __m256 vweighted = _mm256_mul_ps(vvalue, vweight);
+                        vsum = _mm256_add_ps(vsum, vweighted);
+                    }
+                    
+                    // Store result
+                    size_t out_idx = (b * seq_len + i) * head_size + d;
+                    _mm256_storeu_ps(&output[out_idx], vsum);
+                }
+                
+                // Process remaining elements
+                for (; d < head_size; d++) {
+                    float sum = 0.0f;
+                    for (size_t j = 0; j < seq_len; j++) {
+                        size_t v_idx = ((b * seq_len + j) * num_heads + h) * head_size + d;
+                        sum += probs[i * seq_len + j] * value[v_idx];
+                    }
+                    
+                    size_t out_idx = (b * seq_len + i) * head_size + d;
+                    output[out_idx] = sum;
+                }
+            }
+        }
     }
 }
 
@@ -1330,6 +1482,162 @@ void layer_norm_neon_f32(float* output, const float* input, const float* weight,
     for (; i < n; i++) {
         float normalized = (input[i] - mean) * inv_norm;
         output[i] = normalized * weight[i] + bias[i];
+    }
+}
+
+void attention_neon_f32(
+    float* output,              // [batch_size, seq_len, head_size]
+    const float* query,         // [batch_size, seq_len, num_heads, head_size]
+    const float* key,           // [batch_size, seq_len, num_heads, head_size]
+    const float* value,         // [batch_size, seq_len, num_heads, head_size]
+    const float* mask,          // [batch_size, 1, 1, seq_len] or nullptr
+    size_t batch_size,
+    size_t seq_len,
+    size_t num_heads,
+    size_t head_size,
+    float scale
+) {
+    // Compute attention for each batch and head
+    for (size_t b = 0; b < batch_size; b++) {
+        for (size_t h = 0; h < num_heads; h++) {
+            // Allocate temporary storage for attention scores and probabilities
+            std::vector<float> scores(seq_len * seq_len, 0.0f);
+            std::vector<float> probs(seq_len * seq_len, 0.0f);
+            
+            // Step 1: Compute query-key attention scores with NEON optimization
+            // Compute QK^T (matmul) for this batch and head - scaled by factor
+            float32x4_t vscale = vdupq_n_f32(scale);
+            
+            for (size_t i = 0; i < seq_len; i++) {
+                for (size_t j = 0; j < seq_len; j++) {
+                    // Compute dot product between query[i] and key[j] vectors
+                    float32x4_t vdot = vdupq_n_f32(0.0f);
+                    size_t k = 0;
+                    
+                    // Process 4 elements at a time
+                    for (; k + 3 < head_size; k += 4) {
+                        size_t q_idx = ((b * seq_len + i) * num_heads + h) * head_size + k;
+                        size_t k_idx = ((b * seq_len + j) * num_heads + h) * head_size + k;
+                        
+                        float32x4_t vq = vld1q_f32(&query[q_idx]);
+                        float32x4_t vk = vld1q_f32(&key[k_idx]);
+                        vdot = vmlaq_f32(vdot, vq, vk); // Multiply and accumulate
+                    }
+                    
+                    // Horizontal sum of vdot to get the complete dot product
+                    float32x2_t vsum2 = vadd_f32(vget_low_f32(vdot), vget_high_f32(vdot));
+                    vsum2 = vpadd_f32(vsum2, vsum2);
+                    float dot = vget_lane_f32(vsum2, 0);
+                    
+                    // Process remaining elements
+                    for (; k < head_size; k++) {
+                        size_t q_idx = ((b * seq_len + i) * num_heads + h) * head_size + k;
+                        size_t k_idx = ((b * seq_len + j) * num_heads + h) * head_size + k;
+                        dot += query[q_idx] * key[k_idx];
+                    }
+                    
+                    // Scale the dot product
+                    float score = dot * scale;
+                    
+                    // Apply mask if provided
+                    if (mask != nullptr) {
+                        // Apply causal mask (if mask[b,1,1,j] == 0, then hide position j from position i)
+                        size_t mask_idx = b * seq_len + j; // Simplified for causal mask
+                        if (j > i || mask[mask_idx] == 0) {
+                            score = -std::numeric_limits<float>::infinity();
+                        }
+                    }
+                    
+                    scores[i * seq_len + j] = score;
+                }
+            }
+            
+            // Step 2: Apply softmax to each row of scores to get attention weights
+            for (size_t i = 0; i < seq_len; i++) {
+                // Find max value for numerical stability
+                float max_val = -std::numeric_limits<float>::infinity();
+                for (size_t j = 0; j < seq_len; j++) {
+                    max_val = std::max(max_val, scores[i * seq_len + j]);
+                }
+                
+                // Compute exp(score - max_val) and sum
+                float sum_exp = 0.0f;
+                for (size_t j = 0; j < seq_len; j++) {
+                    float score = scores[i * seq_len + j];
+                    float exp_val = 0.0f;
+                    
+                    if (std::isinf(score) && score < 0) {
+                        // Handle -inf (masked values)
+                        exp_val = 0.0f;
+                    } else {
+                        // For normal values, compute exp(score - max_val)
+                        exp_val = std::exp(score - max_val);
+                    }
+                    
+                    probs[i * seq_len + j] = exp_val;
+                    sum_exp += exp_val;
+                }
+                
+                // Normalize probabilities
+                float inv_sum = (sum_exp > 0.0f) ? (1.0f / sum_exp) : 0.0f;
+                float32x4_t vinv_sum = vdupq_n_f32(inv_sum);
+                
+                // Normalize with NEON when possible
+                size_t j = 0;
+                for (; j + 3 < seq_len; j += 4) {
+                    float32x4_t vprob = vld1q_f32(&probs[i * seq_len + j]);
+                    vprob = vmulq_f32(vprob, vinv_sum);
+                    vst1q_f32(&probs[i * seq_len + j], vprob);
+                }
+                
+                // Handle remainder
+                for (; j < seq_len; j++) {
+                    probs[i * seq_len + j] *= inv_sum;
+                }
+            }
+            
+            // Step 3: Compute weighted sum of values (attn_probs @ value)
+            // For each query position and output dimension
+            for (size_t i = 0; i < seq_len; i++) {
+                // Process each dimension of the output
+                size_t d = 0;
+                
+                // Process 4 elements at a time with NEON
+                for (; d + 3 < head_size; d += 4) {
+                    float32x4_t vsum = vdupq_n_f32(0.0f);
+                    
+                    // Weighted sum over all value vectors
+                    for (size_t j = 0; j < seq_len; j++) {
+                        size_t v_idx = ((b * seq_len + j) * num_heads + h) * head_size + d;
+                        float attention_weight = probs[i * seq_len + j];
+                        
+                        // Skip computation for near-zero weights
+                        if (attention_weight < 1e-10f) continue;
+                        
+                        float32x4_t vvalue = vld1q_f32(&value[v_idx]);
+                        float32x4_t vweight = vdupq_n_f32(attention_weight);
+                        float32x4_t vweighted = vmulq_f32(vvalue, vweight);
+                        vsum = vaddq_f32(vsum, vweighted);
+                    }
+                    
+                    // Store result
+                    size_t out_idx = (b * seq_len + i) * head_size + d;
+                    vst1q_f32(&output[out_idx], vsum);
+                }
+                
+                // Process remaining elements
+                for (; d < head_size; d++) {
+                    float sum = 0.0f;
+                    for (size_t j = 0; j < seq_len; j++) {
+                        size_t v_idx = ((b * seq_len + j) * num_heads + h) * head_size + d;
+                        sum += probs[i * seq_len + j] * value[v_idx];
+                    }
+                    
+                    size_t out_idx = (b * seq_len + i) * head_size + d;
+                    output[out_idx] = sum;
+                }
+            }
+        }
     }
 }
 

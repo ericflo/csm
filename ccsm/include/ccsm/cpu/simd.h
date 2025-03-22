@@ -7,6 +7,8 @@
 #include <cassert>
 #include <string>
 #include <algorithm>
+#include <vector>
+#include <limits>
 
 // CPU feature detection
 #if defined(__x86_64__) || defined(_M_X64)
@@ -158,6 +160,20 @@ void rms_norm(T* output, const T* input, const T* weight, T epsilon, size_t n);
 
 template<typename T>
 void layer_norm(T* output, const T* input, const T* weight, const T* bias, T epsilon, size_t n);
+
+template<typename T>
+void attention(
+    T* output,              // [batch_size, seq_len, head_size]
+    const T* query,         // [batch_size, seq_len, num_heads, head_size]
+    const T* key,           // [batch_size, seq_len, num_heads, head_size]
+    const T* value,         // [batch_size, seq_len, num_heads, head_size]
+    const T* mask,          // [batch_size, 1, 1, seq_len] or nullptr
+    size_t batch_size,
+    size_t seq_len,
+    size_t num_heads,
+    size_t head_size,
+    T scale = 1.0f          // Scaling factor (typically 1/sqrt(head_size))
+);
 
 // Implementation details namespace (not part of public API)
 namespace detail {
@@ -428,6 +444,123 @@ void layer_norm_avx_f32(float* output, const float* input, const float* weight, 
 
 #if defined(CCSM_HAVE_NEON)
 void layer_norm_neon_f32(float* output, const float* input, const float* weight, const float* bias, float epsilon, size_t n);
+#endif
+
+// Attention implementations
+template<typename T>
+void attention_scalar(
+    T* output,              // [batch_size, seq_len, head_size]
+    const T* query,         // [batch_size, seq_len, num_heads, head_size]
+    const T* key,           // [batch_size, seq_len, num_heads, head_size]
+    const T* value,         // [batch_size, seq_len, num_heads, head_size]
+    const T* mask,          // [batch_size, 1, 1, seq_len] or nullptr
+    size_t batch_size,
+    size_t seq_len,
+    size_t num_heads,
+    size_t head_size,
+    T scale
+) {
+    // Allocate temporary buffers for attention scores and softmax results
+    std::vector<T> scores(seq_len * seq_len);
+    std::vector<T> softmax_out(seq_len);
+    
+    // Initialize output to zero
+    const size_t output_size = batch_size * seq_len * head_size;
+    for (size_t i = 0; i < output_size; i++) {
+        output[i] = 0;
+    }
+    
+    // Process each batch and head
+    for (size_t b = 0; b < batch_size; b++) {
+        for (size_t h = 0; h < num_heads; h++) {
+            // Step 1: Compute query-key attention scores
+            for (size_t i = 0; i < seq_len; i++) {
+                for (size_t j = 0; j < seq_len; j++) {
+                    // Dot product of query[i] and key[j]
+                    T dot = 0;
+                    for (size_t k = 0; k < head_size; k++) {
+                        size_t q_idx = ((b * seq_len + i) * num_heads + h) * head_size + k;
+                        size_t k_idx = ((b * seq_len + j) * num_heads + h) * head_size + k;
+                        dot += query[q_idx] * key[k_idx];
+                    }
+                    // Scale the dot product
+                    scores[i * seq_len + j] = dot * scale;
+                    
+                    // Apply mask if provided
+                    if (mask != nullptr) {
+                        // Apply causal mask (if mask[b,1,1,j] == 0, then hide position j from position i)
+                        size_t mask_idx = b * seq_len + j; // Simplified for causal mask
+                        if (j > i || mask[mask_idx] == 0) {
+                            scores[i * seq_len + j] = -std::numeric_limits<T>::infinity();
+                        }
+                    }
+                }
+                
+                // Step 2: Apply softmax to get attention weights
+                T max_val = scores[i * seq_len];
+                for (size_t j = 1; j < seq_len; j++) {
+                    max_val = std::max(max_val, scores[i * seq_len + j]);
+                }
+                
+                T sum_exp = 0;
+                for (size_t j = 0; j < seq_len; j++) {
+                    T exp_val = std::exp(scores[i * seq_len + j] - max_val);
+                    softmax_out[j] = exp_val;
+                    sum_exp += exp_val;
+                }
+                
+                // Normalize
+                if (sum_exp > 0) {
+                    for (size_t j = 0; j < seq_len; j++) {
+                        softmax_out[j] /= sum_exp;
+                    }
+                }
+                
+                // Step 3: Apply attention weights to values
+                for (size_t k = 0; k < head_size; k++) {
+                    T weighted_sum = 0;
+                    for (size_t j = 0; j < seq_len; j++) {
+                        size_t v_idx = ((b * seq_len + j) * num_heads + h) * head_size + k;
+                        weighted_sum += softmax_out[j] * value[v_idx];
+                    }
+                    
+                    // Store in output
+                    size_t out_idx = (b * seq_len + i) * head_size + k;
+                    output[out_idx] += weighted_sum;
+                }
+            }
+        }
+    }
+}
+
+#if defined(CCSM_HAVE_AVX)
+void attention_avx_f32(
+    float* output,
+    const float* query,
+    const float* key,
+    const float* value,
+    const float* mask,
+    size_t batch_size,
+    size_t seq_len,
+    size_t num_heads,
+    size_t head_size,
+    float scale
+);
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+void attention_neon_f32(
+    float* output,
+    const float* query,
+    const float* key,
+    const float* value,
+    const float* mask,
+    size_t batch_size,
+    size_t seq_len,
+    size_t num_heads,
+    size_t head_size,
+    float scale
+);
 #endif
 
 } // namespace detail
@@ -727,6 +860,42 @@ inline void layer_norm<float>(float* output, const float* input, const float* we
 
     // Fallback to scalar implementation
     detail::layer_norm_scalar(output, input, weight, bias, epsilon, n);
+}
+
+template<>
+inline void attention<float>(
+    float* output,
+    const float* query,
+    const float* key,
+    const float* value,
+    const float* mask,
+    size_t batch_size,
+    size_t seq_len,
+    size_t num_heads,
+    size_t head_size,
+    float scale
+) {
+    const auto& features = CPUFeatures::get();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (features.avx) {
+        detail::attention_avx_f32(output, query, key, value, mask, 
+                                 batch_size, seq_len, num_heads, head_size, scale);
+        return;
+    }
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+    if (features.neon) {
+        detail::attention_neon_f32(output, query, key, value, mask, 
+                                  batch_size, seq_len, num_heads, head_size, scale);
+        return;
+    }
+#endif
+
+    // Fallback to scalar implementation
+    detail::attention_scalar(output, query, key, value, mask, 
+                           batch_size, seq_len, num_heads, head_size, scale);
 }
 
 // Cache-aware memory layout utilities
