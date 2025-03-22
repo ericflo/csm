@@ -526,3 +526,51 @@ TEST_F(SIMDActivationTest, SiLUApproximationAccuracy) {
     std::cout << "This is acceptable for the intended use case, as it provides significant performance gains." << std::endl;
     SUCCEED();
 }
+
+// Test for softmax performance
+TEST_F(SIMDActivationTest, SoftmaxAccuracyAndPerformance) {
+    // Performance test for softmax
+    constexpr size_t PERF_SIZE = 4096;
+    constexpr int NUM_ITERATIONS = 1000;
+    
+    std::vector<float> perf_input(PERF_SIZE);
+    std::vector<float> perf_output(PERF_SIZE);
+    
+    // Initialize with some data - using a simple pattern
+    for (size_t i = 0; i < PERF_SIZE; i++) {
+        // Just a simple pattern for testing
+        perf_input[i] = std::sin((float)i * 0.01f);
+    }
+    
+    // Test basic correctness of softmax - outputs should sum to 1.0
+    simd::softmax(perf_output.data(), perf_input.data(), PERF_SIZE);
+    
+    float sum = 0.0f;
+    for (size_t i = 0; i < PERF_SIZE; i++) {
+        sum += perf_output[i];
+        
+        // All softmax outputs should be between 0 and 1
+        EXPECT_GE(perf_output[i], 0.0f) << "Softmax output below 0 at index " << i;
+        EXPECT_LE(perf_output[i], 1.0f) << "Softmax output above 1 at index " << i;
+    }
+    
+    // The sum should be very close to 1.0
+    EXPECT_NEAR(sum, 1.0f, 1e-5f) << "Softmax outputs should sum to 1.0";
+    
+    // Performance benchmark for SIMD softmax
+    auto start = std::chrono::high_resolution_clock::now();
+    
+    for (int i = 0; i < NUM_ITERATIONS; i++) {
+        simd::softmax(perf_output.data(), perf_input.data(), PERF_SIZE);
+    }
+    
+    auto end = std::chrono::high_resolution_clock::now();
+    double simd_time_ms = std::chrono::duration<double, std::milli>(end - start).count() / NUM_ITERATIONS;
+    
+    // Print performance results
+    std::cout << "\nSoftmax performance (size = " << PERF_SIZE << "):" << std::endl;
+    std::cout << "  SIMD:   " << std::fixed << std::setprecision(3) << simd_time_ms << " ms" << std::endl;
+    
+    // We don't have a specific speedup target, just verifying it works correctly
+    std::cout << "  Note: Using optimized softmax implementation with numerical approximations" << std::endl;
+}
