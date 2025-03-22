@@ -351,6 +351,67 @@ void silu_avx_f32(float* output, const float* input, size_t n) {
     }
 }
 
+void rms_norm_avx_f32(float* output, const float* input, const float* weight, float epsilon, size_t n) {
+    if (n == 0) return;
+    
+    // Calculate sum of squares using AVX
+    __m256 vsum_sq = _mm256_setzero_ps();
+    size_t i = 0;
+    
+    // Process 8 elements at a time
+    for (; i + 7 < n; i += 8) {
+        __m256 vin = _mm256_loadu_ps(input + i);
+        __m256 vsq = _mm256_mul_ps(vin, vin);
+        vsum_sq = _mm256_add_ps(vsum_sq, vsq);
+    }
+    
+    // Horizontal sum of vsum_sq
+    // Extract high and low 128-bit parts
+    __m128 high = _mm256_extractf128_ps(vsum_sq, 1);
+    __m128 low = _mm256_extractf128_ps(vsum_sq, 0);
+    
+    // Add high and low parts
+    __m128 sum128 = _mm_add_ps(high, low);
+    
+    // Add upper and lower halves of 128-bit register
+    __m128 sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
+    
+    // Add upper and lower 32-bits
+    __m128 sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 0x1));
+    
+    // Extract the final result
+    float sum_sq = _mm_cvtss_f32(sum32);
+    
+    // Add remaining elements
+    for (; i < n; i++) {
+        sum_sq += input[i] * input[i];
+    }
+    
+    // Calculate normalization factor: 1/sqrt(sum_sq/n + epsilon)
+    float mean_sq = sum_sq / n;
+    float inv_norm = 1.0f / std::sqrt(mean_sq + epsilon);
+    __m256 vinv_norm = _mm256_set1_ps(inv_norm);
+    
+    // Apply normalization with weights using AVX
+    i = 0;
+    for (; i + 7 < n; i += 8) {
+        __m256 vin = _mm256_loadu_ps(input + i);
+        __m256 vw = _mm256_loadu_ps(weight + i);
+        
+        // Normalize and scale with weights
+        __m256 vnorm = _mm256_mul_ps(vin, vinv_norm);
+        __m256 vout = _mm256_mul_ps(vnorm, vw);
+        
+        // Store result
+        _mm256_storeu_ps(output + i, vout);
+    }
+    
+    // Process remaining elements
+    for (; i < n; i++) {
+        output[i] = input[i] * inv_norm * weight[i];
+    }
+}
+
 void softmax_avx_f32(float* output, const float* input, size_t n) {
     if (n == 0) return;
     
@@ -1041,6 +1102,55 @@ void softmax_neon_f32(float* output, const float* input, size_t n) {
     float inv_sum = 1.0f / sum;
     for (; i < n; i++) {
         output[i] *= inv_sum;
+    }
+}
+
+void rms_norm_neon_f32(float* output, const float* input, const float* weight, float epsilon, size_t n) {
+    if (n == 0) return;
+    
+    // Calculate sum of squares using NEON
+    float32x4_t vsum_sq = vdupq_n_f32(0.0f);
+    size_t i = 0;
+    
+    // Process 4 elements at a time
+    for (; i + 3 < n; i += 4) {
+        float32x4_t vin = vld1q_f32(input + i);
+        float32x4_t vsq = vmulq_f32(vin, vin);
+        vsum_sq = vaddq_f32(vsum_sq, vsq);
+    }
+    
+    // Horizontal sum of vsum_sq
+    float32x2_t vsum_sq2 = vadd_f32(vget_low_f32(vsum_sq), vget_high_f32(vsum_sq));
+    vsum_sq2 = vpadd_f32(vsum_sq2, vsum_sq2);
+    float sum_sq = vget_lane_f32(vsum_sq2, 0);
+    
+    // Add remaining elements
+    for (; i < n; i++) {
+        sum_sq += input[i] * input[i];
+    }
+    
+    // Calculate normalization factor: 1/sqrt(sum_sq/n + epsilon)
+    float mean_sq = sum_sq / n;
+    float inv_norm = 1.0f / std::sqrt(mean_sq + epsilon);
+    float32x4_t vinv_norm = vdupq_n_f32(inv_norm);
+    
+    // Apply normalization with weights using NEON
+    i = 0;
+    for (; i + 3 < n; i += 4) {
+        float32x4_t vin = vld1q_f32(input + i);
+        float32x4_t vw = vld1q_f32(weight + i);
+        
+        // Normalize and scale with weights
+        float32x4_t vnorm = vmulq_f32(vin, vinv_norm);
+        float32x4_t vout = vmulq_f32(vnorm, vw);
+        
+        // Store result
+        vst1q_f32(output + i, vout);
+    }
+    
+    // Process remaining elements
+    for (; i < n; i++) {
+        output[i] = input[i] * inv_norm * weight[i];
     }
 }
 

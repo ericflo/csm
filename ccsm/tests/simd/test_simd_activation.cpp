@@ -574,3 +574,95 @@ TEST_F(SIMDActivationTest, SoftmaxAccuracyAndPerformance) {
     // We don't have a specific speedup target, just verifying it works correctly
     std::cout << "  Note: Using optimized softmax implementation with numerical approximations" << std::endl;
 }
+
+// Test for RMS normalization performance and accuracy
+TEST_F(SIMDActivationTest, RMSNormAccuracyAndPerformance) {
+    // Different sizes for RMS norm testing
+    const std::vector<size_t> sizes = {32, 64, 128, 256, 512, 1024, 2048, 4096};
+    float epsilon = 1e-5f;
+    
+    for (size_t size : sizes) {
+        SCOPED_TRACE("Testing RMS norm with size: " + std::to_string(size));
+        
+        // Input data, weights, and output buffers
+        std::vector<float> input(size);
+        std::vector<float> weights(size);
+        std::vector<float> output_simd(size);
+        std::vector<float> output_scalar(size);
+        
+        // Generate random data for input and weights
+        generate_test_data(input, size, "mixed");
+        generate_test_data(weights, size, "positive"); // Weights are typically positive
+        
+        // Calculate scalar reference implementation
+        float sum_sq = 0.0f;
+        for (size_t i = 0; i < size; i++) {
+            sum_sq += input[i] * input[i];
+        }
+        float mean_sq = sum_sq / size;
+        float inv_norm = 1.0f / std::sqrt(mean_sq + epsilon);
+        
+        for (size_t i = 0; i < size; i++) {
+            output_scalar[i] = input[i] * inv_norm * weights[i];
+        }
+        
+        // Calculate using SIMD implementation
+        simd::rms_norm(output_simd.data(), input.data(), weights.data(), epsilon, size);
+        
+        // Compare results
+        EXPECT_TRUE(vector_almost_equal(output_simd, output_scalar, 1e-5f))
+            << "RMS normalization results differ for size " << size;
+    }
+    
+    // Performance benchmark
+    const size_t perf_size = 8192; // Typical hidden size for transformer models
+    std::vector<float> perf_input(perf_size);
+    std::vector<float> perf_weights(perf_size);
+    std::vector<float> perf_output(perf_size);
+    
+    // Initialize with realistic data
+    generate_test_data(perf_input, perf_size, "mixed");
+    generate_test_data(perf_weights, perf_size, "positive");
+    
+    // Benchmark scalar implementation (simplified)
+    auto scalar_start = std::chrono::high_resolution_clock::now();
+    const int num_iterations = 1000;
+    
+    for (int iter = 0; iter < num_iterations; iter++) {
+        float sum_sq = 0.0f;
+        for (size_t i = 0; i < perf_size; i++) {
+            sum_sq += perf_input[i] * perf_input[i];
+        }
+        float mean_sq = sum_sq / perf_size;
+        float inv_norm = 1.0f / std::sqrt(mean_sq + epsilon);
+        
+        for (size_t i = 0; i < perf_size; i++) {
+            perf_output[i] = perf_input[i] * inv_norm * perf_weights[i];
+        }
+    }
+    
+    auto scalar_end = std::chrono::high_resolution_clock::now();
+    double scalar_time_ms = std::chrono::duration<double, std::milli>(scalar_end - scalar_start).count() / num_iterations;
+    
+    // Benchmark SIMD implementation
+    auto simd_start = std::chrono::high_resolution_clock::now();
+    
+    for (int iter = 0; iter < num_iterations; iter++) {
+        simd::rms_norm(perf_output.data(), perf_input.data(), perf_weights.data(), epsilon, perf_size);
+    }
+    
+    auto simd_end = std::chrono::high_resolution_clock::now();
+    double simd_time_ms = std::chrono::duration<double, std::milli>(simd_end - simd_start).count() / num_iterations;
+    
+    // Calculate speedup
+    double speedup = scalar_time_ms / simd_time_ms;
+    
+    // Print performance results
+    std::cout << "\nRMS Normalization performance (size = " << perf_size << "):" << std::endl;
+    std::cout << "  Scalar: " << std::fixed << std::setprecision(3) << scalar_time_ms << " ms" << std::endl;
+    std::cout << "  SIMD:   " << std::fixed << std::setprecision(3) << simd_time_ms << " ms" << std::endl;
+    std::cout << "  Speedup: " << std::fixed << std::setprecision(2) << speedup << "x" << std::endl;
+    
+    // For vectorized implementations, we expect at least 3x speedup
+    EXPECT_GT(speedup, 2.0) << "RMS Norm SIMD implementation should be significantly faster than scalar";
+}

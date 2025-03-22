@@ -153,6 +153,9 @@ void relu(T* output, const T* input, size_t n);
 template<typename T>
 void silu(T* output, const T* input, size_t n);
 
+template<typename T>
+void rms_norm(T* output, const T* input, const T* weight, T epsilon, size_t n);
+
 // Implementation details namespace (not part of public API)
 namespace detail {
 
@@ -361,6 +364,32 @@ void silu_avx_f32(float* output, const float* input, size_t n);
 
 #if defined(CCSM_HAVE_NEON)
 void silu_neon_f32(float* output, const float* input, size_t n);
+#endif
+
+// RMS Normalization implementations
+template<typename T>
+void rms_norm_scalar(T* output, const T* input, const T* weight, T epsilon, size_t n) {
+    // Calculate sum of squares
+    T ss = 0;
+    for (size_t i = 0; i < n; i++) {
+        ss += input[i] * input[i];
+    }
+    
+    // Calculate normalization factor
+    T norm_factor = 1.0f / std::sqrt(ss / n + epsilon);
+    
+    // Apply normalization with weights
+    for (size_t i = 0; i < n; i++) {
+        output[i] = input[i] * norm_factor * weight[i];
+    }
+}
+
+#if defined(CCSM_HAVE_AVX)
+void rms_norm_avx_f32(float* output, const float* input, const float* weight, float epsilon, size_t n);
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+void rms_norm_neon_f32(float* output, const float* input, const float* weight, float epsilon, size_t n);
 #endif
 
 } // namespace detail
@@ -616,6 +645,28 @@ inline void silu<float>(float* output, const float* input, size_t n) {
 
     // Fallback to scalar implementation
     detail::silu_scalar(output, input, n);
+}
+
+template<>
+inline void rms_norm<float>(float* output, const float* input, const float* weight, float epsilon, size_t n) {
+    const auto& features = CPUFeatures::get();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (features.avx) {
+        detail::rms_norm_avx_f32(output, input, weight, epsilon, n);
+        return;
+    }
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+    if (features.neon) {
+        detail::rms_norm_neon_f32(output, input, weight, epsilon, n);
+        return;
+    }
+#endif
+
+    // Fallback to scalar implementation
+    detail::rms_norm_scalar(output, input, weight, epsilon, n);
 }
 
 // Cache-aware memory layout utilities
