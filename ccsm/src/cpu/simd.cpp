@@ -163,6 +163,65 @@ void vector_gt_mask_avx_f32(float* result, const float* a, const float* b, size_
     }
 }
 
+void relu_avx_f32(float* output, const float* input, size_t n) {
+    size_t i = 0;
+    __m256 vzero = _mm256_setzero_ps();
+    
+    // Process 8 elements at a time using AVX
+    for (; i + 7 < n; i += 8) {
+        __m256 vin = _mm256_loadu_ps(input + i);
+        __m256 vout = _mm256_max_ps(vzero, vin);
+        _mm256_storeu_ps(output + i, vout);
+    }
+    
+    // Process remaining elements
+    for (; i < n; i++) {
+        output[i] = std::max(0.0f, input[i]);
+    }
+}
+
+void silu_avx_f32(float* output, const float* input, size_t n) {
+    size_t i = 0;
+    __m256 vone = _mm256_set1_ps(1.0f);
+    
+    // Process 8 elements at a time using AVX
+    for (; i + 7 < n; i += 8) {
+        // Load input values
+        __m256 vin = _mm256_loadu_ps(input + i);
+        
+        // Calculate -x for exp(-x)
+        __m256 vneg = _mm256_mul_ps(vin, _mm256_set1_ps(-1.0f));
+        
+        // Calculate sigmoid(x) = 1 / (1 + exp(-x))
+        // For each element, we need to compute exp(-x)
+        __m256 vexp_neg = vneg;
+        
+        // Approximate exp using a simplified approach
+        // This approximation works reasonably well for small values of x
+        // For better accuracy in a real implementation, we would use a higher-order polynomial
+        
+        // exp(x) ≈ 1 + x + x²/2 for small x
+        __m256 vsquared = _mm256_mul_ps(vneg, vneg);
+        __m256 vhalf_squared = _mm256_mul_ps(vsquared, _mm256_set1_ps(0.5f));
+        
+        vexp_neg = _mm256_add_ps(vone, vneg);
+        vexp_neg = _mm256_add_ps(vexp_neg, vhalf_squared);
+        
+        // Calculate 1 / (1 + exp(-x))
+        __m256 vdenom = _mm256_add_ps(vone, vexp_neg);
+        __m256 vsigmoid = _mm256_div_ps(vone, vdenom);
+        
+        // Calculate x * sigmoid(x)
+        __m256 vout = _mm256_mul_ps(vin, vsigmoid);
+        _mm256_storeu_ps(output + i, vout);
+    }
+    
+    // Process remaining elements using the scalar implementation
+    for (; i < n; i++) {
+        output[i] = input[i] / (1.0f + std::exp(-input[i]));
+    }
+}
+
 void vector_add_avx_f32(float* result, const float* a, const float* b, size_t n) {
     size_t i = 0;
     

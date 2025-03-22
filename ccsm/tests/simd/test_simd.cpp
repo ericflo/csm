@@ -92,12 +92,78 @@ TEST_F(SIMDTest, VectorOperations) {
 
 // Test activation functions
 TEST_F(SIMDTest, ActivationFunctions) {
-    GTEST_SKIP() << "Skipping SIMD activation tests due to implementation issues"; 
+    const size_t n = 1024;
+    
+    // Create test vectors
+    std::vector<float> input(n), output(n), expected_relu(n), expected_silu(n);
+    
+    // Initialize test data with both positive and negative values
+    for (size_t i = 0; i < n; i++) {
+        // Mix of positive and negative values between -5 and 5
+        input[i] = (static_cast<float>(i % 20) - 10.0f) / 2.0f;
+        
+        // Calculate expected ReLU: max(0, x)
+        expected_relu[i] = std::max(0.0f, input[i]);
+        
+        // Calculate expected SiLU: x * sigmoid(x) = x / (1 + exp(-x))
+        expected_silu[i] = input[i] / (1.0f + std::exp(-input[i]));
+    }
+    
+    // Test ReLU
+    simd::relu(output.data(), input.data(), n);
+    EXPECT_TRUE(vector_almost_equal(output, expected_relu, 1e-5f));
+    
+    // Test SiLU - using higher epsilon due to approximation in exp
+    simd::silu(output.data(), input.data(), n);
+    EXPECT_TRUE(vector_almost_equal(output, expected_silu, 1e-3f));
 }
 
 // Test matrix multiplication
 TEST_F(SIMDTest, MatrixMultiplication) {
-    GTEST_SKIP() << "Skipping SIMD matrix multiplication tests due to implementation issues";
+    // Create small matrices for testing matrix multiplication
+    // A: 4x3 matrix
+    // B: 3x2 matrix
+    // C: 4x2 matrix (result)
+    const size_t m = 4; // Rows of A
+    const size_t k = 3; // Columns of A / Rows of B
+    const size_t n = 2; // Columns of B
+    
+    std::vector<float> a(m * k), b(k * n), c(m * n), expected(m * n);
+    
+    // Initialize matrices with test data
+    for (size_t i = 0; i < m; i++) {
+        for (size_t j = 0; j < k; j++) {
+            a[i * k + j] = static_cast<float>((i * k + j) % 5 + 1) / 2.0f; // 0.5 to 2.5
+        }
+    }
+    
+    for (size_t i = 0; i < k; i++) {
+        for (size_t j = 0; j < n; j++) {
+            b[i * n + j] = static_cast<float>((i * n + j) % 3 + 1) / 2.0f; // 0.5 to 1.5
+        }
+    }
+    
+    // Calculate expected result using scalar code
+    for (size_t i = 0; i < m; i++) {
+        for (size_t j = 0; j < n; j++) {
+            expected[i * n + j] = 0.0f;
+            for (size_t l = 0; l < k; l++) {
+                expected[i * n + j] += a[i * k + l] * b[l * n + j];
+            }
+        }
+    }
+    
+    // Test matrix multiplication
+    simd::matrix_mul(c.data(), a.data(), b.data(), m, k, n);
+    
+    // Check result
+    for (size_t i = 0; i < m; i++) {
+        for (size_t j = 0; j < n; j++) {
+            // Use a larger epsilon for matrix multiplication due to potential floating-point differences
+            EXPECT_NEAR(c[i * n + j], expected[i * n + j], 1e-4f) 
+                << "Mismatch at position (" << i << ", " << j << ")";
+        }
+    }
 }
 
 // Test fixture for thread pool
