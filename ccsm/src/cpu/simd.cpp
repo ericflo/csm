@@ -7,6 +7,48 @@
 namespace ccsm {
 namespace simd {
 
+// Return the implementation active for the current architecture
+Implementation get_active_implementation() {
+    const auto& features = CPUFeatures::get();
+    
+    if (features.avx512f) {
+        return Implementation::AVX512;
+    } else if (features.avx2) {
+        return Implementation::AVX2;
+    } else if (features.avx) {
+        return Implementation::AVX;
+    } else if (features.sse4_1) {
+        return Implementation::SSE41;
+    } else if (features.sse2) {
+        return Implementation::SSE2;
+    } else if (features.neon) {
+        return Implementation::NEON;
+    } else {
+        return Implementation::SCALAR;
+    }
+}
+
+// Return information about CPU capabilities as string
+std::string get_cpu_capabilities() {
+    const auto& features = CPUFeatures::get();
+    std::string capabilities;
+    
+    if (features.avx512f) capabilities += "AVX-512F ";
+    if (features.avx2) capabilities += "AVX2 ";
+    if (features.avx) capabilities += "AVX ";
+    if (features.sse4_2) capabilities += "SSE4.2 ";
+    if (features.sse4_1) capabilities += "SSE4.1 ";
+    if (features.sse3) capabilities += "SSE3 ";
+    if (features.sse2) capabilities += "SSE2 ";
+    if (features.neon) capabilities += "NEON ";
+    
+    if (capabilities.empty()) {
+        capabilities = "Scalar (no SIMD)";
+    }
+    
+    return capabilities;
+}
+
 // Function to detect CPU features at runtime
 const CPUFeatures& CPUFeatures::get() {
     static CPUFeatures features;
@@ -94,54 +136,81 @@ namespace detail {
 
 #if defined(CCSM_HAVE_AVX)
 
-void vector_add_avx_f32(const float* a, const float* b, float* c, size_t n) {
+void vector_gt_mask_avx_f32(float* result, const float* a, const float* b, size_t n) {
+    size_t i = 0;
+    
+    // Process 8 elements at a time using AVX
+    for (; i + 7 < n; i += 8) {
+        // Load 8 elements from a and b
+        __m256 va = _mm256_loadu_ps(a + i);
+        __m256 vb = _mm256_loadu_ps(b + i);
+        
+        // Compare a > b (creates a mask with all bits set to 1 for true, 0 for false)
+        __m256 vcmp = _mm256_cmp_ps(va, vb, _CMP_GT_OQ);
+        
+        // Convert the mask to 1.0f (all bits set) or 0.0f (no bits set)
+        // We use a logical AND with 1.0f to achieve this
+        __m256 vone = _mm256_set1_ps(1.0f);
+        __m256 vmask = _mm256_and_ps(vcmp, vone);
+        
+        // Store the mask in the result array
+        _mm256_storeu_ps(result + i, vmask);
+    }
+    
+    // Process remaining elements with scalar code
+    for (; i < n; i++) {
+        result[i] = (a[i] > b[i]) ? 1.0f : 0.0f;
+    }
+}
+
+void vector_add_avx_f32(float* result, const float* a, const float* b, size_t n) {
     size_t i = 0;
     
     // Process 8 elements at a time using AVX
     for (; i + 7 < n; i += 8) {
         __m256 va = _mm256_loadu_ps(a + i);
         __m256 vb = _mm256_loadu_ps(b + i);
-        __m256 vc = _mm256_add_ps(va, vb);
-        _mm256_storeu_ps(c + i, vc);
+        __m256 vr = _mm256_add_ps(va, vb);
+        _mm256_storeu_ps(result + i, vr);
     }
     
     // Process remaining elements
     for (; i < n; i++) {
-        c[i] = a[i] + b[i];
+        result[i] = a[i] + b[i];
     }
 }
 
-void vector_mul_avx_f32(const float* a, const float* b, float* c, size_t n) {
+void vector_mul_avx_f32(float* result, const float* a, const float* b, size_t n) {
     size_t i = 0;
     
     // Process 8 elements at a time using AVX
     for (; i + 7 < n; i += 8) {
         __m256 va = _mm256_loadu_ps(a + i);
         __m256 vb = _mm256_loadu_ps(b + i);
-        __m256 vc = _mm256_mul_ps(va, vb);
-        _mm256_storeu_ps(c + i, vc);
+        __m256 vr = _mm256_mul_ps(va, vb);
+        _mm256_storeu_ps(result + i, vr);
     }
     
     // Process remaining elements
     for (; i < n; i++) {
-        c[i] = a[i] * b[i];
+        result[i] = a[i] * b[i];
     }
 }
 
-void vector_scale_avx_f32(const float* a, float scalar, float* b, size_t n) {
+void vector_scale_avx_f32(float* result, const float* a, float scalar, size_t n) {
     size_t i = 0;
     __m256 vs = _mm256_set1_ps(scalar);
     
     // Process 8 elements at a time using AVX
     for (; i + 7 < n; i += 8) {
         __m256 va = _mm256_loadu_ps(a + i);
-        __m256 vb = _mm256_mul_ps(va, vs);
-        _mm256_storeu_ps(b + i, vb);
+        __m256 vr = _mm256_mul_ps(va, vs);
+        _mm256_storeu_ps(result + i, vr);
     }
     
     // Process remaining elements
     for (; i < n; i++) {
-        b[i] = a[i] * scalar;
+        result[i] = a[i] * scalar;
     }
 }
 
@@ -157,10 +226,20 @@ float vector_dot_avx_f32(const float* a, const float* b, size_t n) {
         sum = _mm256_add_ps(sum, vmul);
     }
     
-    // Horizontal sum of AVX register
-    __m128 sum128 = _mm_add_ps(_mm256_extractf128_ps(sum, 0), _mm256_extractf128_ps(sum, 1));
+    // Horizontal sum of AVX register - extract high and low 128-bit parts
+    __m128 high = _mm256_extractf128_ps(sum, 1);
+    __m128 low = _mm256_extractf128_ps(sum, 0);
+    
+    // Add high and low parts
+    __m128 sum128 = _mm_add_ps(high, low);
+    
+    // Add upper and lower halves of 128-bit register
     __m128 sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
-    __m128 sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 0x55));
+    
+    // Add upper and lower 32-bits
+    __m128 sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 0x1));
+    
+    // Extract the final result
     float result = _mm_cvtss_f32(sum32);
     
     // Process remaining elements
@@ -171,7 +250,7 @@ float vector_dot_avx_f32(const float* a, const float* b, size_t n) {
     return result;
 }
 
-void relu_avx_f32(const float* input, float* output, size_t n) {
+void relu_avx_f32(float* output, const float* input, size_t n) {
     size_t i = 0;
     __m256 vzero = _mm256_setzero_ps();
     
@@ -188,7 +267,7 @@ void relu_avx_f32(const float* input, float* output, size_t n) {
     }
 }
 
-void silu_avx_f32(const float* input, float* output, size_t n) {
+void silu_avx_f32(float* output, const float* input, size_t n) {
     size_t i = 0;
     __m256 vone = _mm256_set1_ps(1.0f);
     
@@ -228,7 +307,7 @@ void silu_avx_f32(const float* input, float* output, size_t n) {
     }
 }
 
-void softmax_avx_f32(const float* input, float* output, size_t n) {
+void softmax_avx_f32(float* output, const float* input, size_t n) {
     if (n == 0) return;
     
     // Find max value for numerical stability
@@ -293,12 +372,12 @@ void softmax_avx_f32(const float* input, float* output, size_t n) {
     }
 }
 
-void matrix_mul_avx_f32(const float* a, const float* b, float* c, size_t m, size_t k, size_t n) {
+void matrix_mul_avx_f32(float* result, const float* a, const float* b, size_t m, size_t k, size_t n) {
     // Simple AVX implementation of matrix multiplication
     // For production use, consider using a highly optimized library like OpenBLAS
     for (size_t i = 0; i < m; i++) {
         for (size_t j = 0; j < n; j++) {
-            c[i * n + j] = 0.0f;
+            result[i * n + j] = 0.0f;
         }
         
         for (size_t l = 0; l < k; l += 8) {
@@ -307,7 +386,7 @@ void matrix_mul_avx_f32(const float* a, const float* b, float* c, size_t m, size
                 // Handle edge case with scalar code
                 for (size_t j = 0; j < n; j++) {
                     for (size_t lOff = 0; lOff < kRemaining; lOff++) {
-                        c[i * n + j] += a[i * k + l + lOff] * b[(l + lOff) * n + j];
+                        result[i * n + j] += a[i * k + l + lOff] * b[(l + lOff) * n + j];
                     }
                 }
             } else {
@@ -326,14 +405,14 @@ void matrix_mul_avx_f32(const float* a, const float* b, float* c, size_t m, size
                     }
                     __m256 vb = _mm256_loadu_ps(bCol);
                     
-                    // Compute dot product and add to c[i, j]
+                    // Compute dot product and add to result[i, j]
                     vsum = _mm256_mul_ps(va, vb);
                     
                     // Horizontal sum
                     __m128 sum128 = _mm_add_ps(_mm256_extractf128_ps(vsum, 0), _mm256_extractf128_ps(vsum, 1));
                     __m128 sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
                     __m128 sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 0x55));
-                    c[i * n + j] += _mm_cvtss_f32(sum32);
+                    result[i * n + j] += _mm_cvtss_f32(sum32);
                 }
             }
         }
@@ -396,10 +475,20 @@ float vector_dot_avx2_f32(const float* a, const float* b, size_t n) {
         sum = _mm256_fmadd_ps(va, vb, sum);
     }
     
-    // Horizontal sum of AVX register
-    __m128 sum128 = _mm_add_ps(_mm256_extractf128_ps(sum, 0), _mm256_extractf128_ps(sum, 1));
+    // Horizontal sum of AVX register - extract high and low 128-bit parts
+    __m128 high = _mm256_extractf128_ps(sum, 1);
+    __m128 low = _mm256_extractf128_ps(sum, 0);
+    
+    // Add high and low parts
+    __m128 sum128 = _mm_add_ps(high, low);
+    
+    // Add upper and lower halves of 128-bit register
     __m128 sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
-    __m128 sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 0x55));
+    
+    // Add upper and lower 32-bits
+    __m128 sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 0x1));
+    
+    // Extract the final result
     float result = _mm_cvtss_f32(sum32);
     
     // Process remaining elements
@@ -467,7 +556,35 @@ void matrix_mul_avx2_f32(const float* a, const float* b, float* c, size_t m, siz
 
 #if defined(CCSM_HAVE_NEON)
 
-void vector_add_neon_f32(const float* a, const float* b, float* c, size_t n) {
+void vector_gt_mask_neon_f32(float* result, const float* a, const float* b, size_t n) {
+    size_t i = 0;
+    
+    // Process 4 elements at a time using NEON
+    for (; i + 3 < n; i += 4) {
+        // Load 4 elements from a and b
+        float32x4_t va = vld1q_f32(a + i);
+        float32x4_t vb = vld1q_f32(b + i);
+        
+        // Compare a > b (creates a mask with all bits set to 1 for true, 0 for false)
+        uint32x4_t vcmp = vcgtq_f32(va, vb);
+        
+        // Convert the mask to 1.0f (all bits set) or 0.0f (no bits set)
+        // First, convert uint32 mask to float32 mask
+        float32x4_t vone = vdupq_n_f32(1.0f);
+        float32x4_t vzero = vdupq_n_f32(0.0f);
+        float32x4_t vmask = vbslq_f32(vcmp, vone, vzero);
+        
+        // Store the mask in the result array
+        vst1q_f32(result + i, vmask);
+    }
+    
+    // Process remaining elements with scalar code
+    for (; i < n; i++) {
+        result[i] = (a[i] > b[i]) ? 1.0f : 0.0f;
+    }
+}
+
+void vector_add_neon_f32(float* result, const float* a, const float* b, size_t n) {
     size_t i = 0;
     
     // Process 4 elements at a time using NEON
@@ -475,16 +592,16 @@ void vector_add_neon_f32(const float* a, const float* b, float* c, size_t n) {
         float32x4_t va = vld1q_f32(a + i);
         float32x4_t vb = vld1q_f32(b + i);
         float32x4_t vc = vaddq_f32(va, vb);
-        vst1q_f32(c + i, vc);
+        vst1q_f32(result + i, vc);
     }
     
     // Process remaining elements
     for (; i < n; i++) {
-        c[i] = a[i] + b[i];
+        result[i] = a[i] + b[i];
     }
 }
 
-void vector_mul_neon_f32(const float* a, const float* b, float* c, size_t n) {
+void vector_mul_neon_f32(float* result, const float* a, const float* b, size_t n) {
     size_t i = 0;
     
     // Process 4 elements at a time using NEON
@@ -492,16 +609,16 @@ void vector_mul_neon_f32(const float* a, const float* b, float* c, size_t n) {
         float32x4_t va = vld1q_f32(a + i);
         float32x4_t vb = vld1q_f32(b + i);
         float32x4_t vc = vmulq_f32(va, vb);
-        vst1q_f32(c + i, vc);
+        vst1q_f32(result + i, vc);
     }
     
     // Process remaining elements
     for (; i < n; i++) {
-        c[i] = a[i] * b[i];
+        result[i] = a[i] * b[i];
     }
 }
 
-void vector_fma_neon_f32(const float* a, const float* b, const float* c, float* d, size_t n) {
+void vector_fma_neon_f32(float* result, const float* a, const float* b, const float* c, size_t n) {
     size_t i = 0;
     
     // Process 4 elements at a time using NEON
@@ -510,31 +627,31 @@ void vector_fma_neon_f32(const float* a, const float* b, const float* c, float* 
         float32x4_t vb = vld1q_f32(b + i);
         float32x4_t vc = vld1q_f32(c + i);
         
-        // d = a * b + c
-        float32x4_t vd = vmlaq_f32(vc, va, vb);
-        vst1q_f32(d + i, vd);
+        // result = a * b + c
+        float32x4_t vr = vmlaq_f32(vc, va, vb);
+        vst1q_f32(result + i, vr);
     }
     
     // Process remaining elements
     for (; i < n; i++) {
-        d[i] = a[i] * b[i] + c[i];
+        result[i] = a[i] * b[i] + c[i];
     }
 }
 
-void vector_scale_neon_f32(const float* a, float scalar, float* b, size_t n) {
+void vector_scale_neon_f32(float* result, const float* a, float scalar, size_t n) {
     size_t i = 0;
     float32x4_t vs = vdupq_n_f32(scalar);
     
     // Process 4 elements at a time using NEON
     for (; i + 3 < n; i += 4) {
         float32x4_t va = vld1q_f32(a + i);
-        float32x4_t vb = vmulq_f32(va, vs);
-        vst1q_f32(b + i, vb);
+        float32x4_t vr = vmulq_f32(va, vs);
+        vst1q_f32(result + i, vr);
     }
     
     // Process remaining elements
     for (; i < n; i++) {
-        b[i] = a[i] * scalar;
+        result[i] = a[i] * scalar;
     }
 }
 
@@ -546,12 +663,16 @@ float vector_dot_neon_f32(const float* a, const float* b, size_t n) {
     for (; i + 3 < n; i += 4) {
         float32x4_t va = vld1q_f32(a + i);
         float32x4_t vb = vld1q_f32(b + i);
+        // Multiply and accumulate: vsum += va * vb
         vsum = vmlaq_f32(vsum, va, vb);
     }
     
     // Horizontal sum of NEON register
+    // Add the high 64 bits to the low 64 bits
     float32x2_t vsum2 = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
+    // Add adjacent pairs of 32-bit floats
     vsum2 = vpadd_f32(vsum2, vsum2);
+    // Extract the first lane (the sum)
     float result = vget_lane_f32(vsum2, 0);
     
     // Process remaining elements
@@ -562,7 +683,7 @@ float vector_dot_neon_f32(const float* a, const float* b, size_t n) {
     return result;
 }
 
-void relu_neon_f32(const float* input, float* output, size_t n) {
+void relu_neon_f32(float* output, const float* input, size_t n) {
     size_t i = 0;
     float32x4_t vzero = vdupq_n_f32(0.0f);
     
@@ -579,7 +700,7 @@ void relu_neon_f32(const float* input, float* output, size_t n) {
     }
 }
 
-void silu_neon_f32(const float* input, float* output, size_t n) {
+void silu_neon_f32(float* output, const float* input, size_t n) {
     size_t i = 0;
     
     // Process remaining elements with scalar code
@@ -589,7 +710,7 @@ void silu_neon_f32(const float* input, float* output, size_t n) {
     }
 }
 
-void softmax_neon_f32(const float* input, float* output, size_t n) {
+void softmax_neon_f32(float* output, const float* input, size_t n) {
     if (n == 0) return;
     
     // Find max value for numerical stability
@@ -623,10 +744,10 @@ void softmax_neon_f32(const float* input, float* output, size_t n) {
     }
 }
 
-void matrix_mul_neon_f32(const float* a, const float* b, float* c, size_t m, size_t k, size_t n) {
+void matrix_mul_neon_f32(float* result, const float* a, const float* b, size_t m, size_t k, size_t n) {
     // Initialize output matrix to zeros
     for (size_t i = 0; i < m * n; i++) {
-        c[i] = 0.0f;
+        result[i] = 0.0f;
     }
     
     // For each row of A
@@ -656,11 +777,11 @@ void matrix_mul_neon_f32(const float* a, const float* b, float* c, size_t m, siz
             // Horizontal sum of vsum
             float32x2_t vsum2 = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
             vsum2 = vpadd_f32(vsum2, vsum2);
-            c[i * n + j] += vget_lane_f32(vsum2, 0);
+            result[i * n + j] += vget_lane_f32(vsum2, 0);
             
             // Process remaining elements
             for (; l < k; l++) {
-                c[i * n + j] += a[i * k + l] * b[l * n + j];
+                result[i * n + j] += a[i * k + l] * b[l * n + j];
             }
         }
     }
