@@ -182,6 +182,13 @@ void fused_rms_norm_silu(T* output, const T* input, const T* weight, T epsilon, 
 template<typename T>
 void fused_layer_norm_relu(T* output, const T* input, const T* weight, const T* bias, T epsilon, size_t n);
 
+// Fused matrix multiplication with activation functions
+template<typename T>
+void fused_matmul_relu(T* output, const T* a, const T* b, size_t m, size_t k, size_t n);
+
+template<typename T>
+void fused_matmul_silu(T* output, const T* a, const T* b, size_t m, size_t k, size_t n);
+
 // Implementation details namespace (not part of public API)
 namespace detail {
 
@@ -634,7 +641,126 @@ void fused_layer_norm_relu_avx_f32(float* output, const float* input, const floa
 void fused_layer_norm_relu_neon_f32(float* output, const float* input, const float* weight, const float* bias, float epsilon, size_t n);
 #endif
 
+// Fused matrix multiplication with activation functions - scalar implementations
+template<typename T>
+void fused_matmul_relu_scalar(T* output, const T* a, const T* b, size_t m, size_t k, size_t n) {
+    // Initialize output matrix to zero
+    for (size_t i = 0; i < m * n; i++) {
+        output[i] = 0;
+    }
+    
+    // Perform matrix multiplication and apply ReLU in one pass
+    for (size_t i = 0; i < m; i++) {
+        for (size_t j = 0; j < n; j++) {
+            T sum = 0;
+            for (size_t l = 0; l < k; l++) {
+                sum += a[i * k + l] * b[l * n + j];
+            }
+            // Apply ReLU activation directly: max(0, x)
+            output[i * n + j] = (sum > 0) ? sum : 0;
+        }
+    }
+}
+
+#if defined(CCSM_HAVE_AVX)
+void fused_matmul_relu_avx_f32(float* output, const float* a, const float* b, size_t m, size_t k, size_t n);
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+void fused_matmul_relu_neon_f32(float* output, const float* a, const float* b, size_t m, size_t k, size_t n);
+#endif
+
+template<typename T>
+void fused_matmul_silu_scalar(T* output, const T* a, const T* b, size_t m, size_t k, size_t n) {
+    // Initialize output matrix to zero
+    for (size_t i = 0; i < m * n; i++) {
+        output[i] = 0;
+    }
+    
+    // Perform matrix multiplication and apply SiLU in one pass
+    for (size_t i = 0; i < m; i++) {
+        for (size_t j = 0; j < n; j++) {
+            T sum = 0;
+            for (size_t l = 0; l < k; l++) {
+                sum += a[i * k + l] * b[l * n + j];
+            }
+            // Apply SiLU activation directly: x * sigmoid(x)
+            output[i * n + j] = sum / (1.0 + std::exp(-sum));
+        }
+    }
+}
+
+#if defined(CCSM_HAVE_AVX)
+void fused_matmul_silu_avx_f32(float* output, const float* a, const float* b, size_t m, size_t k, size_t n);
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+void fused_matmul_silu_neon_f32(float* output, const float* a, const float* b, size_t m, size_t k, size_t n);
+#endif
+
 } // namespace detail
+
+// Template specialization for fused matrix multiplication with ReLU
+template<>
+inline void fused_matmul_relu<float>(float* output, const float* a, const float* b, size_t m, size_t k, size_t n) {
+    const auto& features = CPUFeatures::get();
+    
+#if defined(CCSM_HAVE_AVX2)
+    if (features.avx2) {
+        // Note: For future AVX2 implementation with FMA instructions
+        detail::fused_matmul_relu_avx_f32(output, a, b, m, k, n);
+        return;
+    }
+#endif
+
+#if defined(CCSM_HAVE_AVX)
+    if (features.avx) {
+        detail::fused_matmul_relu_avx_f32(output, a, b, m, k, n);
+        return;
+    }
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+    if (features.neon) {
+        detail::fused_matmul_relu_neon_f32(output, a, b, m, k, n);
+        return;
+    }
+#endif
+
+    // Fallback to scalar implementation
+    detail::fused_matmul_relu_scalar(output, a, b, m, k, n);
+}
+
+// Template specialization for fused matrix multiplication with SiLU
+template<>
+inline void fused_matmul_silu<float>(float* output, const float* a, const float* b, size_t m, size_t k, size_t n) {
+    const auto& features = CPUFeatures::get();
+    
+#if defined(CCSM_HAVE_AVX2)
+    if (features.avx2) {
+        // Note: For future AVX2 implementation with FMA instructions
+        detail::fused_matmul_silu_avx_f32(output, a, b, m, k, n);
+        return;
+    }
+#endif
+
+#if defined(CCSM_HAVE_AVX)
+    if (features.avx) {
+        detail::fused_matmul_silu_avx_f32(output, a, b, m, k, n);
+        return;
+    }
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+    if (features.neon) {
+        detail::fused_matmul_silu_neon_f32(output, a, b, m, k, n);
+        return;
+    }
+#endif
+
+    // Fallback to scalar implementation
+    detail::fused_matmul_silu_scalar(output, a, b, m, k, n);
+}
 
 // Template specializations for float - these will dispatch to the best available implementation
 template<>

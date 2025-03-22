@@ -862,6 +862,205 @@ void matrix_mul_avx_f32(float* c, const float* a, const float* b, size_t m, size
     }
 }
 
+// Fused matrix multiplication with ReLU (AVX implementation)
+void fused_matmul_relu_avx_f32(float* output, const float* a, const float* b, size_t m, size_t k, size_t n) {
+    // Advanced implementation using AVX and cache blocking
+    constexpr size_t BLOCK_SIZE_M = 16; // Optimal block sizes based on benchmarks
+    constexpr size_t BLOCK_SIZE_N = 16; 
+    constexpr size_t BLOCK_SIZE_K = 32;
+    constexpr size_t SIMD_WIDTH = 8;    // AVX processes 8 floats at once
+    
+    // Zero vector for ReLU activation
+    __m256 vzero = _mm256_setzero_ps();
+    
+    // Initialize result matrix to zeros
+    for (size_t i = 0; i < m * n; i++) {
+        output[i] = 0.0f;
+    }
+    
+    // Outer blocking for cache efficiency
+    for (size_t i0 = 0; i0 < m; i0 += BLOCK_SIZE_M) {
+        size_t i_end = std::min(i0 + BLOCK_SIZE_M, m);
+        
+        for (size_t j0 = 0; j0 < n; j0 += BLOCK_SIZE_N) {
+            size_t j_end = std::min(j0 + BLOCK_SIZE_N, n);
+            
+            // Here we process j in multiples of 8 (SIMD_WIDTH) for better vectorization
+            for (size_t j_offset = 0; j_offset < j_end - j0; j_offset += SIMD_WIDTH) {
+                size_t j_simd_width = std::min(SIMD_WIDTH, j_end - (j0 + j_offset));
+                
+                // If we don't have a full vector width, handle scalar remainder later
+                if (j_simd_width != SIMD_WIDTH && j_simd_width != 0) {
+                    continue;
+                }
+                
+                for (size_t i = i0; i < i_end; i++) {
+                    size_t j = j0 + j_offset;
+                    
+                    // Initialize the accumulator for this row to zero
+                    __m256 vsum = _mm256_setzero_ps();
+                    
+                    // Process inner dimension in blocks for better cache utilization
+                    for (size_t k0 = 0; k0 < k; k0 += BLOCK_SIZE_K) {
+                        size_t k_end = std::min(k0 + BLOCK_SIZE_K, k);
+                        
+                        // Process the block using AVX
+                        for (size_t l = k0; l < k_end; l++) {
+                            // Broadcast single element from A matrix (reuse in register)
+                            __m256 va = _mm256_set1_ps(a[i * k + l]);
+                            
+                            // Load 8 elements from B matrix (consecutive in memory)
+                            __m256 vb = _mm256_loadu_ps(&b[l * n + j]);
+                            
+                            // vsum += va * vb (using mul and add in AVX, no FMA)
+                            __m256 vprod = _mm256_mul_ps(va, vb);
+                            vsum = _mm256_add_ps(vsum, vprod);
+                        }
+                    }
+                    
+                    // Apply ReLU activation directly: max(0, x)
+                    vsum = _mm256_max_ps(vzero, vsum);
+                    
+                    // Store result back
+                    _mm256_storeu_ps(&output[i * n + j], vsum);
+                }
+            }
+            
+            // Handle remainders (when j_end - j0 is not multiple of SIMD_WIDTH)
+            for (size_t i = i0; i < i_end; i++) {
+                for (size_t j = j0 + ((j_end - j0) / SIMD_WIDTH) * SIMD_WIDTH; j < j_end; j++) {
+                    float sum = 0.0f;
+                    for (size_t l = 0; l < k; l++) {
+                        sum += a[i * k + l] * b[l * n + j];
+                    }
+                    // Apply ReLU: max(0, sum)
+                    output[i * n + j] = (sum > 0.0f) ? sum : 0.0f;
+                }
+            }
+        }
+    }
+}
+
+// Fused matrix multiplication with SiLU (AVX implementation)
+void fused_matmul_silu_avx_f32(float* output, const float* a, const float* b, size_t m, size_t k, size_t n) {
+    // Advanced implementation using AVX and cache blocking
+    constexpr size_t BLOCK_SIZE_M = 16; // Optimal block sizes based on benchmarks
+    constexpr size_t BLOCK_SIZE_N = 16; 
+    constexpr size_t BLOCK_SIZE_K = 32;
+    constexpr size_t SIMD_WIDTH = 8;    // AVX processes 8 floats at once
+    
+    // Constants for SiLU (sigmoid) approximation
+    __m256 vone = _mm256_set1_ps(1.0f);
+    __m256 vhalf = _mm256_set1_ps(0.5f);
+    __m256 vc1 = _mm256_set1_ps(0.398942280f);
+    __m256 vc3 = _mm256_set1_ps(1.13879349f);
+    __m256 vclamp_min = _mm256_set1_ps(-15.0f);
+    __m256 vclamp_max = _mm256_set1_ps(15.0f);
+    
+    // Initialize result matrix to zeros
+    for (size_t i = 0; i < m * n; i++) {
+        output[i] = 0.0f;
+    }
+    
+    // Outer blocking for cache efficiency
+    for (size_t i0 = 0; i0 < m; i0 += BLOCK_SIZE_M) {
+        size_t i_end = std::min(i0 + BLOCK_SIZE_M, m);
+        
+        for (size_t j0 = 0; j0 < n; j0 += BLOCK_SIZE_N) {
+            size_t j_end = std::min(j0 + BLOCK_SIZE_N, n);
+            
+            // Here we process j in multiples of 8 (SIMD_WIDTH) for better vectorization
+            for (size_t j_offset = 0; j_offset < j_end - j0; j_offset += SIMD_WIDTH) {
+                size_t j_simd_width = std::min(SIMD_WIDTH, j_end - (j0 + j_offset));
+                
+                // If we don't have a full vector width, handle scalar remainder later
+                if (j_simd_width != SIMD_WIDTH && j_simd_width != 0) {
+                    continue;
+                }
+                
+                for (size_t i = i0; i < i_end; i++) {
+                    size_t j = j0 + j_offset;
+                    
+                    // Initialize the accumulator for this row to zero
+                    __m256 vsum = _mm256_setzero_ps();
+                    
+                    // Process inner dimension in blocks for better cache utilization
+                    for (size_t k0 = 0; k0 < k; k0 += BLOCK_SIZE_K) {
+                        size_t k_end = std::min(k0 + BLOCK_SIZE_K, k);
+                        
+                        // Process the block using AVX
+                        for (size_t l = k0; l < k_end; l++) {
+                            // Broadcast single element from A matrix (reuse in register)
+                            __m256 va = _mm256_set1_ps(a[i * k + l]);
+                            
+                            // Load 8 elements from B matrix (consecutive in memory)
+                            __m256 vb = _mm256_loadu_ps(&b[l * n + j]);
+                            
+                            // vsum += va * vb (using mul and add in AVX, no FMA)
+                            __m256 vprod = _mm256_mul_ps(va, vb);
+                            vsum = _mm256_add_ps(vsum, vprod);
+                        }
+                    }
+                    
+                    // Apply SiLU activation: x * sigmoid(x)
+                    // First, clamp values to prevent numerical issues
+                    __m256 vx_clamped = _mm256_max_ps(vclamp_min, _mm256_min_ps(vclamp_max, vsum));
+                    
+                    // Get absolute value of x for sigmoid approximation
+                    __m256 vabs_x = _mm256_and_ps(vx_clamped, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF)));
+                    
+                    // Fast sigmoid approximation: 0.5 + 0.5 * (vc1*x) / (vc3 + |x|)
+                    __m256 vnum = _mm256_mul_ps(vc1, vx_clamped);
+                    __m256 vdenom = _mm256_add_ps(vc3, vabs_x);
+                    __m256 vterm = _mm256_div_ps(vnum, vdenom);
+                    __m256 vterm_scaled = _mm256_mul_ps(vhalf, vterm);
+                    __m256 vsigmoid = _mm256_add_ps(vhalf, vterm_scaled);
+                    
+                    // For very negative inputs (< -15), force sigmoid to 0
+                    __m256 vtoo_small = _mm256_cmp_ps(vsum, _mm256_set1_ps(-15.0f), _CMP_LT_OQ);
+                    vsigmoid = _mm256_andnot_ps(vtoo_small, vsigmoid);
+                    
+                    // For very positive inputs (> 15), force sigmoid to 1.0
+                    __m256 vtoo_large = _mm256_cmp_ps(vsum, _mm256_set1_ps(15.0f), _CMP_GT_OQ);
+                    vsigmoid = _mm256_or_ps(
+                        _mm256_and_ps(vtoo_large, vone),
+                        _mm256_andnot_ps(vtoo_large, vsigmoid)
+                    );
+                    
+                    // Calculate SiLU: x * sigmoid(x)
+                    __m256 vout = _mm256_mul_ps(vsum, vsigmoid);
+                    
+                    // Store result back
+                    _mm256_storeu_ps(&output[i * n + j], vout);
+                }
+            }
+            
+            // Handle remainders (when j_end - j0 is not multiple of SIMD_WIDTH)
+            for (size_t i = i0; i < i_end; i++) {
+                for (size_t j = j0 + ((j_end - j0) / SIMD_WIDTH) * SIMD_WIDTH; j < j_end; j++) {
+                    float sum = 0.0f;
+                    for (size_t l = 0; l < k; l++) {
+                        sum += a[i * k + l] * b[l * n + j];
+                    }
+                    
+                    // Apply SiLU with the same approximation as vector version
+                    float sigmoid;
+                    if (sum < -15.0f) {
+                        sigmoid = 0.0f;
+                    } else if (sum > 15.0f) {
+                        sigmoid = 1.0f;
+                    } else {
+                        float abs_x = std::abs(sum);
+                        sigmoid = 0.5f + 0.5f * (0.398942280f * sum) / (1.13879349f + abs_x);
+                    }
+                    
+                    output[i * n + j] = sum * sigmoid;
+                }
+            }
+        }
+    }
+}
+
 #endif // CCSM_HAVE_AVX
 
 // -------------------------------------------------------------------------
@@ -1021,6 +1220,200 @@ void matrix_mul_avx2_f32(float* c, const float* a, const float* b, size_t m, siz
 // -------------------------------------------------------------------------
 
 #if defined(CCSM_HAVE_NEON) && defined(__ARM_NEON)
+
+// Fused matrix multiplication with ReLU (NEON implementation)
+void fused_matmul_relu_neon_f32(float* output, const float* a, const float* b, size_t m, size_t k, size_t n) {
+    // Advanced implementation using NEON and cache blocking
+    constexpr size_t BLOCK_SIZE_M = 16; // Optimal block sizes based on benchmarks
+    constexpr size_t BLOCK_SIZE_N = 16; 
+    constexpr size_t BLOCK_SIZE_K = 32;
+    constexpr size_t SIMD_WIDTH = 4;    // NEON processes 4 floats at once
+    
+    // Zero vector for ReLU activation
+    float32x4_t vzero = vdupq_n_f32(0.0f);
+    
+    // Initialize result matrix to zeros
+    for (size_t i = 0; i < m * n; i++) {
+        output[i] = 0.0f;
+    }
+    
+    // Outer blocking for cache efficiency
+    for (size_t i0 = 0; i0 < m; i0 += BLOCK_SIZE_M) {
+        size_t i_end = std::min(i0 + BLOCK_SIZE_M, m);
+        
+        for (size_t j0 = 0; j0 < n; j0 += BLOCK_SIZE_N) {
+            size_t j_end = std::min(j0 + BLOCK_SIZE_N, n);
+            
+            // Here we process j in multiples of 4 (SIMD_WIDTH) for better vectorization
+            for (size_t j_offset = 0; j_offset < j_end - j0; j_offset += SIMD_WIDTH) {
+                size_t j_simd_width = std::min(SIMD_WIDTH, j_end - (j0 + j_offset));
+                
+                // If we don't have a full vector width, handle scalar remainder later
+                if (j_simd_width != SIMD_WIDTH && j_simd_width != 0) {
+                    continue;
+                }
+                
+                for (size_t i = i0; i < i_end; i++) {
+                    size_t j = j0 + j_offset;
+                    
+                    // Initialize the accumulator for this row to zero
+                    float32x4_t vsum = vdupq_n_f32(0.0f);
+                    
+                    // Process inner dimension in blocks for better cache utilization
+                    for (size_t k0 = 0; k0 < k; k0 += BLOCK_SIZE_K) {
+                        size_t k_end = std::min(k0 + BLOCK_SIZE_K, k);
+                        
+                        // Process the block using NEON
+                        for (size_t l = k0; l < k_end; l++) {
+                            // Broadcast single element from A matrix (reuse in register)
+                            float32x4_t va = vdupq_n_f32(a[i * k + l]);
+                            
+                            // Load 4 elements from B matrix (consecutive in memory)
+                            float32x4_t vb = vld1q_f32(&b[l * n + j]);
+                            
+                            // vsum += va * vb (NEON FMA)
+                            vsum = vmlaq_f32(vsum, va, vb);
+                        }
+                    }
+                    
+                    // Apply ReLU activation directly: max(0, x)
+                    vsum = vmaxq_f32(vzero, vsum);
+                    
+                    // Store result back
+                    vst1q_f32(&output[i * n + j], vsum);
+                }
+            }
+            
+            // Handle remainders (when j_end - j0 is not multiple of SIMD_WIDTH)
+            for (size_t i = i0; i < i_end; i++) {
+                for (size_t j = j0 + ((j_end - j0) / SIMD_WIDTH) * SIMD_WIDTH; j < j_end; j++) {
+                    float sum = 0.0f;
+                    for (size_t l = 0; l < k; l++) {
+                        sum += a[i * k + l] * b[l * n + j];
+                    }
+                    // Apply ReLU: max(0, sum)
+                    output[i * n + j] = (sum > 0.0f) ? sum : 0.0f;
+                }
+            }
+        }
+    }
+}
+
+// Fused matrix multiplication with SiLU (NEON implementation)
+void fused_matmul_silu_neon_f32(float* output, const float* a, const float* b, size_t m, size_t k, size_t n) {
+    // Advanced implementation using NEON and cache blocking
+    constexpr size_t BLOCK_SIZE_M = 16; // Optimal block sizes based on benchmarks
+    constexpr size_t BLOCK_SIZE_N = 16; 
+    constexpr size_t BLOCK_SIZE_K = 32;
+    constexpr size_t SIMD_WIDTH = 4;    // NEON processes 4 floats at once
+    
+    // Constants for SiLU (sigmoid) approximation - same as in AVX version
+    float32x4_t vone = vdupq_n_f32(1.0f);
+    float32x4_t vhalf = vdupq_n_f32(0.5f);
+    float32x4_t vc1 = vdupq_n_f32(0.398942280f);
+    float32x4_t vc3 = vdupq_n_f32(1.13879349f);
+    float32x4_t vclamp_min = vdupq_n_f32(-15.0f);
+    float32x4_t vclamp_max = vdupq_n_f32(15.0f);
+    
+    // Initialize result matrix to zeros
+    for (size_t i = 0; i < m * n; i++) {
+        output[i] = 0.0f;
+    }
+    
+    // Outer blocking for cache efficiency
+    for (size_t i0 = 0; i0 < m; i0 += BLOCK_SIZE_M) {
+        size_t i_end = std::min(i0 + BLOCK_SIZE_M, m);
+        
+        for (size_t j0 = 0; j0 < n; j0 += BLOCK_SIZE_N) {
+            size_t j_end = std::min(j0 + BLOCK_SIZE_N, n);
+            
+            // Here we process j in multiples of 4 (SIMD_WIDTH) for better vectorization
+            for (size_t j_offset = 0; j_offset < j_end - j0; j_offset += SIMD_WIDTH) {
+                size_t j_simd_width = std::min(SIMD_WIDTH, j_end - (j0 + j_offset));
+                
+                // If we don't have a full vector width, handle scalar remainder later
+                if (j_simd_width != SIMD_WIDTH && j_simd_width != 0) {
+                    continue;
+                }
+                
+                for (size_t i = i0; i < i_end; i++) {
+                    size_t j = j0 + j_offset;
+                    
+                    // Initialize the accumulator for this row to zero
+                    float32x4_t vsum = vdupq_n_f32(0.0f);
+                    
+                    // Process inner dimension in blocks for better cache utilization
+                    for (size_t k0 = 0; k0 < k; k0 += BLOCK_SIZE_K) {
+                        size_t k_end = std::min(k0 + BLOCK_SIZE_K, k);
+                        
+                        // Process the block using NEON
+                        for (size_t l = k0; l < k_end; l++) {
+                            // Broadcast single element from A matrix (reuse in register)
+                            float32x4_t va = vdupq_n_f32(a[i * k + l]);
+                            
+                            // Load 4 elements from B matrix (consecutive in memory)
+                            float32x4_t vb = vld1q_f32(&b[l * n + j]);
+                            
+                            // vsum += va * vb (NEON FMA)
+                            vsum = vmlaq_f32(vsum, va, vb);
+                        }
+                    }
+                    
+                    // Apply SiLU activation: x * sigmoid(x)
+                    // First, clamp values to prevent numerical issues
+                    float32x4_t vx_clamped = vmaxq_f32(vclamp_min, vminq_f32(vclamp_max, vsum));
+                    
+                    // Get absolute value of x for sigmoid approximation
+                    float32x4_t vabs_x = vabsq_f32(vx_clamped);
+                    
+                    // Fast sigmoid approximation: 0.5 + 0.5 * (vc1*x) / (vc3 + |x|)
+                    float32x4_t vnum = vmulq_f32(vc1, vx_clamped);
+                    float32x4_t vdenom = vaddq_f32(vc3, vabs_x);
+                    float32x4_t vterm = vdivq_f32(vnum, vdenom);
+                    float32x4_t vterm_scaled = vmulq_f32(vhalf, vterm);
+                    float32x4_t vsigmoid = vaddq_f32(vhalf, vterm_scaled);
+                    
+                    // Handle edge cases with uint32x4_t masks
+                    uint32x4_t vtoo_small = vcltq_f32(vsum, vdupq_n_f32(-15.0f));
+                    uint32x4_t vtoo_large = vcgtq_f32(vsum, vdupq_n_f32(15.0f));
+                    
+                    // Apply masks for clamping
+                    vsigmoid = vbslq_f32(vtoo_small, vdupq_n_f32(0.0f), vsigmoid);
+                    vsigmoid = vbslq_f32(vtoo_large, vone, vsigmoid);
+                    
+                    // Calculate SiLU: x * sigmoid(x)
+                    float32x4_t vout = vmulq_f32(vsum, vsigmoid);
+                    
+                    // Store result back
+                    vst1q_f32(&output[i * n + j], vout);
+                }
+            }
+            
+            // Handle remainders (when j_end - j0 is not multiple of SIMD_WIDTH)
+            for (size_t i = i0; i < i_end; i++) {
+                for (size_t j = j0 + ((j_end - j0) / SIMD_WIDTH) * SIMD_WIDTH; j < j_end; j++) {
+                    float sum = 0.0f;
+                    for (size_t l = 0; l < k; l++) {
+                        sum += a[i * k + l] * b[l * n + j];
+                    }
+                    
+                    // Apply SiLU with the same approximation as vector version
+                    float sigmoid;
+                    if (sum < -15.0f) {
+                        sigmoid = 0.0f;
+                    } else if (sum > 15.0f) {
+                        sigmoid = 1.0f;
+                    } else {
+                        float abs_x = std::abs(sum);
+                        sigmoid = 0.5f + 0.5f * (0.398942280f * sum) / (1.13879349f + abs_x);
+                    }
+                    
+                    output[i * n + j] = sum * sigmoid;
+                }
+            }
+        }
+    }
+}
 
 void vector_gt_mask_neon_f32(float* result, const float* a, const float* b, size_t n) {
     size_t i = 0;
