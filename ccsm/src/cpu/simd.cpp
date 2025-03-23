@@ -50,9 +50,18 @@ const CPUFeatures& CPUFeatures::get() {
                 features.avx2 = __builtin_cpu_supports("avx2");
                 features.avx512f = __builtin_cpu_supports("avx512f");
             #endif
-        #elif defined(CCSM_ARCH_ARM64)
-            // All ARM64 processors should have NEON
-            features.neon = true;
+        #elif defined(CCSM_ARCH_ARM)
+            // ARM feature detection
+            #if defined(__aarch64__)
+                // ARM64 always has NEON
+                features.neon = true;
+            #elif defined(__ARM_NEON) || defined(__ARM_NEON__)
+                // 32-bit ARM with NEON
+                features.neon = true;
+            #else
+                // No NEON
+                features.neon = false;
+            #endif
         #endif
         
         initialized = true;
@@ -61,39 +70,61 @@ const CPUFeatures& CPUFeatures::get() {
     return features;
 }
 
-// Get highest available SIMD implementation
+// Active implementation - determined at runtime based on CPU features
 Implementation get_active_implementation() {
-    const CPUFeatures& features = CPUFeatures::get();
+    static Implementation impl = Implementation::SCALAR;
+    static bool initialized = false;
     
-    #if defined(CCSM_ARCH_X86_64)
-        if (features.avx512f) return Implementation::AVX512;
-        if (features.avx2) return Implementation::AVX2;
-        if (features.avx) return Implementation::AVX;
-        if (features.sse4_1) return Implementation::SSE41;
-        if (features.sse2) return Implementation::SSE2;
-    #elif defined(CCSM_ARCH_ARM64)
-        if (features.neon) return Implementation::NEON;
-    #endif
+    if (!initialized) {
+        const CPUFeatures& features = CPUFeatures::get();
+        
+        // Determine best implementation based on CPU features
+        #if defined(CCSM_ARCH_X86_64)
+            if (features.avx512f) {
+                impl = Implementation::AVX512;
+            } else if (features.avx2) {
+                impl = Implementation::AVX2;
+            } else if (features.avx) {
+                impl = Implementation::AVX;
+            } else if (features.sse4_1) {
+                impl = Implementation::SSE41;
+            } else if (features.sse2) {
+                impl = Implementation::SSE2;
+            }
+        #elif defined(CCSM_ARCH_ARM)
+            if (features.neon) {
+                impl = Implementation::NEON;
+            }
+        #endif
+        
+        initialized = true;
+    }
     
-    return Implementation::SCALAR;
+    return impl;
 }
 
-// Get CPU capabilities as string
+// CPU capabilities string for diagnostics
 std::string get_cpu_capabilities() {
     const CPUFeatures& features = CPUFeatures::get();
-    std::string result = "CPU Features: ";
+    std::string result;
     
-    if (features.avx512f) result += "AVX-512 ";
-    if (features.avx2) result += "AVX2 ";
-    if (features.avx) result += "AVX ";
-    if (features.sse4_2) result += "SSE4.2 ";
-    if (features.sse4_1) result += "SSE4.1 ";
-    if (features.sse3) result += "SSE3 ";
-    if (features.sse2) result += "SSE2 ";
-    if (features.neon) result += "NEON ";
+    #if defined(CCSM_ARCH_X86_64)
+        if (features.sse2) result += "SSE2 ";
+        if (features.sse3) result += "SSE3 ";
+        if (features.sse4_1) result += "SSE4.1 ";
+        if (features.sse4_2) result += "SSE4.2 ";
+        if (features.avx) result += "AVX ";
+        if (features.avx2) result += "AVX2 ";
+        if (features.avx512f) result += "AVX512F ";
+    #elif defined(CCSM_ARCH_ARM)
+        if (features.neon) result += "NEON ";
+    #endif
     
-    if (result == "CPU Features: ") {
-        result += "None";
+    if (result.empty()) {
+        result = "None";
+    } else {
+        // Remove trailing space
+        result.pop_back();
     }
     
     return result;
@@ -101,1932 +132,213 @@ std::string get_cpu_capabilities() {
 
 namespace detail {
 
-// Implementation of exp256_ps for AVX
-#ifdef CCSM_HAVE_AVX
-__m256 exp256_ps(__m256 x) {
-    // Simple exponential approximation for AVX
-    // Note: This is a very basic implementation and could be improved for accuracy
-    
-    // Constants for exponential approximation
-    const __m256 c1 = _mm256_set1_ps(1.0f);
-    const __m256 c2 = _mm256_set1_ps(1.0f);
-    const __m256 c3 = _mm256_set1_ps(0.5f);
-    const __m256 c4 = _mm256_set1_ps(0.1666666f);
-    const __m256 c5 = _mm256_set1_ps(0.0416666f);
-    
-    // Clamp x to prevent overflow/underflow
-    const __m256 max_x = _mm256_set1_ps(88.3762626647949f);
-    const __m256 min_x = _mm256_set1_ps(-88.3762626647949f);
-    x = _mm256_max_ps(_mm256_min_ps(x, max_x), min_x);
-    
-    // Calculate exp(x) using Taylor series: 1 + x + x^2/2 + x^3/6 + x^4/24
-    __m256 result = c1;
-    __m256 term = x;
-    result = _mm256_add_ps(result, term);
-    
-    term = _mm256_mul_ps(term, x);
-    term = _mm256_mul_ps(term, c3);
-    result = _mm256_add_ps(result, term);
-    
-    term = _mm256_mul_ps(term, x);
-    term = _mm256_mul_ps(term, c4);
-    result = _mm256_add_ps(result, term);
-    
-    term = _mm256_mul_ps(term, x);
-    term = _mm256_mul_ps(term, c5);
-    result = _mm256_add_ps(result, term);
-    
-    return result;
-}
-#endif
-
-// Fused matrix multiplication with Q4_0 quantized weights and ReLU activation
-void fused_matmul_relu_q4_0_avx_f32(float* output, const float* a, const uint8_t* b, const float* b_scale, 
-                                  size_t m, size_t k, size_t n) {
-    // Get scale factor for dequantization
-    const float inv_scale = *b_scale;
-    
-    // Initialize result matrix to zeros
-    for (size_t i = 0; i < m * n; i++) {
-        output[i] = 0.0f;
-    }
-    
-#ifdef CCSM_HAVE_AVX
-    // AVX-specific variables
-    const __m256 vscale = _mm256_set1_ps(inv_scale);
-    const __m256 vzero = _mm256_setzero_ps();
-#endif
-    
-    // Process each row of A and corresponding output row
-    for (size_t i = 0; i < m; i++) {
-        // Process output elements in blocks of 8 (AVX register width)
-        for (size_t j = 0; j < n; j += 8) {
-            // Handle boundary condition
-            size_t block_size = std::min(size_t(8), n - j);
-            
-#if !defined(CCSM_HAVE_AVX)
-            // If AVX is not available, always use scalar code
-            {
-#else
-            // With AVX, only use scalar for partial vectors
-            if (block_size < 8) {
-#endif
-                // If we don't have a full vector or AVX is not available, 
-                // process using scalar code
-                for (size_t jj = j; jj < j + block_size; jj++) {
-                    float sum = 0.0f;
-                    for (size_t l = 0; l < k; l++) {
-                        // Calculate index for accessing b
-                        size_t b_idx = l * n + jj;
-                        size_t byte_idx = b_idx / 2;
-                        bool is_upper = (b_idx % 2) != 0;
-                        
-                        // Extract the appropriate 4-bit value
-                        int8_t q4_val;
-                        if (is_upper) {
-                            q4_val = static_cast<int8_t>((b[byte_idx] >> 4) & 0xF);
-                            // Sign extend if the high bit is set
-                            if (q4_val & 0x8) {
-                                q4_val |= 0xF0; // Extend to 8 bits
-                            }
-                        } else {
-                            q4_val = static_cast<int8_t>(b[byte_idx] & 0xF);
-                            // Sign extend if the high bit is set
-                            if (q4_val & 0x8) {
-                                q4_val |= 0xF0; // Extend to 8 bits
-                            }
-                        }
-                        
-                        // Dequantize and multiply
-                        float b_val = static_cast<float>(q4_val) * inv_scale;
-                        sum += a[i * k + l] * b_val;
-                    }
-                    // Apply ReLU activation: max(0, x)
-                    output[i * n + jj] = (sum > 0.0f) ? sum : 0.0f;
-                }
-                continue;
-#if !defined(CCSM_HAVE_AVX)
-            }
-#else
-            }
-            
-            // With AVX, continue with vector processing
-            // Use 8 accumulators for better instruction-level parallelism
-            __m256 sum = _mm256_setzero_ps();
-            
-            // Compute dot product of row i of A with corresponding columns of B
-            for (size_t l = 0; l < k; l++) {
-                // For Q4_0, we need to process 2 values per byte
-                // We'll unpack 4 bytes (8 values) at a time, which matches our AVX vector width
-                
-                // Calculate the starting byte index for this row/column combination
-                size_t start_idx = l * n + j;
-                size_t byte_start = start_idx / 2;
-                
-                // Load 4 bytes that contain 8 quantized values
-                // For simplicity, we'll handle each 4-bit value individually
-                uint32_t packed_bytes = 0;
-                for (size_t byte_idx = 0; byte_idx < 4; byte_idx++) {
-                    if (byte_start + byte_idx < (k*n+1)/2) { // Ensure we don't read past the end
-                        packed_bytes |= (static_cast<uint32_t>(b[byte_start + byte_idx]) << (byte_idx * 8));
-                    }
-                }
-                
-                // Extract each 4-bit value, sign extend to 32 bits, and convert to float
-                int32_t q4_vals[8];
-                for (size_t v = 0; v < 8; v++) {
-                    // Determine if we're extracting upper or lower 4 bits
-                    bool is_upper = (v % 2) != 0;
-                    uint8_t byte_val = (packed_bytes >> ((v / 2) * 8)) & 0xFF;
-                    
-                    // Extract the 4-bit value
-                    int8_t q4_val;
-                    if (is_upper) {
-                        q4_val = static_cast<int8_t>((byte_val >> 4) & 0xF);
-                    } else {
-                        q4_val = static_cast<int8_t>(byte_val & 0xF);
-                    }
-                    
-                    // Sign extend if the high bit is set
-                    if (q4_val & 0x8) {
-                        q4_val |= 0xF0; // Extend to 8 bits
-                    }
-                    
-                    q4_vals[v] = static_cast<int32_t>(q4_val);
-                }
-                
-                // Convert int32 array to __m256i
-                __m256i i32_vals = _mm256_setr_epi32(
-                    q4_vals[0], q4_vals[1], q4_vals[2], q4_vals[3],
-                    q4_vals[4], q4_vals[5], q4_vals[6], q4_vals[7]
-                );
-                
-                // Convert int32 to float32
-                __m256 f32_vals = _mm256_cvtepi32_ps(i32_vals);
-                
-                // Dequantize by multiplying with scale
-                __m256 dequantized = _mm256_mul_ps(f32_vals, vscale);
-                
-                // Broadcast A value to all lanes
-                __m256 a_val = _mm256_set1_ps(a[i * k + l]);
-                
-                // Multiply and accumulate
-                sum = _mm256_add_ps(sum, _mm256_mul_ps(a_val, dequantized));
-            }
-            
-            // Apply ReLU activation: max(0, x)
-            __m256 result = _mm256_max_ps(sum, vzero);
-            
-            // Store the result
-            _mm256_storeu_ps(&output[i * n + j], result);
-#endif // CCSM_HAVE_AVX
-        }
-    }
-}
-
-// Fused matrix multiplication with Q4_0 quantized weights and SiLU activation
-void fused_matmul_silu_q4_0_avx_f32(float* output, const float* a, const uint8_t* b, const float* b_scale, 
-                                   size_t m, size_t k, size_t n) {
-    // Get scale factor for dequantization
-    const float inv_scale = *b_scale;
-    
-    // Initialize result matrix to zeros
-    for (size_t i = 0; i < m * n; i++) {
-        output[i] = 0.0f;
-    }
-    
-#ifdef CCSM_HAVE_AVX
-    // Constants for SiLU calculation
-    const __m256 vscale = _mm256_set1_ps(inv_scale);
-    const __m256 vones = _mm256_set1_ps(1.0f);
-    const __m256 vzero = _mm256_setzero_ps();
-#endif
-    
-    // Process each row of A and corresponding output row
-    for (size_t i = 0; i < m; i++) {
-        // Process output elements in blocks of 8 (AVX register width)
-        for (size_t j = 0; j < n; j += 8) {
-            // Handle boundary condition
-            size_t block_size = std::min(size_t(8), n - j);
-            
-#if !defined(CCSM_HAVE_AVX)
-            // If AVX is not available, always use scalar code
-            {
-#else
-            // With AVX, only use scalar for partial vectors
-            if (block_size < 8) {
-#endif
-                // If we don't have a full vector or AVX is not available,
-                // process using scalar code
-                for (size_t jj = j; jj < j + block_size; jj++) {
-                    float sum = 0.0f;
-                    for (size_t l = 0; l < k; l++) {
-                        // Calculate index for accessing b
-                        size_t b_idx = l * n + jj;
-                        size_t byte_idx = b_idx / 2;
-                        bool is_upper = (b_idx % 2) != 0;
-                        
-                        // Extract the appropriate 4-bit value
-                        int8_t q4_val;
-                        if (is_upper) {
-                            q4_val = static_cast<int8_t>((b[byte_idx] >> 4) & 0xF);
-                            // Sign extend if the high bit is set
-                            if (q4_val & 0x8) {
-                                q4_val |= 0xF0; // Extend to 8 bits
-                            }
-                        } else {
-                            q4_val = static_cast<int8_t>(b[byte_idx] & 0xF);
-                            // Sign extend if the high bit is set
-                            if (q4_val & 0x8) {
-                                q4_val |= 0xF0; // Extend to 8 bits
-                            }
-                        }
-                        
-                        // Dequantize and multiply
-                        float b_val = static_cast<float>(q4_val) * inv_scale;
-                        sum += a[i * k + l] * b_val;
-                    }
-                    // Apply SiLU activation: x * sigmoid(x)
-                    output[i * n + jj] = sum / (1.0f + std::exp(-sum));
-                }
-                continue;
-#if !defined(CCSM_HAVE_AVX)
-            }
-#else
-            }
-            
-            // With AVX, continue with vector processing
-            // Use 8 accumulators for better instruction-level parallelism
-            __m256 sum = _mm256_setzero_ps();
-            
-            // Compute dot product of row i of A with corresponding columns of B
-            for (size_t l = 0; l < k; l++) {
-                // For Q4_0, we need to process 2 values per byte
-                // We'll unpack 4 bytes (8 values) at a time, which matches our AVX vector width
-                
-                // Calculate the starting byte index for this row/column combination
-                size_t start_idx = l * n + j;
-                size_t byte_start = start_idx / 2;
-                
-                // Load 4 bytes that contain 8 quantized values
-                // For simplicity, we'll handle each 4-bit value individually
-                uint32_t packed_bytes = 0;
-                for (size_t byte_idx = 0; byte_idx < 4; byte_idx++) {
-                    if (byte_start + byte_idx < (k*n+1)/2) { // Ensure we don't read past the end
-                        packed_bytes |= (static_cast<uint32_t>(b[byte_start + byte_idx]) << (byte_idx * 8));
-                    }
-                }
-                
-                // Extract each 4-bit value, sign extend to 32 bits, and convert to float
-                int32_t q4_vals[8];
-                for (size_t v = 0; v < 8; v++) {
-                    // Determine if we're extracting upper or lower 4 bits
-                    bool is_upper = (v % 2) != 0;
-                    uint8_t byte_val = (packed_bytes >> ((v / 2) * 8)) & 0xFF;
-                    
-                    // Extract the 4-bit value
-                    int8_t q4_val;
-                    if (is_upper) {
-                        q4_val = static_cast<int8_t>((byte_val >> 4) & 0xF);
-                    } else {
-                        q4_val = static_cast<int8_t>(byte_val & 0xF);
-                    }
-                    
-                    // Sign extend if the high bit is set
-                    if (q4_val & 0x8) {
-                        q4_val |= 0xF0; // Extend to 8 bits
-                    }
-                    
-                    q4_vals[v] = static_cast<int32_t>(q4_val);
-                }
-                
-                // Convert int32 array to __m256i
-                __m256i i32_vals = _mm256_setr_epi32(
-                    q4_vals[0], q4_vals[1], q4_vals[2], q4_vals[3],
-                    q4_vals[4], q4_vals[5], q4_vals[6], q4_vals[7]
-                );
-                
-                // Convert int32 to float32
-                __m256 f32_vals = _mm256_cvtepi32_ps(i32_vals);
-                
-                // Dequantize by multiplying with scale
-                __m256 dequantized = _mm256_mul_ps(f32_vals, vscale);
-                
-                // Broadcast A value to all lanes
-                __m256 a_val = _mm256_set1_ps(a[i * k + l]);
-                
-                // Multiply and accumulate
-                sum = _mm256_add_ps(sum, _mm256_mul_ps(a_val, dequantized));
-            }
-            
-            // Apply SiLU activation: x * sigmoid(x)
-            // Compute sigmoid using optimized approximation: 1 / (1 + exp(-x))
-            __m256 neg_sum = _mm256_sub_ps(vzero, sum);
-            __m256 exp_neg = exp256_ps(neg_sum);  // Using the existing exp approximation function
-            __m256 denom = _mm256_add_ps(vones, exp_neg);
-            __m256 sigmoid = _mm256_div_ps(vones, denom);
-            
-            // Final SiLU: x * sigmoid(x)
-            __m256 result = _mm256_mul_ps(sum, sigmoid);
-            
-            // Store the result
-            _mm256_storeu_ps(&output[i * n + j], result);
-#endif // CCSM_HAVE_AVX
-        }
-    }
-}
-
-// Implementation of Q8_0 quantization with AVX support
-#ifdef CCSM_HAVE_AVX
-void quantize_q8_0_avx_f32(int8_t* output, const float* input, size_t n) {
-    // Find absolute maximum value for scaling
-    __m256 vmax_abs = _mm256_setzero_ps();
-    
-    // Process 8 float values at a time
-    for (size_t i = 0; i < n; i += 8) {
-        // Handle boundary condition
-        if (i + 8 <= n) {
-            // Load 8 float values
-            __m256 vx = _mm256_loadu_ps(&input[i]);
-            
-            // Compute absolute values
-            __m256 vabs = _mm256_and_ps(vx, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF)));
-            
-            // Update max_abs
-            vmax_abs = _mm256_max_ps(vmax_abs, vabs);
-        } else {
-            // Handle remaining elements (less than 8)
-            for (size_t j = i; j < n; j++) {
-                float abs_val = std::abs(input[j]);
-                vmax_abs = _mm256_max_ps(vmax_abs, _mm256_set1_ps(abs_val));
-            }
-        }
-    }
-    
-    // Reduce max across vector lanes
-    __m128 vmax128 = _mm_max_ps(_mm256_extractf128_ps(vmax_abs, 0), _mm256_extractf128_ps(vmax_abs, 1));
-    vmax128 = _mm_max_ps(vmax128, _mm_permute_ps(vmax128, 0x4E)); // 0x4E = 01 00 11 10
-    vmax128 = _mm_max_ps(vmax128, _mm_permute_ps(vmax128, 0xB1)); // 0xB1 = 10 11 00 01
-    
-    // Extract the maximum value
-    float max_abs;
-    _mm_store_ss(&max_abs, vmax128);
-    
-    // Calculate scale to map range [-max_abs, max_abs] to [-127, 127]
-    float scale = max_abs > 0 ? 127.0f / max_abs : 1.0f;
-    
-    // Store scale value at the end of the block (inverse scale for dequantization)
-    float* scale_ptr = reinterpret_cast<float*>(output + n);
-    *scale_ptr = 1.0f / scale;
-    
-    // Broadcast scale to vector
-    __m256 vscale = _mm256_set1_ps(scale);
-    
-    // Constants for clamping to [-127, 127]
-    __m256 vmax_clamp = _mm256_set1_ps(127.0f);
-    __m256 vmin_clamp = _mm256_set1_ps(-127.0f);
-    
-    // Process 8 values at a time
-    for (size_t i = 0; i < n; i += 8) {
-        if (i + 8 <= n) {
-            // Load 8 float values
-            __m256 vx = _mm256_loadu_ps(&input[i]);
-            
-            // Scale the values
-            __m256 vscaled = _mm256_mul_ps(vx, vscale);
-            
-            // Clamp the values to [-127, 127]
-            vscaled = _mm256_min_ps(_mm256_max_ps(vscaled, vmin_clamp), vmax_clamp);
-            
-            // Convert to int32
-            __m256i vi32 = _mm256_cvtps_epi32(vscaled);
-            
-            // Extract and store int8 values
-            // First convert to 4 int32 values in the lower lane
-            __m128i vi32_low = _mm256_extractf128_si256(vi32, 0);
-            __m128i vi32_high = _mm256_extractf128_si256(vi32, 1);
-            
-            // Pack into 8 int16 values
-            __m128i vi16 = _mm_packs_epi32(vi32_low, vi32_high);
-            
-            // Pack into 16 int8 values (we only care about the first 8)
-            __m128i vi8 = _mm_packs_epi16(vi16, vi16);
-            
-            // Store the 8 int8 values
-            _mm_storel_epi64(reinterpret_cast<__m128i*>(&output[i]), vi8);
-        } else {
-            // Handle remaining elements (less than 8)
-            for (size_t j = i; j < n; j++) {
-                // Scale and clamp
-                float val = input[j] * scale;
-                val = std::min(127.0f, std::max(-127.0f, val));
-                output[j] = static_cast<int8_t>(val);
-            }
-        }
-    }
-}
-#endif
-
-#ifdef CCSM_HAVE_NEON
-void quantize_q8_0_neon_f32(int8_t* output, const float* input, size_t n) {
-    // Find absolute maximum value for scaling
-    float32x4_t vmax_abs = vdupq_n_f32(0.0f);
-    
-    // Process 4 float values at a time
-    for (size_t i = 0; i < n; i += 4) {
-        // Handle boundary condition
-        if (i + 4 <= n) {
-            // Load 4 float values
-            float32x4_t vx = vld1q_f32(&input[i]);
-            
-            // Compute absolute values
-            float32x4_t vabs = vabsq_f32(vx);
-            
-            // Update max_abs
-            vmax_abs = vmaxq_f32(vmax_abs, vabs);
-        } else {
-            // Handle remaining elements (less than 4)
-            for (size_t j = i; j < n; j++) {
-                float abs_val = std::abs(input[j]);
-                float32x4_t vabs = vdupq_n_f32(abs_val);
-                vmax_abs = vmaxq_f32(vmax_abs, vabs);
-            }
-        }
-    }
-    
-    // Reduce max across vector lanes
-    float32x2_t vmax2 = vpmax_f32(vget_low_f32(vmax_abs), vget_high_f32(vmax_abs));
-    vmax2 = vpmax_f32(vmax2, vmax2);
-    
-    // Extract the maximum value
-    float max_abs = vget_lane_f32(vmax2, 0);
-    
-    // Calculate scale to map range [-max_abs, max_abs] to [-127, 127]
-    float scale = max_abs > 0 ? 127.0f / max_abs : 1.0f;
-    
-    // Store scale value at the end of the block (inverse scale for dequantization)
-    float* scale_ptr = reinterpret_cast<float*>(output + n);
-    *scale_ptr = 1.0f / scale;
-    
-    // Broadcast scale to vector
-    float32x4_t vscale = vdupq_n_f32(scale);
-    
-    // Constants for clamping to [-127, 127]
-    float32x4_t vmax_clamp = vdupq_n_f32(127.0f);
-    float32x4_t vmin_clamp = vdupq_n_f32(-127.0f);
-    
-    // Process 4 values at a time
-    for (size_t i = 0; i < n; i += 4) {
-        if (i + 4 <= n) {
-            // Load 4 float values
-            float32x4_t vx = vld1q_f32(&input[i]);
-            
-            // Scale the values
-            float32x4_t vscaled = vmulq_f32(vx, vscale);
-            
-            // Clamp the values to [-127, 127]
-            vscaled = vminq_f32(vmaxq_f32(vscaled, vmin_clamp), vmax_clamp);
-            
-            // Convert to int32
-            int32x4_t vi32 = vcvtq_s32_f32(vscaled);
-            
-            // Convert to int16
-            int16x4_t vi16 = vmovn_s32(vi32);
-            
-            // Convert to int8
-            int8x8_t vi8 = vmovn_s16(vcombine_s16(vi16, vi16));
-            
-            // Store the 4 int8 values
-            vst1_lane_s32(reinterpret_cast<int32_t*>(&output[i]), vreinterpret_s32_s8(vi8), 0);
-        } else {
-            // Handle remaining elements (less than 4)
-            for (size_t j = i; j < n; j++) {
-                // Scale and clamp
-                float val = input[j] * scale;
-                val = std::min(127.0f, std::max(-127.0f, val));
-                output[j] = static_cast<int8_t>(val);
-            }
-        }
-    }
-}
-#endif
-
-// Implementation of Q4_0 quantization with AVX support
-#ifdef CCSM_HAVE_AVX
-void quantize_q4_0_avx(uint8_t* output, const float* input, size_t n) {
-    // Q4_0 packs 2 values into a single byte, with a single scale for the block
-    
-    // Calculate number of bytes needed (ceil(n/2))
-    size_t n_bytes = (n + 1) / 2;
-    
-    // Find absolute maximum value for scaling
-    __m256 vmax_abs = _mm256_setzero_ps();
-    
-    // Process 8 float values at a time
-    for (size_t i = 0; i < n; i += 8) {
-        // Handle boundary condition
-        if (i + 8 <= n) {
-            // Load 8 float values
-            __m256 vx = _mm256_loadu_ps(&input[i]);
-            
-            // Compute absolute values
-            __m256 vabs = _mm256_and_ps(vx, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF)));
-            
-            // Update max_abs
-            vmax_abs = _mm256_max_ps(vmax_abs, vabs);
-        } else {
-            // Handle remaining elements (less than 8)
-            for (size_t j = i; j < n; j++) {
-                float abs_val = std::abs(input[j]);
-                vmax_abs = _mm256_max_ps(vmax_abs, _mm256_set1_ps(abs_val));
-            }
-        }
-    }
-    
-    // Reduce max across vector lanes
-    __m128 vmax128 = _mm_max_ps(_mm256_extractf128_ps(vmax_abs, 0), _mm256_extractf128_ps(vmax_abs, 1));
-    vmax128 = _mm_max_ps(vmax128, _mm_permute_ps(vmax128, 0x4E)); // 0x4E = 01 00 11 10
-    vmax128 = _mm_max_ps(vmax128, _mm_permute_ps(vmax128, 0xB1)); // 0xB1 = 10 11 00 01
-    
-    // Extract the maximum value
-    float max_abs;
-    _mm_store_ss(&max_abs, vmax128);
-    
-    // Calculate scale to map range [-max_abs, max_abs] to [-7, 7]
-    float scale = max_abs > 0 ? 7.0f / max_abs : 1.0f;
-    
-    // Store scale value at the end of the block (inverse scale for dequantization)
-    float* scale_ptr = reinterpret_cast<float*>(output + n_bytes);
-    *scale_ptr = 1.0f / scale;
-    
-    // Process pairs of values and pack them into bytes
-    for (size_t i = 0; i < n; i += 2) {
-        // Quantize first value (0-7 bits)
-        float val1 = input[i] * scale;
-        val1 = std::min(7.0f, std::max(-7.0f, val1));
-        int32_t q_val1 = static_cast<int32_t>(val1) & 0xF;
-        
-        // Quantize second value if it exists (8-15 bits)
-        int32_t q_val2 = 0;
-        if (i + 1 < n) {
-            float val2 = input[i + 1] * scale;
-            val2 = std::min(7.0f, std::max(-7.0f, val2));
-            q_val2 = static_cast<int32_t>(val2) & 0xF;
-        }
-        
-        // Pack two 4-bit values into a single byte
-        output[i / 2] = static_cast<uint8_t>(q_val1 | (q_val2 << 4));
-    }
-}
-#endif
-
-#ifdef CCSM_HAVE_NEON
-void quantize_q4_0_neon(uint8_t* output, const float* input, size_t n) {
-    // Q4_0 packs 2 values into a single byte, with a single scale for the block
-    
-    // Calculate number of bytes needed (ceil(n/2))
-    size_t n_bytes = (n + 1) / 2;
-    
-    // Find absolute maximum value for scaling
-    float32x4_t vmax_abs = vdupq_n_f32(0.0f);
-    
-    // Process 4 float values at a time
-    for (size_t i = 0; i < n; i += 4) {
-        // Handle boundary condition
-        if (i + 4 <= n) {
-            // Load 4 float values
-            float32x4_t vx = vld1q_f32(&input[i]);
-            
-            // Compute absolute values
-            float32x4_t vabs = vabsq_f32(vx);
-            
-            // Update max_abs
-            vmax_abs = vmaxq_f32(vmax_abs, vabs);
-        } else {
-            // Handle remaining elements (less than 4)
-            for (size_t j = i; j < n; j++) {
-                float abs_val = std::abs(input[j]);
-                float32x4_t vabs = vdupq_n_f32(abs_val);
-                vmax_abs = vmaxq_f32(vmax_abs, vabs);
-            }
-        }
-    }
-    
-    // Reduce max across vector lanes
-    float32x2_t vmax2 = vpmax_f32(vget_low_f32(vmax_abs), vget_high_f32(vmax_abs));
-    vmax2 = vpmax_f32(vmax2, vmax2);
-    
-    // Extract the maximum value
-    float max_abs = vget_lane_f32(vmax2, 0);
-    
-    // Calculate scale to map range [-max_abs, max_abs] to [-7, 7]
-    float scale = max_abs > 0 ? 7.0f / max_abs : 1.0f;
-    
-    // Store scale value at the end of the block (inverse scale for dequantization)
-    float* scale_ptr = reinterpret_cast<float*>(output + n_bytes);
-    *scale_ptr = 1.0f / scale;
-    
-    // Process pairs of values and pack them into bytes
-    for (size_t i = 0; i < n; i += 2) {
-        // Quantize first value (0-7 bits)
-        float val1 = input[i] * scale;
-        val1 = std::min(7.0f, std::max(-7.0f, val1));
-        int32_t q_val1 = static_cast<int32_t>(val1) & 0xF;
-        
-        // Quantize second value if it exists (8-15 bits)
-        int32_t q_val2 = 0;
-        if (i + 1 < n) {
-            float val2 = input[i + 1] * scale;
-            val2 = std::min(7.0f, std::max(-7.0f, val2));
-            q_val2 = static_cast<int32_t>(val2) & 0xF;
-        }
-        
-        // Pack two 4-bit values into a single byte
-        output[i / 2] = static_cast<uint8_t>(q_val1 | (q_val2 << 4));
-    }
-}
-#endif
-
-// Implementation of Q4_1 quantization (4-bit with non-zero bias)
-#ifdef CCSM_HAVE_AVX
-void quantize_q4_1_avx(uint8_t* output, const float* input, size_t n) {
-    // Q4_1 packs 2 values into a single byte, with a scale and non-zero bias for the block
-    
-    // Calculate number of bytes needed (ceil(n/2))
-    size_t n_bytes = (n + 1) / 2;
-    
-    // Find min and max values for scaling
-    __m256 vmin_val = _mm256_set1_ps(std::numeric_limits<float>::max());
-    __m256 vmax_val = _mm256_set1_ps(std::numeric_limits<float>::lowest());
-    
-    // Process 8 float values at a time
-    for (size_t i = 0; i < n; i += 8) {
-        // Handle boundary condition
-        if (i + 8 <= n) {
-            // Load 8 float values
-            __m256 vx = _mm256_loadu_ps(&input[i]);
-            
-            // Update min/max
-            vmin_val = _mm256_min_ps(vmin_val, vx);
-            vmax_val = _mm256_max_ps(vmax_val, vx);
-        } else {
-            // Handle remaining elements (less than 8)
-            for (size_t j = i; j < n; j++) {
-                float val = input[j];
-                vmin_val = _mm256_min_ps(vmin_val, _mm256_set1_ps(val));
-                vmax_val = _mm256_max_ps(vmax_val, _mm256_set1_ps(val));
-            }
-        }
-    }
-    
-    // Reduce min across vector lanes
-    __m128 vmin128 = _mm_min_ps(_mm256_extractf128_ps(vmin_val, 0), _mm256_extractf128_ps(vmin_val, 1));
-    vmin128 = _mm_min_ps(vmin128, _mm_permute_ps(vmin128, 0x4E)); // 0x4E = 01 00 11 10
-    vmin128 = _mm_min_ps(vmin128, _mm_permute_ps(vmin128, 0xB1)); // 0xB1 = 10 11 00 01
-    
-    // Reduce max across vector lanes
-    __m128 vmax128 = _mm_max_ps(_mm256_extractf128_ps(vmax_val, 0), _mm256_extractf128_ps(vmax_val, 1));
-    vmax128 = _mm_max_ps(vmax128, _mm_permute_ps(vmax128, 0x4E));
-    vmax128 = _mm_max_ps(vmax128, _mm_permute_ps(vmax128, 0xB1));
-    
-    // Extract min and max values
-    float min_val, max_val;
-    _mm_store_ss(&min_val, vmin128);
-    _mm_store_ss(&max_val, vmax128);
-    
-    // Calculate scale and bias
-    float range = max_val - min_val;
-    float scale = range > 0 ? 15.0f / range : 1.0f;
-    float bias = min_val;
-    
-    // Store scale and bias values at the end of the block
-    float* params = reinterpret_cast<float*>(output + n_bytes);
-    params[0] = 1.0f / scale; // Store inverse scale for dequantization
-    params[1] = bias;         // Store bias for dequantization
-    
-    // Process pairs of values and pack them into bytes
-    for (size_t i = 0; i < n; i += 2) {
-        // Quantize first value (0-7 bits)
-        float val1 = (input[i] - bias) * scale;
-        val1 = std::min(15.0f, std::max(0.0f, val1));
-        int32_t q_val1 = static_cast<int32_t>(val1) & 0xF;
-        
-        // Quantize second value if it exists (8-15 bits)
-        int32_t q_val2 = 0;
-        if (i + 1 < n) {
-            float val2 = (input[i + 1] - bias) * scale;
-            val2 = std::min(15.0f, std::max(0.0f, val2));
-            q_val2 = static_cast<int32_t>(val2) & 0xF;
-        }
-        
-        // Pack two 4-bit values into a single byte
-        output[i / 2] = static_cast<uint8_t>(q_val1 | (q_val2 << 4));
-    }
-}
-#endif
-
-#ifdef CCSM_HAVE_NEON
-void quantize_q4_1_neon(uint8_t* output, const float* input, size_t n) {
-    // Q4_1 packs 2 values into a single byte, with a scale and non-zero bias for the block
-    
-    // Calculate number of bytes needed (ceil(n/2))
-    size_t n_bytes = (n + 1) / 2;
-    
-    // Find min and max values for scaling
-    float32x4_t vmin_val = vdupq_n_f32(std::numeric_limits<float>::max());
-    float32x4_t vmax_val = vdupq_n_f32(std::numeric_limits<float>::lowest());
-    
-    // Process 4 float values at a time
-    for (size_t i = 0; i < n; i += 4) {
-        // Handle boundary condition
-        if (i + 4 <= n) {
-            // Load 4 float values
-            float32x4_t vx = vld1q_f32(&input[i]);
-            
-            // Update min/max
-            vmin_val = vminq_f32(vmin_val, vx);
-            vmax_val = vmaxq_f32(vmax_val, vx);
-        } else {
-            // Handle remaining elements (less than 4)
-            for (size_t j = i; j < n; j++) {
-                float val = input[j];
-                float32x4_t vx = vdupq_n_f32(val);
-                vmin_val = vminq_f32(vmin_val, vx);
-                vmax_val = vmaxq_f32(vmax_val, vx);
-            }
-        }
-    }
-    
-    // Reduce min/max across vector lanes
-    float32x2_t vmin2 = vpmin_f32(vget_low_f32(vmin_val), vget_high_f32(vmin_val));
-    vmin2 = vpmin_f32(vmin2, vmin2);
-    
-    float32x2_t vmax2 = vpmax_f32(vget_low_f32(vmax_val), vget_high_f32(vmax_val));
-    vmax2 = vpmax_f32(vmax2, vmax2);
-    
-    // Extract min and max values
-    float min_val = vget_lane_f32(vmin2, 0);
-    float max_val = vget_lane_f32(vmax2, 0);
-    
-    // Calculate scale and bias
-    float range = max_val - min_val;
-    float scale = range > 0 ? 15.0f / range : 1.0f;
-    float bias = min_val;
-    
-    // Store scale and bias values at the end of the block
-    float* params = reinterpret_cast<float*>(output + n_bytes);
-    params[0] = 1.0f / scale; // Store inverse scale for dequantization
-    params[1] = bias;         // Store bias for dequantization
-    
-    // Process pairs of values and pack them into bytes
-    for (size_t i = 0; i < n; i += 2) {
-        // Quantize first value (0-7 bits)
-        float val1 = (input[i] - bias) * scale;
-        val1 = std::min(15.0f, std::max(0.0f, val1));
-        int32_t q_val1 = static_cast<int32_t>(val1) & 0xF;
-        
-        // Quantize second value if it exists (8-15 bits)
-        int32_t q_val2 = 0;
-        if (i + 1 < n) {
-            float val2 = (input[i + 1] - bias) * scale;
-            val2 = std::min(15.0f, std::max(0.0f, val2));
-            q_val2 = static_cast<int32_t>(val2) & 0xF;
-        }
-        
-        // Pack two 4-bit values into a single byte
-        output[i / 2] = static_cast<uint8_t>(q_val1 | (q_val2 << 4));
-    }
-}
-#endif
-
-// Dequantization implementations with SIMD support
-#ifdef CCSM_HAVE_AVX
-void dequantize_q8_0_avx_f32(float* output, const int8_t* input, const float* scale, size_t n) {
-    const float inv_scale = *scale;
-    __m256 vscale = _mm256_set1_ps(inv_scale);
-    
-    // Process 8 values at a time
-    for (size_t i = 0; i < n; i += 8) {
-        if (i + 8 <= n) {
-            // Load 8 int8 values and convert to int32
-            __m128i vi8 = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(&input[i]));
-            __m128i vi16_low = _mm_cvtepi8_epi16(vi8);
-            __m128i vi32_low = _mm_cvtepi16_epi32(vi16_low);
-            __m128i vi16_high = _mm_unpackhi_epi8(vi8, _mm_cmpgt_epi8(_mm_setzero_si128(), vi8));
-            __m128i vi32_high = _mm_cvtepi16_epi32(vi16_high);
-            
-            // Convert to float and scale
-            __m256 vf_low = _mm256_cvtepi32_ps(_mm256_setr_m128i(vi32_low, vi32_high));
-            __m256 vf = _mm256_mul_ps(vf_low, vscale);
-            
-            // Store result
-            _mm256_storeu_ps(&output[i], vf);
-        } else {
-            // Handle remaining elements (less than 8)
-            for (size_t j = i; j < n; j++) {
-                output[j] = static_cast<float>(input[j]) * inv_scale;
-            }
-        }
-    }
-}
-#endif
-
-#ifdef CCSM_HAVE_NEON
-void dequantize_q8_0_neon_f32(float* output, const int8_t* input, const float* scale, size_t n) {
-    const float inv_scale = *scale;
-    float32x4_t vscale = vdupq_n_f32(inv_scale);
-    
-    // Process 4 values at a time
-    for (size_t i = 0; i < n; i += 4) {
-        if (i + 4 <= n) {
-            // Load 4 int8 values
-            int8x8_t vi8 = vld1_s8(&input[i]);
-            
-            // Convert to int16
-            int16x8_t vi16 = vmovl_s8(vi8);
-            
-            // Convert to int32
-            int32x4_t vi32_low = vmovl_s16(vget_low_s16(vi16));
-            
-            // Convert to float and scale
-            float32x4_t vf = vmulq_f32(vcvtq_f32_s32(vi32_low), vscale);
-            
-            // Store result
-            vst1q_f32(&output[i], vf);
-        } else {
-            // Handle remaining elements (less than 4)
-            for (size_t j = i; j < n; j++) {
-                output[j] = static_cast<float>(input[j]) * inv_scale;
-            }
-        }
-    }
-}
-#endif
-
-#ifdef CCSM_HAVE_AVX
-void dequantize_q4_0_avx(float* output, const uint8_t* input, const float* scale, size_t n) {
-    const float inv_scale = *scale;
-    
-    for (size_t i = 0; i < n; i += 2) {
-        // Extract from packed 4-bit representation
-        uint8_t byte = input[i / 2];
-        
-        // Extract first 4-bit value
-        int8_t val1 = static_cast<int8_t>(byte & 0xF);
-        // Sign extend if the high bit is set
-        if (val1 & 0x8) {
-            val1 |= 0xF0; // Extend to 8 bits
-        }
-        output[i] = static_cast<float>(val1) * inv_scale;
-        
-        // Extract second 4-bit value if we have one
-        if (i + 1 < n) {
-            int8_t val2 = static_cast<int8_t>((byte >> 4) & 0xF);
-            // Sign extend if the high bit is set
-            if (val2 & 0x8) {
-                val2 |= 0xF0; // Extend to 8 bits
-            }
-            output[i + 1] = static_cast<float>(val2) * inv_scale;
-        }
-    }
-}
-#endif
-
-#ifdef CCSM_HAVE_NEON
-void dequantize_q4_0_neon(float* output, const uint8_t* input, const float* scale, size_t n) {
-    const float inv_scale = *scale;
-    
-    for (size_t i = 0; i < n; i += 2) {
-        // Extract from packed 4-bit representation
-        uint8_t byte = input[i / 2];
-        
-        // Extract first 4-bit value
-        int8_t val1 = static_cast<int8_t>(byte & 0xF);
-        // Sign extend if the high bit is set
-        if (val1 & 0x8) {
-            val1 |= 0xF0; // Extend to 8 bits
-        }
-        output[i] = static_cast<float>(val1) * inv_scale;
-        
-        // Extract second 4-bit value if we have one
-        if (i + 1 < n) {
-            int8_t val2 = static_cast<int8_t>((byte >> 4) & 0xF);
-            // Sign extend if the high bit is set
-            if (val2 & 0x8) {
-                val2 |= 0xF0; // Extend to 8 bits
-            }
-            output[i + 1] = static_cast<float>(val2) * inv_scale;
-        }
-    }
-}
-#endif
-
-#ifdef CCSM_HAVE_AVX
-void dequantize_q4_1_avx(float* output, const uint8_t* input, const float* scale, const float* bias, size_t n) {
-    const float inv_scale = scale[0];
-    const float bias_val = bias[0];
-    
-    for (size_t i = 0; i < n; i += 2) {
-        // Extract from packed 4-bit representation
-        uint8_t byte = input[i / 2];
-        
-        // Extract first 4-bit value
-        uint8_t val1 = byte & 0xF;
-        output[i] = static_cast<float>(val1) * inv_scale + bias_val;
-        
-        // Extract second 4-bit value if we have one
-        if (i + 1 < n) {
-            uint8_t val2 = (byte >> 4) & 0xF;
-            output[i + 1] = static_cast<float>(val2) * inv_scale + bias_val;
-        }
-    }
-}
-#endif
-
-#ifdef CCSM_HAVE_NEON
-void dequantize_q4_1_neon(float* output, const uint8_t* input, const float* scale, const float* bias, size_t n) {
-    const float inv_scale = scale[0];
-    const float bias_val = bias[0];
-    
-    for (size_t i = 0; i < n; i += 2) {
-        // Extract from packed 4-bit representation
-        uint8_t byte = input[i / 2];
-        
-        // Extract first 4-bit value
-        uint8_t val1 = byte & 0xF;
-        output[i] = static_cast<float>(val1) * inv_scale + bias_val;
-        
-        // Extract second 4-bit value if we have one
-        if (i + 1 < n) {
-            uint8_t val2 = (byte >> 4) & 0xF;
-            output[i + 1] = static_cast<float>(val2) * inv_scale + bias_val;
-        }
-    }
-}
-#endif
-
-// Implementation of Q4_0 quantization with AVX support
-#ifdef CCSM_HAVE_AVX
-void quantize_q4_0_avx_f32(uint8_t* output, const float* input, size_t n) {
-    // Q4_0 packs 2 values into a single byte, with a single scale for the block
-    
-    // Calculate number of bytes needed (ceil(n/2))
-    size_t n_bytes = (n + 1) / 2;
-    
-    // Find absolute maximum value for scaling
-    __m256 vmax_abs = _mm256_setzero_ps();
-    
-    // Process 8 float values at a time
-    for (size_t i = 0; i < n; i += 8) {
-        // Handle boundary condition
-        if (i + 8 <= n) {
-            // Load 8 float values
-            __m256 vx = _mm256_loadu_ps(&input[i]);
-            
-            // Compute absolute values
-            __m256 vabs = _mm256_and_ps(vx, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF)));
-            
-            // Update max_abs
-            vmax_abs = _mm256_max_ps(vmax_abs, vabs);
-        } else {
-            // Handle remaining elements (less than 8)
-            for (size_t j = i; j < n; j++) {
-                float abs_val = std::abs(input[j]);
-                vmax_abs = _mm256_max_ps(vmax_abs, _mm256_set1_ps(abs_val));
-            }
-        }
-    }
-    
-    // Reduce max across vector lanes
-    __m128 vmax128 = _mm_max_ps(_mm256_extractf128_ps(vmax_abs, 0), _mm256_extractf128_ps(vmax_abs, 1));
-    vmax128 = _mm_max_ps(vmax128, _mm_permute_ps(vmax128, 0x4E)); // 0x4E = 01 00 11 10
-    vmax128 = _mm_max_ps(vmax128, _mm_permute_ps(vmax128, 0xB1)); // 0xB1 = 10 11 00 01
-    
-    // Extract the maximum value
-    float max_abs;
-    _mm_store_ss(&max_abs, vmax128);
-    
-    // Calculate scale to map range [-max_abs, max_abs] to [-7, 7]
-    // (we use only 7 values to avoid using -8, which could have precision issues)
-    float scale = max_abs > 0 ? 7.0f / max_abs : 1.0f;
-    
-    // Store scale value at the end of the block for dequantization
-    float* scale_ptr = reinterpret_cast<float*>(output + n_bytes);
-    *scale_ptr = 1.0f / scale; // Store inverse scale for dequantization
-    
-    // Broadcast scale to vector
-    __m256 vscale = _mm256_set1_ps(scale);
-    
-    // Constants for clamping to [-7, 7]
-    __m256 vmax_clamp = _mm256_set1_ps(7.0f);
-    __m256 vmin_clamp = _mm256_set1_ps(-7.0f);
-    
-    // Process pairs of values and pack into bytes
-    for (size_t i = 0; i < n; i += 16) {
-        // We process 16 values at a time (results in 8 bytes)
-        size_t remaining = n - i;
-        size_t batch_size = std::min(size_t(16), remaining);
-        
-        // Process 8 values at a time (results in 4 bytes)
-        for (size_t j = 0; j < batch_size; j += 8) {
-            size_t offset = i + j;
-            size_t j_limit = std::min(size_t(8), remaining - j);
-            
-            // If we don't have a full vector, use scalar code
-            if (j_limit < 8) {
-                for (size_t k = 0; k < j_limit; k += 2) {
-                    size_t idx = offset + k;
-                    
-                    // Process first value
-                    float val1 = input[idx] * scale;
-                    val1 = std::min(7.0f, std::max(-7.0f, val1));
-                    int8_t q_val1 = static_cast<int8_t>(val1) & 0xF;
-                    
-                    // Process second value if it exists
-                    int8_t q_val2 = 0;
-                    if (idx + 1 < n) {
-                        float val2 = input[idx + 1] * scale;
-                        val2 = std::min(7.0f, std::max(-7.0f, val2));
-                        q_val2 = static_cast<int8_t>(val2) & 0xF;
-                    }
-                    
-                    // Pack two 4-bit values into a single byte
-                    output[idx / 2] = static_cast<uint8_t>(q_val1 | (q_val2 << 4));
-                }
-                continue;
-            }
-            
-            // Load 8 float values
-            __m256 vx = _mm256_loadu_ps(&input[offset]);
-            
-            // Scale the values
-            __m256 vscaled = _mm256_mul_ps(vx, vscale);
-            
-            // Clamp the values to [-7, 7]
-            vscaled = _mm256_min_ps(_mm256_max_ps(vscaled, vmin_clamp), vmax_clamp);
-            
-            // Convert to int32
-            __m256i vi32 = _mm256_cvtps_epi32(vscaled);
-            
-            // Extract low 4 bits from each int32
-            __m256i vi32_masked = _mm256_and_si256(vi32, _mm256_set1_epi32(0xF));
-            
-            // Pack the 8 values into 4 bytes
-            // First extract lower and upper 128-bit lanes
-            __m128i vi32_low = _mm256_extractf128_si256(vi32_masked, 0);  // Values 0-3
-            __m128i vi32_high = _mm256_extractf128_si256(vi32_masked, 1); // Values 4-7
-            
-            // Pack into 8 int16 values
-            __m128i vi16 = _mm_packs_epi32(vi32_low, vi32_high);
-            
-            // Pack into 16 int8 values (we only care about the first 8)
-            __m128i vi8 = _mm_packs_epi16(vi16, vi16);
-            
-            // Extract values into individual bytes
-            int vals[8];
-            _mm_storeu_si128(reinterpret_cast<__m128i*>(vals), vi8);
-            
-            // Pack pairs of values into bytes
-            for (size_t k = 0; k < j_limit; k += 2) {
-                size_t out_idx = (offset + k) / 2;
-                uint8_t packed_byte = (vals[k] & 0xF) | ((k+1 < j_limit ? vals[k+1] : 0) << 4);
-                output[out_idx] = packed_byte;
-            }
-        }
-    }
-}
-
-void dequantize_q4_0_avx_f32(float* output, const uint8_t* input, const float* scale, size_t n) {
-    const float inv_scale = *scale;
-    __m256 vscale = _mm256_set1_ps(inv_scale);
-    
-    // Process 16 values (8 bytes) at a time
-    for (size_t i = 0; i < n; i += 16) {
-        // Handle boundary condition
-        size_t remaining = n - i;
-        size_t batch_size = std::min(size_t(16), remaining);
-        
-        // Process 8 values at a time
-        for (size_t j = 0; j < batch_size; j += 8) {
-            size_t offset = i + j;
-            size_t j_limit = std::min(size_t(8), remaining - j);
-            
-            // If we don't have a full vector, use scalar code
-            if (j_limit < 8) {
-                for (size_t k = 0; k < j_limit; k++) {
-                    size_t idx = offset + k;
-                    // Determine which byte contains our value
-                    size_t byte_idx = idx / 2;
-                    // Determine if we want the upper or lower 4 bits
-                    bool is_upper = (idx % 2) != 0;
-                    
-                    // Extract the appropriate 4-bit value
-                    int8_t q4_val;
-                    if (is_upper) {
-                        q4_val = static_cast<int8_t>((input[byte_idx] >> 4) & 0xF);
-                    } else {
-                        q4_val = static_cast<int8_t>(input[byte_idx] & 0xF);
-                    }
-                    
-                    // Sign extend if the high bit is set
-                    if (q4_val & 0x8) {
-                        q4_val |= 0xF0; // Extend to 8 bits
-                    }
-                    
-                    // Dequantize
-                    output[idx] = static_cast<float>(q4_val) * inv_scale;
-                }
-                continue;
-            }
-            
-            // For full vector processing, we need to:
-            // 1. Load 4 bytes containing 8 quantized values
-            // 2. Unpack into 8 int32 values
-            // 3. Convert to float and apply scaling
-            
-            // Determine starting byte index
-            size_t start_byte = offset / 2;
-            
-            // Unpack 4 bytes into 8 int32 values
-            int32_t values[8];
-            for (size_t k = 0; k < 4; k++) {
-                uint8_t byte_val = input[start_byte + k];
-                
-                // Extract lower 4 bits
-                int8_t low_val = static_cast<int8_t>(byte_val & 0xF);
-                // Sign extend if needed
-                if (low_val & 0x8) low_val |= 0xF0;
-                values[k*2] = static_cast<int32_t>(low_val);
-                
-                // Extract upper 4 bits
-                int8_t high_val = static_cast<int8_t>((byte_val >> 4) & 0xF);
-                // Sign extend if needed
-                if (high_val & 0x8) high_val |= 0xF0;
-                values[k*2 + 1] = static_cast<int32_t>(high_val);
-            }
-            
-            // Convert to __m256i
-            __m256i vi32 = _mm256_setr_epi32(
-                values[0], values[1], values[2], values[3],
-                values[4], values[5], values[6], values[7]
-            );
-            
-            // Convert to float
-            __m256 vf32 = _mm256_cvtepi32_ps(vi32);
-            
-            // Apply scaling
-            __m256 vresult = _mm256_mul_ps(vf32, vscale);
-            
-            // Store result
-            _mm256_storeu_ps(&output[offset], vresult);
-        }
-    }
-}
-#endif // CCSM_HAVE_AVX
-
-// Implementation of Q4_0 quantization with NEON support
-#ifdef CCSM_HAVE_NEON
-void quantize_q4_0_neon_f32(uint8_t* output, const float* input, size_t n) {
-    // Q4_0 packs 2 values into a single byte, with a single scale for the block
-    
-    // Calculate number of bytes needed (ceil(n/2))
-    size_t n_bytes = (n + 1) / 2;
-    
-    // Find absolute maximum value for scaling
-    float32x4_t vmax_abs = vdupq_n_f32(0.0f);
-    
-    // Process 4 float values at a time
-    for (size_t i = 0; i < n; i += 4) {
-        // Handle boundary condition
-        if (i + 4 <= n) {
-            // Load 4 float values
-            float32x4_t vx = vld1q_f32(&input[i]);
-            
-            // Compute absolute values
-            float32x4_t vabs = vabsq_f32(vx);
-            
-            // Update max_abs
-            vmax_abs = vmaxq_f32(vmax_abs, vabs);
-        } else {
-            // Handle remaining elements (less than 4)
-            for (size_t j = i; j < n; j++) {
-                float abs_val = std::abs(input[j]);
-                vmax_abs = vmaxq_f32(vmax_abs, vdupq_n_f32(abs_val));
-            }
-        }
-    }
-    
-    // Reduce max across vector lanes
-    float32x2_t vmax2 = vpmax_f32(vget_low_f32(vmax_abs), vget_high_f32(vmax_abs));
-    vmax2 = vpmax_f32(vmax2, vmax2);
-    
-    // Extract the maximum value
-    float max_abs = vget_lane_f32(vmax2, 0);
-    
-    // Calculate scale to map range [-max_abs, max_abs] to [-7, 7]
-    float scale = max_abs > 0 ? 7.0f / max_abs : 1.0f;
-    
-    // Store scale value at the end of the block for dequantization
-    float* scale_ptr = reinterpret_cast<float*>(output + n_bytes);
-    *scale_ptr = 1.0f / scale; // Store inverse scale for dequantization
-    
-    // Broadcast scale to vector
-    float32x4_t vscale = vdupq_n_f32(scale);
-    
-    // Constants for clamping to [-7, 7]
-    float32x4_t vmax_clamp = vdupq_n_f32(7.0f);
-    float32x4_t vmin_clamp = vdupq_n_f32(-7.0f);
-    
-    // Process pairs of values and pack into bytes
-    for (size_t i = 0; i < n; i += 8) {
-        // We process 8 values at a time (results in 4 bytes)
-        size_t remaining = n - i;
-        size_t batch_size = std::min(size_t(8), remaining);
-        
-        // Process 4 values at a time (results in 2 bytes)
-        for (size_t j = 0; j < batch_size; j += 4) {
-            size_t offset = i + j;
-            size_t j_limit = std::min(size_t(4), remaining - j);
-            
-            // If we don't have a full vector, use scalar code
-            if (j_limit < 4) {
-                for (size_t k = 0; k < j_limit; k += 2) {
-                    size_t idx = offset + k;
-                    
-                    // Process first value
-                    float val1 = input[idx] * scale;
-                    val1 = std::min(7.0f, std::max(-7.0f, val1));
-                    int8_t q_val1 = static_cast<int8_t>(val1) & 0xF;
-                    
-                    // Process second value if it exists
-                    int8_t q_val2 = 0;
-                    if (idx + 1 < n) {
-                        float val2 = input[idx + 1] * scale;
-                        val2 = std::min(7.0f, std::max(-7.0f, val2));
-                        q_val2 = static_cast<int8_t>(val2) & 0xF;
-                    }
-                    
-                    // Pack two 4-bit values into a single byte
-                    output[idx / 2] = static_cast<uint8_t>(q_val1 | (q_val2 << 4));
-                }
-                continue;
-            }
-            
-            // Load 4 float values
-            float32x4_t vx = vld1q_f32(&input[offset]);
-            
-            // Scale the values
-            float32x4_t vscaled = vmulq_f32(vx, vscale);
-            
-            // Clamp the values to [-7, 7]
-            vscaled = vminq_f32(vmaxq_f32(vscaled, vmin_clamp), vmax_clamp);
-            
-            // Convert to int32
-            int32x4_t vi32 = vcvtq_s32_f32(vscaled);
-            
-            // Extract low 4 bits from each int32
-            int32x4_t vi32_masked = vandq_s32(vi32, vdupq_n_s32(0xF));
-            
-            // Extract values
-            int16_t vals[4];
-            vst1_s16(vals, vmovn_s32(vi32_masked));
-            
-            // Pack pairs of values into bytes
-            for (size_t k = 0; k < j_limit; k += 2) {
-                size_t out_idx = (offset + k) / 2;
-                uint8_t packed_byte = (vals[k] & 0xF) | ((k+1 < j_limit ? vals[k+1] : 0) << 4);
-                output[out_idx] = packed_byte;
-            }
-        }
-    }
-}
-
-void dequantize_q4_0_neon_f32(float* output, const uint8_t* input, const float* scale, size_t n) {
-    const float inv_scale = *scale;
-    float32x4_t vscale = vdupq_n_f32(inv_scale);
-    
-    // Process 8 values (4 bytes) at a time
-    for (size_t i = 0; i < n; i += 8) {
-        // Handle boundary condition
-        size_t remaining = n - i;
-        size_t batch_size = std::min(size_t(8), remaining);
-        
-        // Process 4 values at a time
-        for (size_t j = 0; j < batch_size; j += 4) {
-            size_t offset = i + j;
-            size_t j_limit = std::min(size_t(4), remaining - j);
-            
-            // If we don't have a full vector, use scalar code
-            if (j_limit < 4) {
-                for (size_t k = 0; k < j_limit; k++) {
-                    size_t idx = offset + k;
-                    // Determine which byte contains our value
-                    size_t byte_idx = idx / 2;
-                    // Determine if we want the upper or lower 4 bits
-                    bool is_upper = (idx % 2) != 0;
-                    
-                    // Extract the appropriate 4-bit value
-                    int8_t q4_val;
-                    if (is_upper) {
-                        q4_val = static_cast<int8_t>((input[byte_idx] >> 4) & 0xF);
-                    } else {
-                        q4_val = static_cast<int8_t>(input[byte_idx] & 0xF);
-                    }
-                    
-                    // Sign extend if the high bit is set
-                    if (q4_val & 0x8) {
-                        q4_val |= 0xF0; // Extend to 8 bits
-                    }
-                    
-                    // Dequantize
-                    output[idx] = static_cast<float>(q4_val) * inv_scale;
-                }
-                continue;
-            }
-            
-            // For full vector processing, we need to:
-            // 1. Load 2 bytes containing 4 quantized values
-            // 2. Unpack into 4 int32 values
-            // 3. Convert to float and apply scaling
-            
-            // Determine starting byte index
-            size_t start_byte = offset / 2;
-            
-            // Unpack 2 bytes into 4 int32 values
-            int32_t values[4];
-            for (size_t k = 0; k < 2; k++) {
-                uint8_t byte_val = input[start_byte + k];
-                
-                // Extract lower 4 bits
-                int8_t low_val = static_cast<int8_t>(byte_val & 0xF);
-                // Sign extend if needed
-                if (low_val & 0x8) low_val |= 0xF0;
-                values[k*2] = static_cast<int32_t>(low_val);
-                
-                // Extract upper 4 bits
-                int8_t high_val = static_cast<int8_t>((byte_val >> 4) & 0xF);
-                // Sign extend if needed
-                if (high_val & 0x8) high_val |= 0xF0;
-                values[k*2 + 1] = static_cast<int32_t>(high_val);
-            }
-            
-            // Convert to int32x4_t
-            int32x4_t vi32 = vld1q_s32(values);
-            
-            // Convert to float
-            float32x4_t vf32 = vcvtq_f32_s32(vi32);
-            
-            // Apply scaling
-            float32x4_t vresult = vmulq_f32(vf32, vscale);
-            
-            // Store result
-            vst1q_f32(&output[offset], vresult);
-        }
-    }
-}
-#endif // CCSM_HAVE_NEON
-
-// Implementation of Q4_1 quantization with AVX support
-#ifdef CCSM_HAVE_AVX
-void quantize_q4_1_avx_f32(uint8_t* output, const float* input, size_t n) {
-    // Q4_1 packs 2 values into a single byte, with a scale and non-zero bias for the block
-    
-    // Calculate number of bytes needed (ceil(n/2))
-    size_t n_bytes = (n + 1) / 2;
-    
-    // Calculate min and max for dynamic range
-    __m256 vmin_val = _mm256_set1_ps(std::numeric_limits<float>::max());
-    __m256 vmax_val = _mm256_set1_ps(std::numeric_limits<float>::lowest());
-    
-    // Process 8 float values at a time
-    for (size_t i = 0; i < n; i += 8) {
-        // Handle boundary condition
-        if (i + 8 <= n) {
-            // Load 8 float values
-            __m256 vx = _mm256_loadu_ps(&input[i]);
-            
-            // Update min and max
-            vmin_val = _mm256_min_ps(vmin_val, vx);
-            vmax_val = _mm256_max_ps(vmax_val, vx);
-        } else {
-            // Handle remaining elements (less than 8)
-            for (size_t j = i; j < n; j++) {
-                float val = input[j];
-                vmin_val = _mm256_min_ps(vmin_val, _mm256_set1_ps(val));
-                vmax_val = _mm256_max_ps(vmax_val, _mm256_set1_ps(val));
-            }
-        }
-    }
-    
-    // Reduce min/max across vector lanes
-    __m128 vmin128 = _mm_min_ps(_mm256_extractf128_ps(vmin_val, 0), _mm256_extractf128_ps(vmin_val, 1));
-    vmin128 = _mm_min_ps(vmin128, _mm_permute_ps(vmin128, 0x4E)); // 0x4E = 01 00 11 10
-    vmin128 = _mm_min_ps(vmin128, _mm_permute_ps(vmin128, 0xB1)); // 0xB1 = 10 11 00 01
-    
-    __m128 vmax128 = _mm_max_ps(_mm256_extractf128_ps(vmax_val, 0), _mm256_extractf128_ps(vmax_val, 1));
-    vmax128 = _mm_max_ps(vmax128, _mm_permute_ps(vmax128, 0x4E)); // 0x4E = 01 00 11 10
-    vmax128 = _mm_max_ps(vmax128, _mm_permute_ps(vmax128, 0xB1)); // 0xB1 = 10 11 00 01
-    
-    // Extract the minimum and maximum values
-    float min_val, max_val;
-    _mm_store_ss(&min_val, vmin128);
-    _mm_store_ss(&max_val, vmax128);
-    
-    // Calculate scale and bias
-    float range = max_val - min_val;
-    float scale = range > 0 ? 15.0f / range : 1.0f;
-    float bias = min_val;
-    
-    // Store scale and bias values at the end of the block for dequantization
-    float* params = reinterpret_cast<float*>(output + n_bytes);
-    params[0] = 1.0f / scale; // Store inverse scale for dequantization
-    params[1] = bias;         // Store bias for dequantization
-    
-    // Broadcast scale and bias to vector
-    __m256 vscale = _mm256_set1_ps(scale);
-    __m256 vbias = _mm256_set1_ps(-bias); // Negative because we compute (val - bias)
-    
-    // Constants for clamping to [0, 15]
-    __m256 vmax_clamp = _mm256_set1_ps(15.0f);
-    __m256 vmin_clamp = _mm256_set1_ps(0.0f);
-    
-    // Process pairs of values and pack into bytes
-    for (size_t i = 0; i < n; i += 16) {
-        // We process 16 values at a time (results in 8 bytes)
-        size_t remaining = n - i;
-        size_t batch_size = std::min(size_t(16), remaining);
-        
-        // Process 8 values at a time (results in 4 bytes)
-        for (size_t j = 0; j < batch_size; j += 8) {
-            size_t offset = i + j;
-            size_t j_limit = std::min(size_t(8), remaining - j);
-            
-            // If we don't have a full vector, use scalar code
-            if (j_limit < 8) {
-                for (size_t k = 0; k < j_limit; k += 2) {
-                    size_t idx = offset + k;
-                    
-                    // Process first value
-                    float val1 = (input[idx] - bias) * scale;
-                    val1 = std::min(15.0f, std::max(0.0f, val1));
-                    uint8_t q_val1 = static_cast<uint8_t>(val1) & 0xF;
-                    
-                    // Process second value if it exists
-                    uint8_t q_val2 = 0;
-                    if (idx + 1 < n) {
-                        float val2 = (input[idx + 1] - bias) * scale;
-                        val2 = std::min(15.0f, std::max(0.0f, val2));
-                        q_val2 = static_cast<uint8_t>(val2) & 0xF;
-                    }
-                    
-                    // Pack two 4-bit values into a single byte
-                    output[idx / 2] = q_val1 | (q_val2 << 4);
-                }
-                continue;
-            }
-            
-            // Load 8 float values
-            __m256 vx = _mm256_loadu_ps(&input[offset]);
-            
-            // Center around zero by subtracting bias
-            __m256 vcentered = _mm256_add_ps(vx, vbias); // vx - bias = vx + (-bias)
-            
-            // Scale the values
-            __m256 vscaled = _mm256_mul_ps(vcentered, vscale);
-            
-            // Clamp the values to [0, 15]
-            vscaled = _mm256_min_ps(_mm256_max_ps(vscaled, vmin_clamp), vmax_clamp);
-            
-            // Convert to int32
-            __m256i vi32 = _mm256_cvtps_epi32(vscaled);
-            
-            // Extract low 4 bits from each int32
-            __m256i vi32_masked = _mm256_and_si256(vi32, _mm256_set1_epi32(0xF));
-            
-            // Pack the 8 values into 4 bytes
-            // First extract lower and upper 128-bit lanes
-            __m128i vi32_low = _mm256_extractf128_si256(vi32_masked, 0);  // Values 0-3
-            __m128i vi32_high = _mm256_extractf128_si256(vi32_masked, 1); // Values 4-7
-            
-            // Pack into 8 int16 values
-            __m128i vi16 = _mm_packs_epi32(vi32_low, vi32_high);
-            
-            // Pack into 16 int8 values (we only care about the first 8)
-            __m128i vi8 = _mm_packs_epi16(vi16, vi16);
-            
-            // Extract values into individual bytes
-            uint8_t vals[8];
-            _mm_storeu_si128(reinterpret_cast<__m128i*>(vals), vi8);
-            
-            // Pack pairs of values into bytes
-            for (size_t k = 0; k < j_limit; k += 2) {
-                size_t out_idx = (offset + k) / 2;
-                uint8_t packed_byte = (vals[k] & 0xF) | ((k+1 < j_limit ? vals[k+1] : 0) << 4);
-                output[out_idx] = packed_byte;
-            }
-        }
-    }
-}
-
-void dequantize_q4_1_avx_f32(float* output, const uint8_t* input, const float* scale, const float* bias, size_t n) {
-    const float inv_scale = *scale;
-    const float bias_val = *bias;
-    
-    __m256 vscale = _mm256_set1_ps(inv_scale);
-    __m256 vbias = _mm256_set1_ps(bias_val);
-    
-    // Process 16 values (8 bytes) at a time
-    for (size_t i = 0; i < n; i += 16) {
-        // Handle boundary condition
-        size_t remaining = n - i;
-        size_t batch_size = std::min(size_t(16), remaining);
-        
-        // Process 8 values at a time
-        for (size_t j = 0; j < batch_size; j += 8) {
-            size_t offset = i + j;
-            size_t j_limit = std::min(size_t(8), remaining - j);
-            
-            // If we don't have a full vector, use scalar code
-            if (j_limit < 8) {
-                for (size_t k = 0; k < j_limit; k++) {
-                    size_t idx = offset + k;
-                    // Determine which byte contains our value
-                    size_t byte_idx = idx / 2;
-                    // Determine if we want the upper or lower 4 bits
-                    bool is_upper = (idx % 2) != 0;
-                    
-                    // Extract the appropriate 4-bit value
-                    uint8_t q4_val;
-                    if (is_upper) {
-                        q4_val = (input[byte_idx] >> 4) & 0xF;
-                    } else {
-                        q4_val = input[byte_idx] & 0xF;
-                    }
-                    
-                    // Dequantize
-                    output[idx] = static_cast<float>(q4_val) * inv_scale + bias_val;
-                }
-                continue;
-            }
-            
-            // For full vector processing, we need to:
-            // 1. Load 4 bytes containing 8 quantized values
-            // 2. Unpack into 8 int32 values
-            // 3. Convert to float and apply scaling
-            
-            // Determine starting byte index
-            size_t start_byte = offset / 2;
-            
-            // Unpack 4 bytes into 8 int32 values
-            int32_t values[8];
-            for (size_t k = 0; k < 4; k++) {
-                uint8_t byte_val = input[start_byte + k];
-                
-                // Extract lower 4 bits
-                values[k*2] = static_cast<int32_t>(byte_val & 0xF);
-                
-                // Extract upper 4 bits
-                values[k*2 + 1] = static_cast<int32_t>((byte_val >> 4) & 0xF);
-            }
-            
-            // Convert to __m256i
-            __m256i vi32 = _mm256_setr_epi32(
-                values[0], values[1], values[2], values[3],
-                values[4], values[5], values[6], values[7]
-            );
-            
-            // Convert to float
-            __m256 vf32 = _mm256_cvtepi32_ps(vi32);
-            
-            // Apply scaling
-            __m256 vscaled = _mm256_mul_ps(vf32, vscale);
-            
-            // Add bias
-            __m256 vresult = _mm256_add_ps(vscaled, vbias);
-            
-            // Store result
-            _mm256_storeu_ps(&output[offset], vresult);
-        }
-    }
-}
-#endif // CCSM_HAVE_AVX
-
-// Implementation of Q4_1 quantization with NEON support
-#ifdef CCSM_HAVE_NEON
-void quantize_q4_1_neon_f32(uint8_t* output, const float* input, size_t n) {
-    // Q4_1 packs 2 values into a single byte, with a scale and non-zero bias for the block
-    
-    // Calculate number of bytes needed (ceil(n/2))
-    size_t n_bytes = (n + 1) / 2;
-    
-    // Calculate min and max for dynamic range
-    float32x4_t vmin_val = vdupq_n_f32(std::numeric_limits<float>::max());
-    float32x4_t vmax_val = vdupq_n_f32(std::numeric_limits<float>::lowest());
-    
-    // Process 4 float values at a time
-    for (size_t i = 0; i < n; i += 4) {
-        // Handle boundary condition
-        if (i + 4 <= n) {
-            // Load 4 float values
-            float32x4_t vx = vld1q_f32(&input[i]);
-            
-            // Update min and max
-            vmin_val = vminq_f32(vmin_val, vx);
-            vmax_val = vmaxq_f32(vmax_val, vx);
-        } else {
-            // Handle remaining elements (less than 4)
-            for (size_t j = i; j < n; j++) {
-                float val = input[j];
-                vmin_val = vminq_f32(vmin_val, vdupq_n_f32(val));
-                vmax_val = vmaxq_f32(vmax_val, vdupq_n_f32(val));
-            }
-        }
-    }
-    
-    // Reduce min/max across vector lanes
-    float32x2_t vmin2 = vpmin_f32(vget_low_f32(vmin_val), vget_high_f32(vmin_val));
-    vmin2 = vpmin_f32(vmin2, vmin2);
-    
-    float32x2_t vmax2 = vpmax_f32(vget_low_f32(vmax_val), vget_high_f32(vmax_val));
-    vmax2 = vpmax_f32(vmax2, vmax2);
-    
-    // Extract the minimum and maximum values
-    float min_val = vget_lane_f32(vmin2, 0);
-    float max_val = vget_lane_f32(vmax2, 0);
-    
-    // Calculate scale and bias
-    float range = max_val - min_val;
-    float scale = range > 0 ? 15.0f / range : 1.0f;
-    float bias = min_val;
-    
-    // Store scale and bias values at the end of the block for dequantization
-    float* params = reinterpret_cast<float*>(output + n_bytes);
-    params[0] = 1.0f / scale; // Store inverse scale for dequantization
-    params[1] = bias;         // Store bias for dequantization
-    
-    // Broadcast scale and bias to vector
-    float32x4_t vscale = vdupq_n_f32(scale);
-    float32x4_t vbias = vdupq_n_f32(-bias); // Negative because we compute (val - bias)
-    
-    // Constants for clamping to [0, 15]
-    float32x4_t vmax_clamp = vdupq_n_f32(15.0f);
-    float32x4_t vmin_clamp = vdupq_n_f32(0.0f);
-    
-    // Process pairs of values and pack into bytes
-    for (size_t i = 0; i < n; i += 8) {
-        // We process 8 values at a time (results in 4 bytes)
-        size_t remaining = n - i;
-        size_t batch_size = std::min(size_t(8), remaining);
-        
-        // Process 4 values at a time (results in 2 bytes)
-        for (size_t j = 0; j < batch_size; j += 4) {
-            size_t offset = i + j;
-            size_t j_limit = std::min(size_t(4), remaining - j);
-            
-            // If we don't have a full vector, use scalar code
-            if (j_limit < 4) {
-                for (size_t k = 0; k < j_limit; k += 2) {
-                    size_t idx = offset + k;
-                    
-                    // Process first value
-                    float val1 = (input[idx] - bias) * scale;
-                    val1 = std::min(15.0f, std::max(0.0f, val1));
-                    uint8_t q_val1 = static_cast<uint8_t>(val1) & 0xF;
-                    
-                    // Process second value if it exists
-                    uint8_t q_val2 = 0;
-                    if (idx + 1 < n) {
-                        float val2 = (input[idx + 1] - bias) * scale;
-                        val2 = std::min(15.0f, std::max(0.0f, val2));
-                        q_val2 = static_cast<uint8_t>(val2) & 0xF;
-                    }
-                    
-                    // Pack two 4-bit values into a single byte
-                    output[idx / 2] = q_val1 | (q_val2 << 4);
-                }
-                continue;
-            }
-            
-            // Load 4 float values
-            float32x4_t vx = vld1q_f32(&input[offset]);
-            
-            // Center around zero by subtracting bias
-            float32x4_t vcentered = vaddq_f32(vx, vbias); // vx - bias = vx + (-bias)
-            
-            // Scale the values
-            float32x4_t vscaled = vmulq_f32(vcentered, vscale);
-            
-            // Clamp the values to [0, 15]
-            vscaled = vminq_f32(vmaxq_f32(vscaled, vmin_clamp), vmax_clamp);
-            
-            // Convert to int32
-            int32x4_t vi32 = vcvtq_s32_f32(vscaled);
-            
-            // Extract low 4 bits from each int32
-            int32x4_t vi32_masked = vandq_s32(vi32, vdupq_n_s32(0xF));
-            
-            // Extract values
-            int16_t vals[4];
-            vst1_s16(vals, vmovn_s32(vi32_masked));
-            
-            // Pack pairs of values into bytes
-            for (size_t k = 0; k < j_limit; k += 2) {
-                size_t out_idx = (offset + k) / 2;
-                uint8_t packed_byte = (vals[k] & 0xF) | ((k+1 < j_limit ? vals[k+1] : 0) << 4);
-                output[out_idx] = packed_byte;
-            }
-        }
-    }
-}
-
-void dequantize_q4_1_neon_f32(float* output, const uint8_t* input, const float* scale, const float* bias, size_t n) {
-    const float inv_scale = *scale;
-    const float bias_val = *bias;
-    
-    float32x4_t vscale = vdupq_n_f32(inv_scale);
-    float32x4_t vbias = vdupq_n_f32(bias_val);
-    
-    // Process 8 values (4 bytes) at a time
-    for (size_t i = 0; i < n; i += 8) {
-        // Handle boundary condition
-        size_t remaining = n - i;
-        size_t batch_size = std::min(size_t(8), remaining);
-        
-        // Process 4 values at a time
-        for (size_t j = 0; j < batch_size; j += 4) {
-            size_t offset = i + j;
-            size_t j_limit = std::min(size_t(4), remaining - j);
-            
-            // If we don't have a full vector, use scalar code
-            if (j_limit < 4) {
-                for (size_t k = 0; k < j_limit; k++) {
-                    size_t idx = offset + k;
-                    // Determine which byte contains our value
-                    size_t byte_idx = idx / 2;
-                    // Determine if we want the upper or lower 4 bits
-                    bool is_upper = (idx % 2) != 0;
-                    
-                    // Extract the appropriate 4-bit value
-                    uint8_t q4_val;
-                    if (is_upper) {
-                        q4_val = (input[byte_idx] >> 4) & 0xF;
-                    } else {
-                        q4_val = input[byte_idx] & 0xF;
-                    }
-                    
-                    // Dequantize
-                    output[idx] = static_cast<float>(q4_val) * inv_scale + bias_val;
-                }
-                continue;
-            }
-            
-            // For full vector processing, we need to:
-            // 1. Load 2 bytes containing 4 quantized values
-            // 2. Unpack into 4 int32 values
-            // 3. Convert to float and apply scaling
-            
-            // Determine starting byte index
-            size_t start_byte = offset / 2;
-            
-            // Unpack 2 bytes into 4 int32 values
-            int32_t values[4];
-            for (size_t k = 0; k < 2; k++) {
-                uint8_t byte_val = input[start_byte + k];
-                
-                // Extract lower 4 bits (no sign extension for Q4_1)
-                values[k*2] = static_cast<int32_t>(byte_val & 0xF);
-                
-                // Extract upper 4 bits (no sign extension for Q4_1) 
-                values[k*2 + 1] = static_cast<int32_t>((byte_val >> 4) & 0xF);
-            }
-            
-            // Convert to int32x4_t
-            int32x4_t vi32 = vld1q_s32(values);
-            
-            // Convert to float
-            float32x4_t vf32 = vcvtq_f32_s32(vi32);
-            
-            // Apply scaling
-            float32x4_t vscaled = vmulq_f32(vf32, vscale);
-            
-            // Add bias
-            float32x4_t vresult = vaddq_f32(vscaled, vbias);
-            
-            // Store result
-            vst1q_f32(&output[offset], vresult);
-        }
-    }
-}
-#endif // CCSM_HAVE_NEON
-
-// Forward declaration of helper functions
-static float32x4_t exp_ps_f32(float32x4_t x);
-
-// Begin implementation in the ccsm::simd::detail namespace
-
-// Basic NEON vector operations
-void vector_add_neon_f32(float* result, const float* a, const float* b, size_t n) {
+// SIMD-optimized sigmoid activation function (AVX)
+#if defined(CCSM_HAVE_AVX)
+void sigmoid_avx(float* output, const float* input, size_t n) {
+    // Constants for sigmoid approximation
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 neg_one = _mm256_set1_ps(-1.0f);
+    const __m256 half = _mm256_set1_ps(0.5f);
+    
+    // Process 8 elements at a time (AVX register width)
     size_t i = 0;
-    // Process 4 floats at a time (128-bit vectors)
-    for (; i + 3 < n; i += 4) {
-        float32x4_t va = vld1q_f32(a + i);
-        float32x4_t vb = vld1q_f32(b + i);
-        float32x4_t vresult = vaddq_f32(va, vb);
-        vst1q_f32(result + i, vresult);
+    for (; i + 8 <= n; i += 8) {
+        // Load 8 input values
+        __m256 x = _mm256_loadu_ps(input + i);
+        
+        // Compute sigmoid: 1.0f / (1.0f + exp(-x))
+        // AVX doesn't have exp directly, so we use the following approximation:
+        // 0.5 * (tanh(x/2) + 1)
+        
+        // Compute x/2
+        __m256 x_half = _mm256_mul_ps(x, half);
+        
+        // Compute tanh(x/2) using rational approximation
+        // tanh(x) = x * (27 + x^2) / (27 + 9 * x^2)
+        __m256 x2 = _mm256_mul_ps(x_half, x_half);
+        
+        __m256 num = _mm256_mul_ps(x_half, _mm256_add_ps(_mm256_set1_ps(27.0f), x2));
+        __m256 den = _mm256_add_ps(_mm256_set1_ps(27.0f), _mm256_mul_ps(_mm256_set1_ps(9.0f), x2));
+        __m256 tanh_x_half = _mm256_div_ps(num, den);
+        
+        // Compute sigmoid: 0.5 * (tanh(x/2) + 1)
+        __m256 result = _mm256_mul_ps(half, _mm256_add_ps(tanh_x_half, one));
+        
+        // Store the results
+        _mm256_storeu_ps(output + i, result);
     }
     
     // Handle remaining elements
     for (; i < n; i++) {
-        result[i] = a[i] + b[i];
+        output[i] = 1.0f / (1.0f + std::exp(-input[i]));
     }
 }
+#endif
 
-void vector_mul_neon_f32(float* result, const float* a, const float* b, size_t n) {
+// SIMD-optimized sigmoid activation function (NEON)
+#if defined(CCSM_HAVE_NEON)
+void sigmoid_neon(float* output, const float* input, size_t n) {
+    // Constants for sigmoid approximation
+    const float32x4_t one = vdupq_n_f32(1.0f);
+    const float32x4_t half = vdupq_n_f32(0.5f);
+    
+    // Process 4 elements at a time (NEON register width)
     size_t i = 0;
-    // Process 4 floats at a time (128-bit vectors)
-    for (; i + 3 < n; i += 4) {
-        float32x4_t va = vld1q_f32(a + i);
-        float32x4_t vb = vld1q_f32(b + i);
-        float32x4_t vresult = vmulq_f32(va, vb);
-        vst1q_f32(result + i, vresult);
+    for (; i + 4 <= n; i += 4) {
+        // Load 4 input values
+        float32x4_t x = vld1q_f32(input + i);
+        
+        // Compute sigmoid using an approximation
+        // 0.5 * (tanh(x/2) + 1)
+        
+        // Compute x/2
+        float32x4_t x_half = vmulq_f32(x, half);
+        
+        // Compute tanh(x/2) using rational approximation
+        // tanh(x) = x * (27 + x^2) / (27 + 9 * x^2)
+        float32x4_t x2 = vmulq_f32(x_half, x_half);
+        
+        float32x4_t num = vmulq_f32(x_half, vaddq_f32(vdupq_n_f32(27.0f), x2));
+        float32x4_t den = vaddq_f32(vdupq_n_f32(27.0f), vmulq_f32(vdupq_n_f32(9.0f), x2));
+        float32x4_t tanh_x_half = vdivq_f32(num, den);
+        
+        // Compute sigmoid: 0.5 * (tanh(x/2) + 1)
+        float32x4_t result = vmulq_f32(half, vaddq_f32(tanh_x_half, one));
+        
+        // Store the results
+        vst1q_f32(output + i, result);
     }
     
     // Handle remaining elements
     for (; i < n; i++) {
-        result[i] = a[i] * b[i];
+        output[i] = 1.0f / (1.0f + std::exp(-input[i]));
+    }
+}
+#endif
+
+// Scalar implementation of sigmoid activation function
+void sigmoid_scalar(float* output, const float* input, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        output[i] = 1.0f / (1.0f + std::exp(-input[i]));
     }
 }
 
-void vector_scale_neon_f32(float* result, const float* a, float scalar, size_t n) {
-    size_t i = 0;
-    float32x4_t vscalar = vdupq_n_f32(scalar);
+// SIMD-optimized SiLU activation function (AVX)
+#if defined(CCSM_HAVE_AVX)
+void silu_avx(float* output, const float* input, size_t n) {
+    // Constants for sigmoid approximation
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 half = _mm256_set1_ps(0.5f);
     
-    // Process 4 floats at a time (128-bit vectors)
-    for (; i + 3 < n; i += 4) {
-        float32x4_t va = vld1q_f32(a + i);
-        float32x4_t vresult = vmulq_f32(va, vscalar);
-        vst1q_f32(result + i, vresult);
+    // Process 8 elements at a time (AVX register width)
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        // Load 8 input values
+        __m256 x = _mm256_loadu_ps(input + i);
+        
+        // Compute sigmoid: 1.0f / (1.0f + exp(-x))
+        // AVX doesn't have exp directly, so we use the following approximation:
+        // 0.5 * (tanh(x/2) + 1)
+        
+        // Compute x/2
+        __m256 x_half = _mm256_mul_ps(x, half);
+        
+        // Compute tanh(x/2) using rational approximation
+        // tanh(x) = x * (27 + x^2) / (27 + 9 * x^2)
+        __m256 x2 = _mm256_mul_ps(x_half, x_half);
+        
+        __m256 num = _mm256_mul_ps(x_half, _mm256_add_ps(_mm256_set1_ps(27.0f), x2));
+        __m256 den = _mm256_add_ps(_mm256_set1_ps(27.0f), _mm256_mul_ps(_mm256_set1_ps(9.0f), x2));
+        __m256 tanh_x_half = _mm256_div_ps(num, den);
+        
+        // Compute sigmoid: 0.5 * (tanh(x/2) + 1)
+        __m256 sigmoid = _mm256_mul_ps(half, _mm256_add_ps(tanh_x_half, one));
+        
+        // Compute SiLU: x * sigmoid(x)
+        __m256 result = _mm256_mul_ps(x, sigmoid);
+        
+        // Store the results
+        _mm256_storeu_ps(output + i, result);
     }
     
     // Handle remaining elements
     for (; i < n; i++) {
-        result[i] = a[i] * scalar;
+        float sigmoid = 1.0f / (1.0f + std::exp(-input[i]));
+        output[i] = input[i] * sigmoid;
     }
 }
+#endif
 
-float vector_dot_neon_f32(const float* a, const float* b, size_t n) {
-    float32x4_t v_sum = vdupq_n_f32(0.0f);
+// SIMD-optimized SiLU activation function (NEON)
+#if defined(CCSM_HAVE_NEON)
+void silu_neon(float* output, const float* input, size_t n) {
+    // Constants for sigmoid approximation
+    const float32x4_t one = vdupq_n_f32(1.0f);
+    const float32x4_t half = vdupq_n_f32(0.5f);
+    
+    // Process 4 elements at a time (NEON register width)
     size_t i = 0;
-    
-    // Process 4 floats at a time (128-bit vectors)
-    for (; i + 3 < n; i += 4) {
-        float32x4_t va = vld1q_f32(a + i);
-        float32x4_t vb = vld1q_f32(b + i);
-        v_sum = vmlaq_f32(v_sum, va, vb); // v_sum += va * vb
+    for (; i + 4 <= n; i += 4) {
+        // Load 4 input values
+        float32x4_t x = vld1q_f32(input + i);
+        
+        // Compute sigmoid using an approximation
+        // 0.5 * (tanh(x/2) + 1)
+        
+        // Compute x/2
+        float32x4_t x_half = vmulq_f32(x, half);
+        
+        // Compute tanh(x/2) using rational approximation
+        // tanh(x) = x * (27 + x^2) / (27 + 9 * x^2)
+        float32x4_t x2 = vmulq_f32(x_half, x_half);
+        
+        float32x4_t num = vmulq_f32(x_half, vaddq_f32(vdupq_n_f32(27.0f), x2));
+        float32x4_t den = vaddq_f32(vdupq_n_f32(27.0f), vmulq_f32(vdupq_n_f32(9.0f), x2));
+        float32x4_t tanh_x_half = vdivq_f32(num, den);
+        
+        // Compute sigmoid: 0.5 * (tanh(x/2) + 1)
+        float32x4_t sigmoid = vmulq_f32(half, vaddq_f32(tanh_x_half, one));
+        
+        // Compute SiLU: x * sigmoid(x)
+        float32x4_t result = vmulq_f32(x, sigmoid);
+        
+        // Store the results
+        vst1q_f32(output + i, result);
     }
-    
-    // Horizontally add the four elements of v_sum
-    float32x2_t v_sum_half = vadd_f32(vget_low_f32(v_sum), vget_high_f32(v_sum));
-    v_sum_half = vpadd_f32(v_sum_half, v_sum_half); // Pair-wise add
-    float sum = vget_lane_f32(v_sum_half, 0);
     
     // Handle remaining elements
     for (; i < n; i++) {
-        sum += a[i] * b[i];
+        float sigmoid = 1.0f / (1.0f + std::exp(-input[i]));
+        output[i] = input[i] * sigmoid;
     }
-    
-    return sum;
 }
+#endif
 
-void vector_gt_mask_neon_f32(float* result, const float* a, const float* b, size_t n) {
-    size_t i = 0;
-    
-    // Process 4 floats at a time (128-bit vectors)
-    for (; i + 3 < n; i += 4) {
-        float32x4_t va = vld1q_f32(a + i);
-        float32x4_t vb = vld1q_f32(b + i);
-        uint32x4_t vcmp = vcgtq_f32(va, vb); // Compare greater than (a > b)
-        float32x4_t vresult = vreinterpretq_f32_u32(vcmp); // Convert mask to float (0.0 or -1.0)
-        vresult = vabsq_f32(vresult); // Convert -1.0 to 1.0
-        vst1q_f32(result + i, vresult);
-    }
-    
-    // Handle remaining elements
-    for (; i < n; i++) {
-        result[i] = (a[i] > b[i]) ? 1.0f : 0.0f;
+// Scalar implementation of SiLU activation function
+void silu_scalar(float* output, const float* input, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        float sigmoid = 1.0f / (1.0f + std::exp(-input[i]));
+        output[i] = input[i] * sigmoid;
     }
 }
 
-// Activation functions
-void relu_neon_f32(float* output, const float* input, size_t n) {
-    size_t i = 0;
-    float32x4_t vzero = vdupq_n_f32(0.0f);
+// SIMD-optimized ReLU activation function (AVX)
+#if defined(CCSM_HAVE_AVX)
+void relu_avx(float* output, const float* input, size_t n) {
+    // Constants for ReLU
+    const __m256 zero = _mm256_setzero_ps();
     
-    // Process 4 floats at a time (128-bit vectors)
-    for (; i + 3 < n; i += 4) {
-        float32x4_t vinput = vld1q_f32(input + i);
-        float32x4_t vresult = vmaxq_f32(vinput, vzero); // max(input, 0)
-        vst1q_f32(output + i, vresult);
+    // Process 8 elements at a time (AVX register width)
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        // Load 8 input values
+        __m256 x = _mm256_loadu_ps(input + i);
+        
+        // Compute ReLU: max(0, x)
+        __m256 result = _mm256_max_ps(zero, x);
+        
+        // Store the results
+        _mm256_storeu_ps(output + i, result);
     }
     
     // Handle remaining elements
@@ -2034,590 +346,518 @@ void relu_neon_f32(float* output, const float* input, size_t n) {
         output[i] = std::max(0.0f, input[i]);
     }
 }
+#endif
 
-// SiLU (Sigmoid Linear Unit) activation function: x * sigmoid(x)
-void silu_neon_f32(float* output, const float* input, size_t n) {
-    size_t i = 0;
-    float32x4_t vone = vdupq_n_f32(1.0f);
+// SIMD-optimized ReLU activation function (NEON)
+#if defined(CCSM_HAVE_NEON)
+void relu_neon(float* output, const float* input, size_t n) {
+    // Constants for ReLU
+    const float32x4_t zero = vdupq_n_f32(0.0f);
     
-    // Process 4 floats at a time (128-bit vectors)
-    for (; i + 3 < n; i += 4) {
-        float32x4_t vinput = vld1q_f32(input + i);
+    // Process 4 elements at a time (NEON register width)
+    size_t i = 0;
+    for (; i + 4 <= n; i += 4) {
+        // Load 4 input values
+        float32x4_t x = vld1q_f32(input + i);
         
-        // Fast approximation of sigmoid: 1 / (1 + exp(-x))
-        // We'll use a simple approximation: 0.5 * tanh(0.5 * x) + 0.5
-        // Alternatively, you could use a more accurate but more expensive implementation
-        float32x4_t vneg = vnegq_f32(vinput);
-        float32x4_t vexp = exp_ps_f32(vneg); // Fast exp approximation
-        float32x4_t vdenom = vaddq_f32(vone, vexp);
-        float32x4_t vsigmoid = vdivq_f32(vone, vdenom);
+        // Compute ReLU: max(0, x)
+        float32x4_t result = vmaxq_f32(zero, x);
         
-        // x * sigmoid(x)
-        float32x4_t vresult = vmulq_f32(vinput, vsigmoid);
-        vst1q_f32(output + i, vresult);
+        // Store the results
+        vst1q_f32(output + i, result);
     }
     
     // Handle remaining elements
     for (; i < n; i++) {
-        // Standard sigmoid implementation
-        float sigmoid = 1.0f / (1.0f + std::exp(-input[i]));
-        output[i] = input[i] * sigmoid;
+        output[i] = std::max(0.0f, input[i]);
+    }
+}
+#endif
+
+// Scalar implementation of ReLU activation function
+void relu_scalar(float* output, const float* input, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        output[i] = std::max(0.0f, input[i]);
     }
 }
 
-// Helper function for fast exp approximation in NEON
-static float32x4_t exp_ps_f32(float32x4_t x) {
-    // Clamp input to avoid overflow
-    float32x4_t max_val = vdupq_n_f32(88.3762626647949f); // log(FLT_MAX)
-    float32x4_t min_val = vdupq_n_f32(-88.3762626647949f); // log(FLT_MIN)
-    x = vminq_f32(vmaxq_f32(x, min_val), max_val);
+// Fused RMSNorm + SiLU implementation (AVX)
+#if defined(CCSM_HAVE_AVX)
+void rms_norm_silu_avx(float* output, const float* input, const float* weight, size_t n, float eps) {
+    // Constants
+    const __m256 eps_vec = _mm256_set1_ps(eps);
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 half = _mm256_set1_ps(0.5f);
     
-    // Constants for exp approximation
-    float32x4_t one = vdupq_n_f32(1.0f);
-    float32x4_t c1 = vdupq_n_f32(0.693147181f); // ln(2)
-    float32x4_t c2 = vdupq_n_f32(1.4426950408889634f); // 1/ln(2)
-    
-    // Approximate exp(x) using exp(x) = 2^(x / ln(2))
-    float32x4_t y = vmulq_f32(x, c2);
-    
-    // Get integer part
-    int32x4_t ipart = vcvtq_s32_f32(y);
-    float32x4_t fpart = vsubq_f32(y, vcvtq_f32_s32(ipart));
-    
-    // Calculate 2^fpart using polynomial approximation
-    float32x4_t poly = vaddq_f32(one, 
-                       vmulq_f32(fpart, 
-                       vaddq_f32(vdupq_n_f32(0.6931471805599453f), 
-                       vmulq_f32(fpart, 
-                       vaddq_f32(vdupq_n_f32(0.2402265069591006f), 
-                       vmulq_f32(fpart, 
-                       vdupq_n_f32(0.05550410866482158f)))))));
-    
-    // Convert 2^ipart to float using bit manipulation
-    int32x4_t shifted = vaddq_s32(vshlq_n_s32(ipart, 23), vdupq_n_s32(127 << 23));
-    float32x4_t result = vmulq_f32(poly, vreinterpretq_f32_s32(shifted));
-    
-    return result;
-}
-
-void softmax_neon_f32(float* output, const float* input, size_t n) {
-    // First, find the maximum value for numerical stability
-    float max_val = input[0];
-    for (size_t i = 1; i < n; i++) {
-        max_val = std::max(max_val, input[i]);
-    }
-    
-    float32x4_t vmax = vdupq_n_f32(max_val);
-    float sum = 0.0f;
+    // First pass: calculate sum of squares
+    __m256 sum_sq = _mm256_setzero_ps();
     size_t i = 0;
     
-    // Compute exp(x - max) for each element and sum
-    for (; i + 3 < n; i += 4) {
-        float32x4_t vin = vld1q_f32(input + i);
-        float32x4_t vshifted = vsubq_f32(vin, vmax);
-        float32x4_t vexp = exp_ps_f32(vshifted);
-        vst1q_f32(output + i, vexp);
+    for (; i + 8 <= n; i += 8) {
+        __m256 x = _mm256_loadu_ps(input + i);
+        sum_sq = _mm256_add_ps(sum_sq, _mm256_mul_ps(x, x));
+    }
+    
+    // Horizontal sum of sum_sq
+    __m256 hsum = _mm256_hadd_ps(sum_sq, sum_sq);
+    hsum = _mm256_hadd_ps(hsum, hsum);
+    
+    // Extract the sum from the first and fifth elements
+    float sum_squares = _mm256_cvtss_f32(hsum) + _mm256_cvtss_f32(_mm256_permute_ps(hsum, 0x01));
+    
+    // Handle remaining elements with scalar code
+    for (; i < n; i++) {
+        sum_squares += input[i] * input[i];
+    }
+    
+    // Calculate normalization factor
+    float scale = 1.0f / std::sqrt(sum_squares / n + eps);
+    __m256 scale_vec = _mm256_set1_ps(scale);
+    
+    // Second pass: apply RMSNorm and SiLU
+    i = 0;
+    for (; i + 8 <= n; i += 8) {
+        // Load input and weights
+        __m256 x = _mm256_loadu_ps(input + i);
+        __m256 w = _mm256_loadu_ps(weight + i);
         
-        // Accumulate sum
-        sum += vgetq_lane_f32(vexp, 0) + vgetq_lane_f32(vexp, 1) + 
-               vgetq_lane_f32(vexp, 2) + vgetq_lane_f32(vexp, 3);
+        // Apply RMSNorm: x * scale * weight
+        __m256 normalized = _mm256_mul_ps(_mm256_mul_ps(x, scale_vec), w);
+        
+        // Compute sigmoid for SiLU
+        // Using approximation: 0.5 * (tanh(x/2) + 1)
+        __m256 x_half = _mm256_mul_ps(normalized, half);
+        __m256 x2 = _mm256_mul_ps(x_half, x_half);
+        
+        __m256 num = _mm256_mul_ps(x_half, _mm256_add_ps(_mm256_set1_ps(27.0f), x2));
+        __m256 den = _mm256_add_ps(_mm256_set1_ps(27.0f), _mm256_mul_ps(_mm256_set1_ps(9.0f), x2));
+        __m256 tanh_x_half = _mm256_div_ps(num, den);
+        
+        __m256 sigmoid = _mm256_mul_ps(half, _mm256_add_ps(tanh_x_half, one));
+        
+        // Apply SiLU: x * sigmoid(x)
+        __m256 result = _mm256_mul_ps(normalized, sigmoid);
+        
+        // Store result
+        _mm256_storeu_ps(output + i, result);
     }
     
-    // Handle remaining elements
+    // Handle remaining elements with scalar code
     for (; i < n; i++) {
-        float ex = std::exp(input[i] - max_val);
-        output[i] = ex;
-        sum += ex;
+        float normalized = input[i] * scale * weight[i];
+        float sigmoid = 1.0f / (1.0f + std::exp(-normalized));
+        output[i] = normalized * sigmoid;
+    }
+}
+#endif
+
+// Fused RMSNorm + SiLU implementation (NEON)
+#if defined(CCSM_HAVE_NEON)
+void rms_norm_silu_neon(float* output, const float* input, const float* weight, size_t n, float eps) {
+    // Constants
+    const float32x4_t eps_vec = vdupq_n_f32(eps);
+    const float32x4_t one = vdupq_n_f32(1.0f);
+    const float32x4_t half = vdupq_n_f32(0.5f);
+    
+    // First pass: calculate sum of squares
+    float32x4_t sum_sq = vdupq_n_f32(0.0f);
+    size_t i = 0;
+    
+    for (; i + 4 <= n; i += 4) {
+        float32x4_t x = vld1q_f32(input + i);
+        sum_sq = vaddq_f32(sum_sq, vmulq_f32(x, x));
     }
     
-    // Normalize by the sum
-    float32x4_t vsum = vdupq_n_f32(1.0f / sum);
-    for (i = 0; i + 3 < n; i += 4) {
-        float32x4_t vout = vld1q_f32(output + i);
-        vout = vmulq_f32(vout, vsum);
-        vst1q_f32(output + i, vout);
-    }
+    // Horizontal sum of sum_sq
+    float32x2_t sum_sq_2 = vadd_f32(vget_low_f32(sum_sq), vget_high_f32(sum_sq));
+    sum_sq_2 = vpadd_f32(sum_sq_2, sum_sq_2);
     
-    // Handle remaining elements
+    // Extract the sum
+    float sum_squares = vget_lane_f32(sum_sq_2, 0);
+    
+    // Handle remaining elements with scalar code
     for (; i < n; i++) {
-        output[i] /= sum;
+        sum_squares += input[i] * input[i];
+    }
+    
+    // Calculate normalization factor
+    float scale = 1.0f / std::sqrt(sum_squares / n + eps);
+    float32x4_t scale_vec = vdupq_n_f32(scale);
+    
+    // Second pass: apply RMSNorm and SiLU
+    i = 0;
+    for (; i + 4 <= n; i += 4) {
+        // Load input and weights
+        float32x4_t x = vld1q_f32(input + i);
+        float32x4_t w = vld1q_f32(weight + i);
+        
+        // Apply RMSNorm: x * scale * weight
+        float32x4_t normalized = vmulq_f32(vmulq_f32(x, scale_vec), w);
+        
+        // Compute sigmoid for SiLU
+        // Using approximation: 0.5 * (tanh(x/2) + 1)
+        float32x4_t x_half = vmulq_f32(normalized, half);
+        float32x4_t x2 = vmulq_f32(x_half, x_half);
+        
+        float32x4_t num = vmulq_f32(x_half, vaddq_f32(vdupq_n_f32(27.0f), x2));
+        float32x4_t den = vaddq_f32(vdupq_n_f32(27.0f), vmulq_f32(vdupq_n_f32(9.0f), x2));
+        float32x4_t tanh_x_half = vdivq_f32(num, den);
+        
+        float32x4_t sigmoid = vmulq_f32(half, vaddq_f32(tanh_x_half, one));
+        
+        // Apply SiLU: x * sigmoid(x)
+        float32x4_t result = vmulq_f32(normalized, sigmoid);
+        
+        // Store result
+        vst1q_f32(output + i, result);
+    }
+    
+    // Handle remaining elements with scalar code
+    for (; i < n; i++) {
+        float normalized = input[i] * scale * weight[i];
+        float sigmoid = 1.0f / (1.0f + std::exp(-normalized));
+        output[i] = normalized * sigmoid;
+    }
+}
+#endif
+
+// Scalar implementation of fused RMSNorm + SiLU
+void rms_norm_silu_scalar(float* output, const float* input, const float* weight, size_t n, float eps) {
+    // First pass: calculate sum of squares
+    float sum_squares = 0.0f;
+    for (size_t i = 0; i < n; i++) {
+        sum_squares += input[i] * input[i];
+    }
+    
+    // Calculate normalization factor
+    float scale = 1.0f / std::sqrt(sum_squares / n + eps);
+    
+    // Second pass: apply RMSNorm and SiLU
+    for (size_t i = 0; i < n; i++) {
+        float normalized = input[i] * scale * weight[i];
+        float sigmoid = 1.0f / (1.0f + std::exp(-normalized));
+        output[i] = normalized * sigmoid;
     }
 }
 
-void rms_norm_neon_f32(float* output, const float* input, const float* weight, float epsilon, size_t n) {
-    // Compute squared sum
-    float32x4_t vsum = vdupq_n_f32(0.0f);
+// SIMD-optimized layer normalization + ReLU implementation (AVX)
+#if defined(CCSM_HAVE_AVX)
+void layer_norm_relu_avx(float* output, const float* input, const float* gamma, const float* beta, size_t n, float eps) {
+    // Constants
+    const __m256 eps_vec = _mm256_set1_ps(eps);
+    const __m256 zero = _mm256_setzero_ps();
+    
+    // First pass: calculate mean
+    __m256 sum = _mm256_setzero_ps();
     size_t i = 0;
     
-    for (; i + 3 < n; i += 4) {
-        float32x4_t vin = vld1q_f32(input + i);
-        vsum = vmlaq_f32(vsum, vin, vin); // vsum += vin * vin
+    for (; i + 8 <= n; i += 8) {
+        __m256 x = _mm256_loadu_ps(input + i);
+        sum = _mm256_add_ps(sum, x);
     }
     
-    // Reduce vsum to a single value
-    float32x2_t vsum_half = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
-    vsum_half = vpadd_f32(vsum_half, vsum_half); // Pair-wise add
-    float sum = vget_lane_f32(vsum_half, 0);
+    // Horizontal sum
+    __m256 hsum = _mm256_hadd_ps(sum, sum);
+    hsum = _mm256_hadd_ps(hsum, hsum);
     
-    // Add remaining elements
+    // Extract the sum from the first and fifth elements
+    float sum_all = _mm256_cvtss_f32(hsum) + _mm256_cvtss_f32(_mm256_permute_ps(hsum, 0x01));
+    
+    // Handle remaining elements with scalar code
     for (; i < n; i++) {
-        sum += input[i] * input[i];
+        sum_all += input[i];
     }
     
-    // Compute RMS
-    float rms = 1.0f / std::sqrt(sum / n + epsilon);
-    float32x4_t vrms = vdupq_n_f32(rms);
+    // Calculate mean
+    float mean = sum_all / n;
+    __m256 mean_vec = _mm256_set1_ps(mean);
     
-    // Normalize and apply weights
-    for (i = 0; i + 3 < n; i += 4) {
-        float32x4_t vin = vld1q_f32(input + i);
-        float32x4_t vw = vld1q_f32(weight + i);
-        float32x4_t vnorm = vmulq_f32(vin, vrms);
-        float32x4_t vout = vmulq_f32(vnorm, vw);
-        vst1q_f32(output + i, vout);
+    // Second pass: calculate variance
+    __m256 var_sum = _mm256_setzero_ps();
+    i = 0;
+    
+    for (; i + 8 <= n; i += 8) {
+        __m256 x = _mm256_loadu_ps(input + i);
+        __m256 diff = _mm256_sub_ps(x, mean_vec);
+        var_sum = _mm256_add_ps(var_sum, _mm256_mul_ps(diff, diff));
     }
     
-    // Handle remaining elements
-    for (; i < n; i++) {
-        output[i] = input[i] * rms * weight[i];
-    }
-}
-
-void layer_norm_neon_f32(float* output, const float* input, const float* weight, const float* bias, float epsilon, size_t n) {
-    // Compute mean
-    float32x4_t vsum = vdupq_n_f32(0.0f);
-    size_t i = 0;
+    // Horizontal sum for variance
+    __m256 hvar = _mm256_hadd_ps(var_sum, var_sum);
+    hvar = _mm256_hadd_ps(hvar, hvar);
     
-    for (; i + 3 < n; i += 4) {
-        float32x4_t vin = vld1q_f32(input + i);
-        vsum = vaddq_f32(vsum, vin);
-    }
+    // Extract the variance sum
+    float var_sum_all = _mm256_cvtss_f32(hvar) + _mm256_cvtss_f32(_mm256_permute_ps(hvar, 0x01));
     
-    // Reduce vsum to a single value
-    float32x2_t vsum_half = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
-    vsum_half = vpadd_f32(vsum_half, vsum_half); // Pair-wise add
-    float sum = vget_lane_f32(vsum_half, 0);
-    
-    // Add remaining elements
-    for (; i < n; i++) {
-        sum += input[i];
-    }
-    
-    float mean = sum / n;
-    float32x4_t vmean = vdupq_n_f32(mean);
-    
-    // Compute variance
-    float32x4_t vvar = vdupq_n_f32(0.0f);
-    for (i = 0; i + 3 < n; i += 4) {
-        float32x4_t vin = vld1q_f32(input + i);
-        float32x4_t vdiff = vsubq_f32(vin, vmean);
-        vvar = vmlaq_f32(vvar, vdiff, vdiff); // vvar += vdiff * vdiff
-    }
-    
-    // Reduce vvar to a single value
-    float32x2_t vvar_half = vadd_f32(vget_low_f32(vvar), vget_high_f32(vvar));
-    vvar_half = vpadd_f32(vvar_half, vvar_half); // Pair-wise add
-    float var = vget_lane_f32(vvar_half, 0);
-    
-    // Add remaining elements to variance
+    // Handle remaining elements for variance calculation
     for (; i < n; i++) {
         float diff = input[i] - mean;
-        var += diff * diff;
+        var_sum_all += diff * diff;
     }
     
-    var /= n;
-    float scale = 1.0f / std::sqrt(var + epsilon);
-    float32x4_t vscale = vdupq_n_f32(scale);
+    // Calculate standard deviation
+    float var = var_sum_all / n;
+    float std_dev = std::sqrt(var + eps);
+    __m256 inv_std_dev = _mm256_set1_ps(1.0f / std_dev);
     
-    // Normalize, scale, and add bias
-    for (i = 0; i + 3 < n; i += 4) {
-        float32x4_t vin = vld1q_f32(input + i);
-        float32x4_t vw = vld1q_f32(weight + i);
-        float32x4_t vb = vld1q_f32(bias + i);
-        float32x4_t vnorm = vmulq_f32(vsubq_f32(vin, vmean), vscale);
-        float32x4_t vout = vmlaq_f32(vb, vnorm, vw); // vout = vb + vnorm * vw
-        vst1q_f32(output + i, vout);
+    // Third pass: normalize, scale, shift, and apply ReLU
+    i = 0;
+    for (; i + 8 <= n; i += 8) {
+        // Load input and normalization parameters
+        __m256 x = _mm256_loadu_ps(input + i);
+        __m256 g = _mm256_loadu_ps(gamma + i);
+        __m256 b = _mm256_loadu_ps(beta + i);
+        
+        // Normalize: (x - mean) / std_dev
+        __m256 normalized = _mm256_mul_ps(_mm256_sub_ps(x, mean_vec), inv_std_dev);
+        
+        // Scale and shift: gamma * normalized + beta
+        __m256 scaled_shifted = _mm256_add_ps(_mm256_mul_ps(normalized, g), b);
+        
+        // Apply ReLU: max(0, x)
+        __m256 result = _mm256_max_ps(zero, scaled_shifted);
+        
+        // Store result
+        _mm256_storeu_ps(output + i, result);
     }
     
-    // Handle remaining elements
+    // Handle remaining elements with scalar code
     for (; i < n; i++) {
-        output[i] = ((input[i] - mean) * scale) * weight[i] + bias[i];
+        float normalized = (input[i] - mean) / std_dev;
+        float scaled_shifted = gamma[i] * normalized + beta[i];
+        output[i] = std::max(0.0f, scaled_shifted);
     }
 }
+#endif
 
-void attention_neon_f32(
-    float* output,              // [batch_size, seq_len, head_size]
-    const float* query,         // [batch_size, seq_len, num_heads, head_size]
-    const float* key,           // [batch_size, seq_len, num_heads, head_size]
-    const float* value,         // [batch_size, seq_len, num_heads, head_size]
-    const float* mask,          // [batch_size, 1, 1, seq_len] or nullptr
-    size_t batch_size,
-    size_t seq_len,
-    size_t num_heads,
-    size_t head_size,
-    float scale                 // Scaling factor (typically 1/sqrt(head_size))
-) {
-    // Use exactly the scalar implementation from the test for maximum compatibility
-    // This is a direct port of the test code with minimal SIMD optimizations
+// SIMD-optimized layer normalization + ReLU implementation (NEON)
+#if defined(CCSM_HAVE_NEON)
+void layer_norm_relu_neon(float* output, const float* input, const float* gamma, const float* beta, size_t n, float eps) {
+    // Constants
+    const float32x4_t eps_vec = vdupq_n_f32(eps);
+    const float32x4_t zero = vdupq_n_f32(0.0f);
     
-    // For each batch and head
-    for (size_t b = 0; b < batch_size; b++) {
-        for (size_t h = 0; h < num_heads; h++) {
-            // Compute QK^T attention scores
-            std::vector<float> scores(seq_len * seq_len);
-            for (size_t i = 0; i < seq_len; i++) {
-                for (size_t j = 0; j < seq_len; j++) {
-                    // Get pointers to query and key vectors
-                    const float* q_ptr = query + ((b * seq_len + i) * num_heads + h) * head_size;
-                    const float* k_ptr = key + ((b * seq_len + j) * num_heads + h) * head_size;
-                    
-                    // Compute dot product using NEON
-                    float32x4_t vdot = vdupq_n_f32(0.0f);
-                    size_t k = 0;
-                    
-                    for (; k + 3 < head_size; k += 4) {
-                        float32x4_t vq = vld1q_f32(q_ptr + k);
-                        float32x4_t vk = vld1q_f32(k_ptr + k);
-                        vdot = vmlaq_f32(vdot, vq, vk);
-                    }
-                    
-                    // Reduce to scalar
-                    float32x2_t vsum = vadd_f32(vget_low_f32(vdot), vget_high_f32(vdot));
-                    vsum = vpadd_f32(vsum, vsum);
-                    float dot = vget_lane_f32(vsum, 0);
-                    
-                    // Process remaining elements
-                    for (; k < head_size; k++) {
-                        dot += q_ptr[k] * k_ptr[k];
-                    }
-                    
-                    // Apply scaling and store
-                    scores[i * seq_len + j] = dot * scale;
-                    
-                    // Apply mask if needed (causal masking)
-                    if (mask != nullptr && (j > i || mask[b * seq_len + j] == 0)) {
-                        scores[i * seq_len + j] = -std::numeric_limits<float>::infinity();
-                    }
-                }
-            }
-            
-            // Apply softmax to get attention probabilities
-            std::vector<float> probs(seq_len * seq_len);
-            for (size_t i = 0; i < seq_len; i++) {
-                // Find max for numerical stability
-                float max_val = -std::numeric_limits<float>::infinity();
-                for (size_t j = 0; j < seq_len; j++) {
-                    max_val = std::max(max_val, scores[i * seq_len + j]);
-                }
-                
-                // Compute exp and sum
-                float sum_exp = 0.0f;
-                for (size_t j = 0; j < seq_len; j++) {
-                    float score = scores[i * seq_len + j];
-                    float exp_val = 0.0f;
-                    
-                    if (std::isinf(score) && score < 0) {
-                        exp_val = 0.0f;
-                    } else {
-                        exp_val = std::exp(score - max_val);
-                    }
-                    
-                    probs[i * seq_len + j] = exp_val;
-                    sum_exp += exp_val;
-                }
-                
-                // Normalize probabilities
-                float inv_sum = (sum_exp > 0.0f) ? (1.0f / sum_exp) : 0.0f;
-                for (size_t j = 0; j < seq_len; j++) {
-                    probs[i * seq_len + j] *= inv_sum;
-                }
-            }
-            
-            // Apply attention probabilities to values
-            for (size_t i = 0; i < seq_len; i++) {
-                for (size_t d = 0; d < head_size; d++) {
-                    float sum = 0.0f;
-                    for (size_t j = 0; j < seq_len; j++) {
-                        size_t v_idx = ((b * seq_len + j) * num_heads + h) * head_size + d;
-                        sum += probs[i * seq_len + j] * value[v_idx];
-                    }
-                    
-                    size_t out_idx = (b * seq_len + i) * head_size + d;
-                    output[out_idx] = sum;
-                }
-            }
-        }
+    // First pass: calculate mean
+    float32x4_t sum = vdupq_n_f32(0.0f);
+    size_t i = 0;
+    
+    for (; i + 4 <= n; i += 4) {
+        float32x4_t x = vld1q_f32(input + i);
+        sum = vaddq_f32(sum, x);
+    }
+    
+    // Horizontal sum
+    float32x2_t sum_2 = vadd_f32(vget_low_f32(sum), vget_high_f32(sum));
+    sum_2 = vpadd_f32(sum_2, sum_2);
+    
+    // Extract the sum
+    float sum_all = vget_lane_f32(sum_2, 0);
+    
+    // Handle remaining elements with scalar code
+    for (; i < n; i++) {
+        sum_all += input[i];
+    }
+    
+    // Calculate mean
+    float mean = sum_all / n;
+    float32x4_t mean_vec = vdupq_n_f32(mean);
+    
+    // Second pass: calculate variance
+    float32x4_t var_sum = vdupq_n_f32(0.0f);
+    i = 0;
+    
+    for (; i + 4 <= n; i += 4) {
+        float32x4_t x = vld1q_f32(input + i);
+        float32x4_t diff = vsubq_f32(x, mean_vec);
+        var_sum = vaddq_f32(var_sum, vmulq_f32(diff, diff));
+    }
+    
+    // Horizontal sum for variance
+    float32x2_t var_sum_2 = vadd_f32(vget_low_f32(var_sum), vget_high_f32(var_sum));
+    var_sum_2 = vpadd_f32(var_sum_2, var_sum_2);
+    
+    // Extract the variance sum
+    float var_sum_all = vget_lane_f32(var_sum_2, 0);
+    
+    // Handle remaining elements for variance calculation
+    for (; i < n; i++) {
+        float diff = input[i] - mean;
+        var_sum_all += diff * diff;
+    }
+    
+    // Calculate standard deviation
+    float var = var_sum_all / n;
+    float std_dev = std::sqrt(var + eps);
+    float32x4_t inv_std_dev = vdupq_n_f32(1.0f / std_dev);
+    
+    // Third pass: normalize, scale, shift, and apply ReLU
+    i = 0;
+    for (; i + 4 <= n; i += 4) {
+        // Load input and normalization parameters
+        float32x4_t x = vld1q_f32(input + i);
+        float32x4_t g = vld1q_f32(gamma + i);
+        float32x4_t b = vld1q_f32(beta + i);
+        
+        // Normalize: (x - mean) / std_dev
+        float32x4_t normalized = vmulq_f32(vsubq_f32(x, mean_vec), inv_std_dev);
+        
+        // Scale and shift: gamma * normalized + beta
+        float32x4_t scaled_shifted = vaddq_f32(vmulq_f32(normalized, g), b);
+        
+        // Apply ReLU: max(0, x)
+        float32x4_t result = vmaxq_f32(zero, scaled_shifted);
+        
+        // Store result
+        vst1q_f32(output + i, result);
+    }
+    
+    // Handle remaining elements with scalar code
+    for (; i < n; i++) {
+        float normalized = (input[i] - mean) / std_dev;
+        float scaled_shifted = gamma[i] * normalized + beta[i];
+        output[i] = std::max(0.0f, scaled_shifted);
+    }
+}
+#endif
+
+// Scalar implementation of layer normalization + ReLU
+void layer_norm_relu_scalar(float* output, const float* input, const float* gamma, const float* beta, size_t n, float eps) {
+    // First pass: calculate mean
+    float sum = 0.0f;
+    for (size_t i = 0; i < n; i++) {
+        sum += input[i];
+    }
+    float mean = sum / n;
+    
+    // Second pass: calculate variance
+    float var_sum = 0.0f;
+    for (size_t i = 0; i < n; i++) {
+        float diff = input[i] - mean;
+        var_sum += diff * diff;
+    }
+    float var = var_sum / n;
+    float std_dev = std::sqrt(var + eps);
+    
+    // Third pass: normalize, scale, shift, and apply ReLU
+    for (size_t i = 0; i < n; i++) {
+        float normalized = (input[i] - mean) / std_dev;
+        float scaled_shifted = gamma[i] * normalized + beta[i];
+        output[i] = std::max(0.0f, scaled_shifted);
     }
 }
 
-// Implement the quantized matrix operations for NEON
-void fused_matmul_relu_q8_0_neon_f32(float* output, const float* a, const int8_t* b, const float* b_scale, 
-                                     size_t m, size_t k, size_t n) {
-    // Multiply a[m,k] * b[k,n] = output[m,n]
+void matrix_mul_mma_f32(float* result, const float* a, const float* b, size_t m, size_t k, size_t n) {
+    // A simple matrix-matrix multiplication implementation
+    // A is mxk, B is kxn, result is mxn
+    
+    // Zero the result matrix
     for (size_t i = 0; i < m; i++) {
         for (size_t j = 0; j < n; j++) {
-            // Compute dot product for this output element
-            const float* a_row = a + i * k;
-            const int8_t* b_col = b + j;
-            
-            float32x4_t vsum = vdupq_n_f32(0.0f);
-            size_t l = 0;
-            
-            // Process 4 elements at a time
-            for (; l + 3 < k; l += 4) {
-                float32x4_t va = vld1q_f32(a_row + l);
-                int8x8_t vb_s8 = vdup_n_s8(0);
-                // Extract 4 values from b
-                vb_s8 = vset_lane_s8(b_col[(l + 0) * n], vb_s8, 0);
-                vb_s8 = vset_lane_s8(b_col[(l + 1) * n], vb_s8, 1);
-                vb_s8 = vset_lane_s8(b_col[(l + 2) * n], vb_s8, 2);
-                vb_s8 = vset_lane_s8(b_col[(l + 3) * n], vb_s8, 3);
-                
-                // Convert int8 to float32
-                int16x8_t vb_s16 = vmovl_s8(vb_s8);
-                int32x4_t vb_s32 = vmovl_s16(vget_low_s16(vb_s16));
-                float32x4_t vb = vcvtq_f32_s32(vb_s32);
-                
-                // Multiply by scale
-                vb = vmulq_n_f32(vb, *b_scale);
-                
-                // Accumulate
-                vsum = vmlaq_f32(vsum, va, vb);
-            }
-            
-            // Reduce to single value
-            float32x2_t vsum_half = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
-            vsum_half = vpadd_f32(vsum_half, vsum_half);
-            float sum = vget_lane_f32(vsum_half, 0);
-            
-            // Process remaining elements
-            for (; l < k; l++) {
-                sum += a_row[l] * (b_col[l * n] * (*b_scale));
-            }
-            
-            // Apply ReLU activation
-            output[i * n + j] = std::max(0.0f, sum);
+            result[i * n + j] = 0.0f;
         }
     }
-}
-
-void fused_matmul_relu_q4_0_neon_f32(float* output, const float* a, const uint8_t* b, const float* b_scale, 
-                                     size_t m, size_t k, size_t n) {
-    // Handle packed 4-bit format
-    const float inv_scale = *b_scale;
     
-    // Multiply a[m,k] * b[k,n] = output[m,n]
+    // Perform matrix multiplication
     for (size_t i = 0; i < m; i++) {
-        for (size_t j = 0; j < n; j++) {
-            float sum = 0.0f;
-            const float* a_row = a + i * k;
-            
-            // Process each input element, unpacking 4-bit values as needed
-            for (size_t l = 0; l < k; l += 2) {
-                const size_t b_idx = (l / 2) * n + j;
-                const uint8_t packed = b[b_idx];
-                
-                // Extract first 4-bit value
-                int8_t val1 = static_cast<int8_t>(packed & 0xF);
-                // Sign extend if the high bit is set
-                if (val1 & 0x8) {
-                    val1 |= 0xF0;
-                }
-                sum += a_row[l] * (val1 * inv_scale);
-                
-                // Extract second 4-bit value if available
-                if (l + 1 < k) {
-                    int8_t val2 = static_cast<int8_t>((packed >> 4) & 0xF);
-                    // Sign extend if the high bit is set
-                    if (val2 & 0x8) {
-                        val2 |= 0xF0;
-                    }
-                    sum += a_row[l + 1] * (val2 * inv_scale);
-                }
+        for (size_t l = 0; l < k; l++) {
+            for (size_t j = 0; j < n; j++) {
+                result[i * n + j] += a[i * k + l] * b[l * n + j];
             }
-            
-            // Apply ReLU activation
-            output[i * n + j] = std::max(0.0f, sum);
-        }
-    }
-}
-
-void fused_matmul_relu_q4_1_neon_f32(float* output, const float* a, const uint8_t* b, const float* b_scale, 
-                                     const float* b_bias, size_t m, size_t k, size_t n) {
-    // Handle packed 4-bit format with bias
-    const float inv_scale = *b_scale; // Note: This is inverse scale (1/scale)
-    const float bias = *b_bias;
-    
-    // Initialize output matrix to zero
-    std::memset(output, 0, sizeof(float) * m * n);
-    
-    // Multiply a[m,k] * b[k,n] = output[m,n]
-    for (size_t i = 0; i < m; i++) {
-        for (size_t j = 0; j < n; j++) {
-            float sum = 0.0f;
-            const float* a_row = a + i * k;
-            
-            for (size_t l = 0; l < k; l++) {
-                // Calculate index for accessing b
-                size_t b_idx = l * n + j;
-                size_t byte_idx = b_idx / 2;
-                bool is_upper = (b_idx % 2) != 0;
-                
-                // Extract the appropriate 4-bit value (unsigned 0-15)
-                uint8_t q4_val;
-                if (is_upper) {
-                    q4_val = (b[byte_idx] >> 4) & 0xF;
-                } else {
-                    q4_val = b[byte_idx] & 0xF;
-                }
-                
-                // Dequantize and multiply
-                float b_val = static_cast<float>(q4_val) * inv_scale + bias;
-                sum += a_row[l] * b_val;
-            }
-            
-            // Apply ReLU activation
-            output[i * n + j] = std::max(0.0f, sum);
-        }
-    }
-}
-
-void fused_matmul_silu_q8_0_neon_f32(float* output, const float* a, const int8_t* b, const float* b_scale, 
-                                     size_t m, size_t k, size_t n) {
-    // Multiply a[m,k] * b[k,n] = output[m,n]
-    for (size_t i = 0; i < m; i++) {
-        for (size_t j = 0; j < n; j++) {
-            // Compute dot product for this output element
-            const float* a_row = a + i * k;
-            const int8_t* b_col = b + j;
-            
-            float32x4_t vsum = vdupq_n_f32(0.0f);
-            size_t l = 0;
-            
-            // Process 4 elements at a time
-            for (; l + 3 < k; l += 4) {
-                float32x4_t va = vld1q_f32(a_row + l);
-                int8x8_t vb_s8 = vdup_n_s8(0);
-                // Extract 4 values from b
-                vb_s8 = vset_lane_s8(b_col[(l + 0) * n], vb_s8, 0);
-                vb_s8 = vset_lane_s8(b_col[(l + 1) * n], vb_s8, 1);
-                vb_s8 = vset_lane_s8(b_col[(l + 2) * n], vb_s8, 2);
-                vb_s8 = vset_lane_s8(b_col[(l + 3) * n], vb_s8, 3);
-                
-                // Convert int8 to float32
-                int16x8_t vb_s16 = vmovl_s8(vb_s8);
-                int32x4_t vb_s32 = vmovl_s16(vget_low_s16(vb_s16));
-                float32x4_t vb = vcvtq_f32_s32(vb_s32);
-                
-                // Multiply by scale
-                vb = vmulq_n_f32(vb, *b_scale);
-                
-                // Accumulate
-                vsum = vmlaq_f32(vsum, va, vb);
-            }
-            
-            // Reduce to single value
-            float32x2_t vsum_half = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
-            vsum_half = vpadd_f32(vsum_half, vsum_half);
-            float sum = vget_lane_f32(vsum_half, 0);
-            
-            // Process remaining elements
-            for (; l < k; l++) {
-                sum += a_row[l] * (b_col[l * n] * (*b_scale));
-            }
-            
-            // Apply SiLU activation: x * sigmoid(x)
-            float sigmoid = 1.0f / (1.0f + std::exp(-sum));
-            output[i * n + j] = sum * sigmoid;
-        }
-    }
-}
-
-void fused_matmul_silu_q4_0_neon_f32(float* output, const float* a, const uint8_t* b, const float* b_scale, 
-                                     size_t m, size_t k, size_t n) {
-    // Handle packed 4-bit format
-    const float inv_scale = *b_scale;
-    float32x4_t vone = vdupq_n_f32(1.0f);
-    
-    // Multiply a[m,k] * b[k,n] = output[m,n]
-    for (size_t i = 0; i < m; i++) {
-        for (size_t j = 0; j < n; j++) {
-            float sum = 0.0f;
-            const float* a_row = a + i * k;
-            
-            // Process each input element, unpacking 4-bit values as needed
-            for (size_t l = 0; l < k; l += 2) {
-                const size_t b_idx = (l / 2) * n + j;
-                const uint8_t packed = b[b_idx];
-                
-                // Extract first 4-bit value
-                int8_t val1 = static_cast<int8_t>(packed & 0xF);
-                // Sign extend if the high bit is set
-                if (val1 & 0x8) {
-                    val1 |= 0xF0;
-                }
-                sum += a_row[l] * (val1 * inv_scale);
-                
-                // Extract second 4-bit value if available
-                if (l + 1 < k) {
-                    int8_t val2 = static_cast<int8_t>((packed >> 4) & 0xF);
-                    // Sign extend if the high bit is set
-                    if (val2 & 0x8) {
-                        val2 |= 0xF0;
-                    }
-                    sum += a_row[l + 1] * (val2 * inv_scale);
-                }
-            }
-            
-            // Apply SiLU activation: x * sigmoid(x)
-            float sigmoid = 1.0f / (1.0f + std::exp(-sum));
-            output[i * n + j] = sum * sigmoid;
-        }
-    }
-}
-
-void fused_matmul_silu_q4_1_neon_f32(float* output, const float* a, const uint8_t* b, const float* b_scale, 
-                                     const float* b_bias, size_t m, size_t k, size_t n) {
-    // Handle packed 4-bit format with bias
-    const float inv_scale = *b_scale; // Note: This is inverse scale (1/scale)
-    const float bias = *b_bias;
-    
-    // Initialize output matrix to zero
-    std::memset(output, 0, sizeof(float) * m * n);
-    
-    // Multiply a[m,k] * b[k,n] = output[m,n]
-    for (size_t i = 0; i < m; i++) {
-        for (size_t j = 0; j < n; j++) {
-            float sum = 0.0f;
-            const float* a_row = a + i * k;
-            
-            for (size_t l = 0; l < k; l++) {
-                // Calculate index for accessing b
-                size_t b_idx = l * n + j;
-                size_t byte_idx = b_idx / 2;
-                bool is_upper = (b_idx % 2) != 0;
-                
-                // Extract the appropriate 4-bit value (unsigned 0-15)
-                uint8_t q4_val;
-                if (is_upper) {
-                    q4_val = (b[byte_idx] >> 4) & 0xF;
-                } else {
-                    q4_val = b[byte_idx] & 0xF;
-                }
-                
-                // Dequantize and multiply
-                float b_val = static_cast<float>(q4_val) * inv_scale + bias;
-                sum += a_row[l] * b_val;
-            }
-            
-            // Apply SiLU activation: x * sigmoid(x)
-            float sigmoid = 1.0f / (1.0f + std::exp(-sum));
-            output[i * n + j] = sum * sigmoid;
         }
     }
 }
 
 // Quantized matrix multiplication operation with Q8_0 format
+void matrix_mul_q8_0_scalar(float* result, const float* a, const int8_t* b, const float* b_scale, 
+                           size_t m, size_t k, size_t n) {
+    const float scale = *b_scale;
+    
+    for (size_t i = 0; i < m; i++) {
+        for (size_t j = 0; j < n; j++) {
+            float sum = 0.0f;
+            for (size_t l = 0; l < k; l++) {
+                sum += a[i * k + l] * (static_cast<float>(b[l * n + j]) * scale);
+            }
+            result[i * n + j] = sum;
+        }
+    }
+}
+
+#if defined(CCSM_HAVE_AVX)
+// Implementation for matrix_mul_q8_0 (AVX)
+void matrix_mul_q8_0_avx_f32(float* result, const float* a, const int8_t* b, const float* b_scale, 
+                         size_t m, size_t k, size_t n) {
+    const float scale = *b_scale;
+    
+    // Process each row of the result matrix
+    for (size_t i = 0; i < m; i++) {
+        // Process columns in blocks of 8 (AVX register width)
+        for (size_t j = 0; j < n; j += 8) {
+            // Handle boundary condition
+            size_t block_size = std::min(size_t(8), n - j);
+            
+            // If we don't have a full AVX vector, use scalar code
+            if (block_size < 8) {
+                for (size_t jj = j; jj < j + block_size; jj++) {
+                    float sum = 0.0f;
+                    for (size_t l = 0; l < k; l++) {
+                        sum += a[i * k + l] * (b[l * n + jj] * scale);
+                    }
+                    result[i * n + jj] = sum;
+                }
+                continue;
+            }
+            
+            // Full AVX vector case - process 8 output elements at once
+            __m256 vsum = _mm256_setzero_ps();
+            const float* a_row = a + i * k;
+            
+            // Accumulate dot products for 8 columns
+            for (size_t l = 0; l < k; l++) {
+                // Load a single scalar value from a and broadcast to all elements
+                __m256 va = _mm256_set1_ps(a_row[l]);
+                
+                // Load 8 int8_t values from b, convert to int32, then to float
+                // Note: we're directly accessing the column-wise layout
+                const int8_t* b_ptr = b + l * n + j;
+                
+                // Load 8 int8_t values
+                __m128i b_i8 = _mm_loadl_epi64((__m128i const*)b_ptr);
+                
+                // Sign-extend int8 to int16
+                __m128i b_i16 = _mm_cvtepi8_epi16(b_i8);
+                
+                // Sign-extend low 4 int16 to int32
+                __m128i b_i32_low = _mm_cvtepi16_epi32(b_i16);
+                
+                // Extract high 4 int16 and sign-extend to int32
+                __m128i b_i16_high = _mm_shuffle_epi32(b_i16, 0x0E); // Shuffle to get high 4 elements
+                __m128i b_i32_high = _mm_cvtepi16_epi32(b_i16_high);
+                
+                // Convert int32 to float
+                __m256 vb_f = _mm256_insertf128_ps(
+                    _mm256_castps128_ps256(_mm_cvtepi32_ps(b_i32_low)),
+                    _mm_cvtepi32_ps(b_i32_high),
+                    1
+                );
+                
+                // Apply scale
+                __m256 vscale = _mm256_set1_ps(scale);
+                vb_f = _mm256_mul_ps(vb_f, vscale);
+                
+                // Multiply and accumulate
+                vsum = _mm256_add_ps(vsum, _mm256_mul_ps(va, vb_f));
+            }
+            
+            // Store the accumulated results
+            _mm256_storeu_ps(result + i * n + j, vsum);
+        }
+    }
+}
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+// Implementation for matrix_mul_q8_0 (NEON)
 void matrix_mul_q8_0_neon_f32(float* result, const float* a, const int8_t* b, const float* b_scale, 
                           size_t m, size_t k, size_t n) {
     // Multiply a[m,k] * b[k,n] = result[m,n]
@@ -2628,34 +868,33 @@ void matrix_mul_q8_0_neon_f32(float* result, const float* a, const int8_t* b, co
             float32x4_t vsum = vdupq_n_f32(0.0f);
             size_t l = 0;
             
-            // Process 4 elements at a time
-            for (; l + 3 < k; l += 4) {
+            // Process in blocks of 4
+            for (; l + 4 <= k; l += 4) {
                 float32x4_t va = vld1q_f32(a + i * k + l);
                 
-                // Load quantized values from b
-                int8x8_t vb_s8 = vdup_n_s8(0);
-                // Extract 4 values from b
-                vb_s8 = vset_lane_s8(b[(l + 0) * n + j], vb_s8, 0);
-                vb_s8 = vset_lane_s8(b[(l + 1) * n + j], vb_s8, 1);
-                vb_s8 = vset_lane_s8(b[(l + 2) * n + j], vb_s8, 2);
-                vb_s8 = vset_lane_s8(b[(l + 3) * n + j], vb_s8, 3);
+                // Load and convert 4 int8_t values from B
+                int8x8_t vb = vdup_n_s8(0);
+                vb = vset_lane_s8(b[(l + 0) * n + j], vb, 0);
+                vb = vset_lane_s8(b[(l + 1) * n + j], vb, 1);
+                vb = vset_lane_s8(b[(l + 2) * n + j], vb, 2);
+                vb = vset_lane_s8(b[(l + 3) * n + j], vb, 3);
                 
-                // Convert int8 to float32
-                int16x8_t vb_s16 = vmovl_s8(vb_s8);
-                int32x4_t vb_s32 = vmovl_s16(vget_low_s16(vb_s16));
-                float32x4_t vb = vcvtq_f32_s32(vb_s32);
+                // Convert to int16, then int32, then float32
+                int16x8_t vb16 = vmovl_s8(vb);
+                int32x4_t vb32 = vmovl_s16(vget_low_s16(vb16));
+                float32x4_t vbf = vcvtq_f32_s32(vb32);
                 
-                // Multiply by scale
-                vb = vmulq_n_f32(vb, scale);
+                // Apply scale
+                vbf = vmulq_n_f32(vbf, scale);
                 
-                // Accumulate
-                vsum = vmlaq_f32(vsum, va, vb);
+                // Multiply and accumulate
+                vsum = vmlaq_f32(vsum, va, vbf);
             }
             
-            // Sum up the vector elements
-            float32x2_t vsum_half = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
-            vsum_half = vpadd_f32(vsum_half, vsum_half);
-            float sum = vget_lane_f32(vsum_half, 0);
+            // Horizontal sum
+            float32x2_t vsum2 = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
+            vsum2 = vpadd_f32(vsum2, vsum2);
+            float sum = vget_lane_f32(vsum2, 0);
             
             // Handle remaining elements
             for (; l < k; l++) {
@@ -2666,348 +905,1006 @@ void matrix_mul_q8_0_neon_f32(float* result, const float* a, const int8_t* b, co
         }
     }
 }
+#endif
 
-// Quantized matrix multiplication with Q4_0 format
-void matrix_mul_q4_0_neon_f32(float* result, const float* a, const uint8_t* b, const float* b_scale, 
-                          size_t m, size_t k, size_t n) {
-    // Handle packed 4-bit format
-    const float inv_scale = *b_scale;
+// Scalar implementation for matrix_mul_q4_0
+void matrix_mul_q4_0_scalar(float* result, const float* a, const uint8_t* b, const float* b_scale, 
+                            size_t m, size_t k, size_t n) {
+    const float scale = *b_scale;
     
-    // Multiply a[m,k] * b[k,n] = result[m,n]
     for (size_t i = 0; i < m; i++) {
         for (size_t j = 0; j < n; j++) {
             float sum = 0.0f;
-            const float* a_row = a + i * k;
-            
-            // Process each input element, unpacking 4-bit values as needed
-            for (size_t l = 0; l < k; l += 2) {
-                const size_t b_idx = (l / 2) * n + j;
-                const uint8_t packed = b[b_idx];
-                
-                // Extract first 4-bit value
-                int8_t val1 = static_cast<int8_t>(packed & 0xF);
-                // Sign extend if the high bit is set
-                if (val1 & 0x8) {
-                    val1 |= 0xF0;
-                }
-                sum += a_row[l] * (val1 * inv_scale);
-                
-                // Extract second 4-bit value if available
-                if (l + 1 < k) {
-                    int8_t val2 = static_cast<int8_t>((packed >> 4) & 0xF);
-                    // Sign extend if the high bit is set
-                    if (val2 & 0x8) {
-                        val2 |= 0xF0;
-                    }
-                    sum += a_row[l + 1] * (val2 * inv_scale);
-                }
-            }
-            
-            result[i * n + j] = sum;
-        }
-    }
-}
-
-// Quantized matrix multiplication with Q4_1 format
-void matrix_mul_q4_1_neon_f32(float* result, const float* a, const uint8_t* b, const float* b_scale, 
-                          const float* b_bias, size_t m, size_t k, size_t n) {
-    // Handle packed 4-bit format with bias
-    const float inv_scale = *b_scale; // Note: This is inverse scale (1/scale)
-    const float bias = *b_bias;
-    
-    // Initialize result matrix to zero
-    std::memset(result, 0, sizeof(float) * m * n);
-    
-    // Multiply a[m,k] * b[k,n] = result[m,n]
-    for (size_t i = 0; i < m; i++) {
-        for (size_t j = 0; j < n; j++) {
-            float sum = 0.0f;
-            const float* a_row = a + i * k;
-            
             for (size_t l = 0; l < k; l++) {
                 // Calculate index for accessing b
-                size_t b_idx = l * n + j;
-                size_t byte_idx = b_idx / 2;
-                bool is_upper = (b_idx % 2) != 0;
+                size_t b_idx = (l / 2) * n + j;
+                uint8_t packed = b[b_idx];
                 
-                // Extract the appropriate 4-bit value (unsigned 0-15)
-                uint8_t q4_val;
-                if (is_upper) {
-                    q4_val = (b[byte_idx] >> 4) & 0xF;
+                // Extract appropriate 4-bit value (upper or lower half)
+                int8_t val;
+                if (l % 2 == 0) {
+                    // Lower 4 bits
+                    val = static_cast<int8_t>(packed & 0xF);
+                    // Sign extend if needed
+                    if (val & 0x8) val |= 0xF0;
                 } else {
-                    q4_val = b[byte_idx] & 0xF;
+                    // Upper 4 bits
+                    val = static_cast<int8_t>((packed >> 4) & 0xF);
+                    // Sign extend if needed
+                    if (val & 0x8) val |= 0xF0;
                 }
                 
                 // Dequantize and multiply
-                float b_val = static_cast<float>(q4_val) * inv_scale + bias;
-                sum += a_row[l] * b_val;
+                sum += a[i * k + l] * (val * scale);
             }
-            
             result[i * n + j] = sum;
         }
     }
 }
 
-// Matrix multiplication implementation
-void matrix_mul_neon_f32(float* result, const float* a, const float* b, size_t m, size_t k, size_t n) {
-    // Multiply a[m,k] * b[k,n] = result[m,n]
+#if defined(CCSM_HAVE_AVX)
+// Implementation for matrix_mul_q4_0 (AVX)
+void matrix_mul_q4_0_avx_f32(float* result, const float* a, const uint8_t* b, const float* b_scale, 
+                          size_t m, size_t k, size_t n) {
+    const float scale = *b_scale;
+    
+    // Process each row of the result matrix
     for (size_t i = 0; i < m; i++) {
-        for (size_t j = 0; j < n; j++) {
-            float32x4_t vsum = vdupq_n_f32(0.0f);
-            size_t l = 0;
+        // Process columns in blocks of 8 (AVX register width)
+        for (size_t j = 0; j < n; j += 8) {
+            // Handle boundary condition
+            size_t block_size = std::min(size_t(8), n - j);
             
-            // Process 4 elements at a time
-            for (; l + 3 < k; l += 4) {
-                float32x4_t va = vld1q_f32(a + i * k + l);
-                float32x4_t vb0 = vld1q_f32(b + l * n + j);
+            // If we don't have a full AVX vector, use scalar code
+            if (block_size < 8) {
+                for (size_t jj = j; jj < j + block_size; jj++) {
+                    float sum = 0.0f;
+                    for (size_t l = 0; l < k; l++) {
+                        // Calculate index for accessing b
+                        size_t b_idx = (l / 2) * n + jj;
+                        uint8_t packed = b[b_idx];
+                        
+                        // Extract appropriate 4-bit value (upper or lower half)
+                        int8_t val;
+                        if (l % 2 == 0) {
+                            // Lower 4 bits
+                            val = static_cast<int8_t>(packed & 0xF);
+                            // Sign extend if needed
+                            if (val & 0x8) val |= 0xF0;
+                        } else {
+                            // Upper 4 bits
+                            val = static_cast<int8_t>((packed >> 4) & 0xF);
+                            // Sign extend if needed
+                            if (val & 0x8) val |= 0xF0;
+                        }
+                        
+                        // Dequantize and multiply
+                        sum += a[i * k + l] * (val * scale);
+                    }
+                    result[i * n + jj] = sum;
+                }
+                continue;
+            }
+            
+            // Initialize the result vector to zero
+            __m256 vsum = _mm256_setzero_ps();
+            const float* a_row = a + i * k;
+            
+            for (size_t l = 0; l < k; l++) {
+                // Load and broadcast a single value from a
+                __m256 va = _mm256_set1_ps(a_row[l]);
                 
-                // b is not contiguous in memory for this dot product
-                // We need to load with stride n
-                float32x4_t vb;
-                if (n == 1) {
-                    // If n is 1, we can load contiguously
-                    vb = vb0;
-                } else {
-                    // Otherwise we need to gather the values
-                    vb = vdupq_n_f32(0.0f);
-                    vb = vsetq_lane_f32(b[(l + 0) * n + j], vb, 0);
-                    vb = vsetq_lane_f32(b[(l + 1) * n + j], vb, 1);
-                    vb = vsetq_lane_f32(b[(l + 2) * n + j], vb, 2);
-                    vb = vsetq_lane_f32(b[(l + 3) * n + j], vb, 3);
+                // Handle the 4-bit packed format
+                // Each byte contains two 4-bit values
+                int8_t unpacked_values[8] = {0};
+                for (size_t jj = 0; jj < 8; jj++) {
+                    // Calculate index for the packed byte
+                    size_t b_idx = (l / 2) * n + j + jj;
+                    uint8_t packed = b[b_idx];
+                    
+                    // Extract the 4-bit value (upper or lower)
+                    int8_t val;
+                    if (l % 2 == 0) {
+                        // Lower 4 bits
+                        val = static_cast<int8_t>(packed & 0xF);
+                        // Sign extend if needed
+                        if (val & 0x8) val |= 0xF0;
+                    } else {
+                        // Upper 4 bits
+                        val = static_cast<int8_t>((packed >> 4) & 0xF);
+                        // Sign extend if needed
+                        if (val & 0x8) val |= 0xF0;
+                    }
+                    
+                    unpacked_values[jj] = val;
                 }
                 
+                // Load the unpacked values into an AVX register
+                __m128i vb_i8 = _mm_loadl_epi64((__m128i const*)unpacked_values);
+                __m128i vb_i16 = _mm_cvtepi8_epi16(vb_i8);
+                __m128i vb_i32_low = _mm_cvtepi16_epi32(vb_i16);
+                __m128i vb_i16_high = _mm_shuffle_epi32(vb_i16, 0x0E);
+                __m128i vb_i32_high = _mm_cvtepi16_epi32(vb_i16_high);
+                
+                // Convert to float
+                __m256 vb_f = _mm256_insertf128_ps(
+                    _mm256_castps128_ps256(_mm_cvtepi32_ps(vb_i32_low)),
+                    _mm_cvtepi32_ps(vb_i32_high),
+                    1
+                );
+                
+                // Apply scale
+                __m256 vscale = _mm256_set1_ps(scale);
+                vb_f = _mm256_mul_ps(vb_f, vscale);
+                
+                // Multiply and accumulate
+                vsum = _mm256_add_ps(vsum, _mm256_mul_ps(va, vb_f));
+            }
+            
+            // Store the results
+            _mm256_storeu_ps(result + i * n + j, vsum);
+        }
+    }
+}
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+// Implementation for matrix_mul_q4_0 (NEON)
+void matrix_mul_q4_0_neon_f32(float* result, const float* a, const uint8_t* b, const float* b_scale, 
+                           size_t m, size_t k, size_t n) {
+    const float scale = *b_scale;
+    
+    // Process each row of the result matrix
+    for (size_t i = 0; i < m; i++) {
+        for (size_t j = 0; j < n; j += 4) {
+            // Handle boundary condition
+            size_t block_size = std::min(size_t(4), n - j);
+            
+            // If we don't have a full NEON vector, use scalar code
+            if (block_size < 4) {
+                for (size_t jj = j; jj < j + block_size; jj++) {
+                    float sum = 0.0f;
+                    for (size_t l = 0; l < k; l++) {
+                        // Calculate index for accessing b
+                        size_t b_idx = (l / 2) * n + jj;
+                        uint8_t packed = b[b_idx];
+                        
+                        // Extract appropriate 4-bit value (upper or lower half)
+                        int8_t val;
+                        if (l % 2 == 0) {
+                            // Lower 4 bits
+                            val = static_cast<int8_t>(packed & 0xF);
+                            // Sign extend if needed
+                            if (val & 0x8) val |= 0xF0;
+                        } else {
+                            // Upper 4 bits
+                            val = static_cast<int8_t>((packed >> 4) & 0xF);
+                            // Sign extend if needed
+                            if (val & 0x8) val |= 0xF0;
+                        }
+                        
+                        // Dequantize and multiply
+                        sum += a[i * k + l] * (val * scale);
+                    }
+                    result[i * n + jj] = sum;
+                }
+                continue;
+            }
+            
+            // Use NEON for 4 elements at a time
+            float32x4_t vsum = vdupq_n_f32(0.0f);
+            const float* a_row = a + i * k;
+            
+            for (size_t l = 0; l < k; l++) {
+                // Load and broadcast single a value
+                float32x4_t va = vdupq_n_f32(a_row[l]);
+                
+                // Handle the 4-bit packed format
+                int8_t unpacked_values[4] = {0};
+                for (size_t jj = 0; jj < 4; jj++) {
+                    // Calculate index for the packed byte
+                    size_t b_idx = (l / 2) * n + j + jj;
+                    uint8_t packed = b[b_idx];
+                    
+                    // Extract the 4-bit value (upper or lower)
+                    int8_t val;
+                    if (l % 2 == 0) {
+                        // Lower 4 bits
+                        val = static_cast<int8_t>(packed & 0xF);
+                        // Sign extend if needed
+                        if (val & 0x8) val |= 0xF0;
+                    } else {
+                        // Upper 4 bits
+                        val = static_cast<int8_t>((packed >> 4) & 0xF);
+                        // Sign extend if needed
+                        if (val & 0x8) val |= 0xF0;
+                    }
+                    
+                    unpacked_values[jj] = val;
+                }
+                
+                // Load the unpacked values into a NEON register
+                int8x8_t b_i8 = vld1_s8(unpacked_values);
+                int16x8_t b_i16 = vmovl_s8(b_i8);
+                int32x4_t b_i32 = vmovl_s16(vget_low_s16(b_i16));
+                float32x4_t vb = vcvtq_f32_s32(b_i32);
+                
+                // Apply scale
+                vb = vmulq_n_f32(vb, scale);
+                
+                // Multiply and accumulate
                 vsum = vmlaq_f32(vsum, va, vb);
             }
             
-            // Sum up the vector elements
-            float32x2_t vsum_half = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
-            vsum_half = vpadd_f32(vsum_half, vsum_half);
-            float sum = vget_lane_f32(vsum_half, 0);
-            
-            // Handle remaining elements
-            for (; l < k; l++) {
-                sum += a[i * k + l] * b[l * n + j];
+            // Store the result
+            vst1q_f32(result + i * n + j, vsum);
+        }
+    }
+}
+#endif
+
+// Scalar implementation for matrix_mul_q4_1
+void matrix_mul_q4_1_scalar(float* result, const float* a, const uint8_t* b, const float* b_scale, 
+                            const float* b_bias, size_t m, size_t k, size_t n) {
+    const float scale = *b_scale;
+    const float bias = *b_bias;
+    
+    for (size_t i = 0; i < m; i++) {
+        for (size_t j = 0; j < n; j++) {
+            float sum = 0.0f;
+            for (size_t l = 0; l < k; l++) {
+                // Calculate index for accessing b
+                size_t b_idx = (l / 2) * n + j;
+                uint8_t packed = b[b_idx];
+                
+                // Extract appropriate 4-bit value (upper or lower half)
+                uint8_t val_unsigned;
+                if (l % 2 == 0) {
+                    // Lower 4 bits
+                    val_unsigned = packed & 0xF;
+                } else {
+                    // Upper 4 bits
+                    val_unsigned = (packed >> 4) & 0xF;
+                }
+                
+                // Dequantize and multiply
+                float val_float = static_cast<float>(val_unsigned) * scale + bias;
+                sum += a[i * k + l] * val_float;
             }
-            
             result[i * n + j] = sum;
         }
     }
 }
 
-// Fused operations for NEON
-void fused_rms_norm_silu_neon_f32(float* output, const float* input, const float* weight, float epsilon, size_t n) {
-    // First, compute RMS norm
-    float32x4_t vsum = vdupq_n_f32(0.0f);
-    size_t i = 0;
+#if defined(CCSM_HAVE_AVX)
+// Implementation for matrix_mul_q4_1 (AVX)
+void matrix_mul_q4_1_avx_f32(float* result, const float* a, const uint8_t* b, const float* b_scale, const float* b_bias, 
+                          size_t m, size_t k, size_t n) {
+    const float scale = *b_scale;
+    const float bias = *b_bias;
     
-    // Compute squared sum
-    for (; i + 3 < n; i += 4) {
-        float32x4_t vin = vld1q_f32(input + i);
-        vsum = vmlaq_f32(vsum, vin, vin); // vsum += vin * vin
-    }
-    
-    // Reduce vsum to a single value
-    float32x2_t vsum_half = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
-    vsum_half = vpadd_f32(vsum_half, vsum_half); // Pair-wise add
-    float sum = vget_lane_f32(vsum_half, 0);
-    
-    // Add remaining elements
-    for (; i < n; i++) {
-        sum += input[i] * input[i];
-    }
-    
-    // Compute RMS
-    float rms = 1.0f / std::sqrt(sum / n + epsilon);
-    float32x4_t vrms = vdupq_n_f32(rms);
-    float32x4_t vone = vdupq_n_f32(1.0f);
-    
-    // Apply RMS normalization and SiLU activation in one pass
-    for (i = 0; i + 3 < n; i += 4) {
-        float32x4_t vin = vld1q_f32(input + i);
-        float32x4_t vw = vld1q_f32(weight + i);
-        
-        // Normalize
-        float32x4_t vnorm = vmulq_f32(vin, vrms);
-        
-        // Apply weight
-        float32x4_t vweighted = vmulq_f32(vnorm, vw);
-        
-        // Apply SiLU: x * sigmoid(x) = x / (1 + exp(-x))
-        float32x4_t vneg = vnegq_f32(vweighted);
-        float32x4_t vexp = exp_ps_f32(vneg);
-        float32x4_t vdenom = vaddq_f32(vone, vexp);
-        float32x4_t vsigmoid = vdivq_f32(vone, vdenom);
-        float32x4_t vresult = vmulq_f32(vweighted, vsigmoid);
-        
-        vst1q_f32(output + i, vresult);
-    }
-    
-    // Handle remaining elements
-    for (; i < n; i++) {
-        float normalized = input[i] * rms;
-        float weighted = normalized * weight[i];
-        float sigmoid = 1.0f / (1.0f + std::exp(-weighted));
-        output[i] = weighted * sigmoid;
-    }
-}
-
-void fused_layer_norm_relu_neon_f32(float* output, const float* input, const float* weight, const float* bias, float epsilon, size_t n) {
-    // Compute mean
-    float32x4_t vsum = vdupq_n_f32(0.0f);
-    size_t i = 0;
-    
-    for (; i + 3 < n; i += 4) {
-        float32x4_t vin = vld1q_f32(input + i);
-        vsum = vaddq_f32(vsum, vin);
-    }
-    
-    // Reduce vsum to a single value
-    float32x2_t vsum_half = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
-    vsum_half = vpadd_f32(vsum_half, vsum_half); // Pair-wise add
-    float sum = vget_lane_f32(vsum_half, 0);
-    
-    // Add remaining elements
-    for (; i < n; i++) {
-        sum += input[i];
-    }
-    
-    float mean = sum / n;
-    float32x4_t vmean = vdupq_n_f32(mean);
-    
-    // Compute variance
-    float32x4_t vvar = vdupq_n_f32(0.0f);
-    for (i = 0; i + 3 < n; i += 4) {
-        float32x4_t vin = vld1q_f32(input + i);
-        float32x4_t vdiff = vsubq_f32(vin, vmean);
-        vvar = vmlaq_f32(vvar, vdiff, vdiff); // vvar += vdiff * vdiff
-    }
-    
-    // Reduce vvar to a single value
-    float32x2_t vvar_half = vadd_f32(vget_low_f32(vvar), vget_high_f32(vvar));
-    vvar_half = vpadd_f32(vvar_half, vvar_half); // Pair-wise add
-    float var = vget_lane_f32(vvar_half, 0);
-    
-    // Add remaining elements to variance
-    for (; i < n; i++) {
-        float diff = input[i] - mean;
-        var += diff * diff;
-    }
-    
-    var /= n;
-    float scale = 1.0f / std::sqrt(var + epsilon);
-    float32x4_t vscale = vdupq_n_f32(scale);
-    float32x4_t vzero = vdupq_n_f32(0.0f);
-    
-    // Normalize, scale, add bias, and apply ReLU
-    for (i = 0; i + 3 < n; i += 4) {
-        float32x4_t vin = vld1q_f32(input + i);
-        float32x4_t vw = vld1q_f32(weight + i);
-        float32x4_t vb = vld1q_f32(bias + i);
-        
-        // Normalize: (x - mean) * scale
-        float32x4_t vnorm = vmulq_f32(vsubq_f32(vin, vmean), vscale);
-        
-        // Apply scale and bias: norm * weight + bias
-        float32x4_t vresult = vmlaq_f32(vb, vnorm, vw);
-        
-        // Apply ReLU: max(0, result)
-        vresult = vmaxq_f32(vresult, vzero);
-        
-        vst1q_f32(output + i, vresult);
-    }
-    
-    // Handle remaining elements
-    for (; i < n; i++) {
-        float normalized = (input[i] - mean) * scale;
-        float result = normalized * weight[i] + bias[i];
-        output[i] = std::max(0.0f, result);
-    }
-}
-
-void fused_matmul_relu_neon_f32(float* output, const float* a, const float* b, size_t m, size_t k, size_t n) {
-    // Matrix multiply with ReLU activation
+    // Process each row of the result matrix
     for (size_t i = 0; i < m; i++) {
-        for (size_t j = 0; j < n; j++) {
-            float32x4_t vsum = vdupq_n_f32(0.0f);
-            size_t l = 0;
+        // Process columns in blocks of 8 (AVX register width)
+        for (size_t j = 0; j < n; j += 8) {
+            // Handle boundary condition
+            size_t block_size = std::min(size_t(8), n - j);
             
-            // Process 4 elements at a time for dot product
-            for (; l + 3 < k; l += 4) {
-                float32x4_t va = vld1q_f32(a + i * k + l);
+            // If we don't have a full AVX vector, use scalar code
+            if (block_size < 8) {
+                for (size_t jj = j; jj < j + block_size; jj++) {
+                    float sum = 0.0f;
+                    for (size_t l = 0; l < k; l++) {
+                        // Calculate index for accessing b
+                        size_t b_idx = (l / 2) * n + jj;
+                        uint8_t packed = b[b_idx];
+                        
+                        // Extract appropriate 4-bit value (upper or lower half)
+                        uint8_t val_unsigned;
+                        if (l % 2 == 0) {
+                            // Lower 4 bits
+                            val_unsigned = packed & 0xF;
+                        } else {
+                            // Upper 4 bits
+                            val_unsigned = (packed >> 4) & 0xF;
+                        }
+                        
+                        // Dequantize and multiply
+                        float val_float = static_cast<float>(val_unsigned) * scale + bias;
+                        sum += a[i * k + l] * val_float;
+                    }
+                    result[i * n + jj] = sum;
+                }
+                continue;
+            }
+            
+            // Initialize the result vector to zero
+            __m256 vsum = _mm256_setzero_ps();
+            const float* a_row = a + i * k;
+            
+            // Process each element of a
+            for (size_t l = 0; l < k; l++) {
+                // Load and broadcast a single value from a
+                __m256 va = _mm256_set1_ps(a_row[l]);
                 
-                // Load b values with stride
-                float32x4_t vb;
-                vb = vdupq_n_f32(0.0f);
-                vb = vsetq_lane_f32(b[(l + 0) * n + j], vb, 0);
-                vb = vsetq_lane_f32(b[(l + 1) * n + j], vb, 1);
-                vb = vsetq_lane_f32(b[(l + 2) * n + j], vb, 2);
-                vb = vsetq_lane_f32(b[(l + 3) * n + j], vb, 3);
+                // Handle the 4-bit packed format
+                // Each byte contains two 4-bit values
+                uint8_t unpacked_values[8] = {0};
+                for (size_t jj = 0; jj < 8; jj++) {
+                    // Calculate index for the packed byte
+                    size_t b_idx = (l / 2) * n + j + jj;
+                    uint8_t packed = b[b_idx];
+                    
+                    // Extract the 4-bit value (upper or lower)
+                    uint8_t val;
+                    if (l % 2 == 0) {
+                        // Lower 4 bits
+                        val = packed & 0xF;
+                    } else {
+                        // Upper 4 bits
+                        val = (packed >> 4) & 0xF;
+                    }
+                    
+                    unpacked_values[jj] = val;
+                }
                 
+                // Load the unpacked values into an AVX register
+                __m128i vb_u8 = _mm_loadl_epi64((__m128i const*)unpacked_values);
+                __m128i vb_u16 = _mm_cvtepu8_epi16(vb_u8);
+                __m128i vb_u32_low = _mm_cvtepu16_epi32(vb_u16);
+                __m128i vb_u16_high = _mm_shuffle_epi32(vb_u16, 0x0E);
+                __m128i vb_u32_high = _mm_cvtepu16_epi32(vb_u16_high);
+                
+                // Convert to float
+                __m256 vb_f = _mm256_insertf128_ps(
+                    _mm256_castps128_ps256(_mm_cvtepi32_ps(vb_u32_low)),
+                    _mm_cvtepi32_ps(vb_u32_high),
+                    1
+                );
+                
+                // Apply scale and bias
+                __m256 vscale = _mm256_set1_ps(scale);
+                __m256 vbias = _mm256_set1_ps(bias);
+                vb_f = _mm256_add_ps(_mm256_mul_ps(vb_f, vscale), vbias);
+                
+                // Multiply and accumulate
+                vsum = _mm256_add_ps(vsum, _mm256_mul_ps(va, vb_f));
+            }
+            
+            // Store the results
+            _mm256_storeu_ps(result + i * n + j, vsum);
+        }
+    }
+}
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+// Implementation for matrix_mul_q4_1 (NEON)
+void matrix_mul_q4_1_neon_f32(float* result, const float* a, const uint8_t* b, const float* b_scale, const float* b_bias, 
+                          size_t m, size_t k, size_t n) {
+    const float scale = *b_scale;
+    const float bias = *b_bias;
+    
+    // Process each row of the result matrix
+    for (size_t i = 0; i < m; i++) {
+        for (size_t j = 0; j < n; j += 4) {
+            // Handle boundary condition
+            size_t block_size = std::min(size_t(4), n - j);
+            
+            // If we don't have a full NEON vector, use scalar code
+            if (block_size < 4) {
+                for (size_t jj = j; jj < j + block_size; jj++) {
+                    float sum = 0.0f;
+                    for (size_t l = 0; l < k; l++) {
+                        // Calculate index for accessing b
+                        size_t b_idx = (l / 2) * n + jj;
+                        uint8_t packed = b[b_idx];
+                        
+                        // Extract appropriate 4-bit value (upper or lower half)
+                        uint8_t val_unsigned;
+                        if (l % 2 == 0) {
+                            // Lower 4 bits
+                            val_unsigned = packed & 0xF;
+                        } else {
+                            // Upper 4 bits
+                            val_unsigned = (packed >> 4) & 0xF;
+                        }
+                        
+                        // Dequantize and multiply
+                        float val_float = static_cast<float>(val_unsigned) * scale + bias;
+                        sum += a[i * k + l] * val_float;
+                    }
+                    result[i * n + jj] = sum;
+                }
+                continue;
+            }
+            
+            // Use NEON for 4 elements at a time
+            float32x4_t vsum = vdupq_n_f32(0.0f);
+            const float* a_row = a + i * k;
+            
+            for (size_t l = 0; l < k; l++) {
+                // Load and broadcast single a value
+                float32x4_t va = vdupq_n_f32(a_row[l]);
+                
+                // Handle the 4-bit packed format
+                uint8_t unpacked_values[4] = {0};
+                for (size_t jj = 0; jj < 4; jj++) {
+                    // Calculate index for the packed byte
+                    size_t b_idx = (l / 2) * n + j + jj;
+                    uint8_t packed = b[b_idx];
+                    
+                    // Extract the 4-bit value (upper or lower)
+                    uint8_t val;
+                    if (l % 2 == 0) {
+                        // Lower 4 bits
+                        val = packed & 0xF;
+                    } else {
+                        // Upper 4 bits
+                        val = (packed >> 4) & 0xF;
+                    }
+                    
+                    unpacked_values[jj] = val;
+                }
+                
+                // Load the unpacked values into a NEON register
+                uint8x8_t b_u8 = vld1_u8(unpacked_values);
+                uint16x8_t b_u16 = vmovl_u8(b_u8);
+                uint32x4_t b_u32 = vmovl_u16(vget_low_u16(b_u16));
+                float32x4_t vb = vcvtq_f32_u32(b_u32);
+                
+                // Apply scale and bias
+                float32x4_t vbias = vdupq_n_f32(bias);
+                vb = vaddq_f32(vmulq_n_f32(vb, scale), vbias);
+                
+                // Multiply and accumulate
                 vsum = vmlaq_f32(vsum, va, vb);
             }
             
-            // Sum up the vector elements
-            float32x2_t vsum_half = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
-            vsum_half = vpadd_f32(vsum_half, vsum_half);
-            float sum = vget_lane_f32(vsum_half, 0);
+            // Store the result
+            vst1q_f32(result + i * n + j, vsum);
+        }
+    }
+}
+#endif
+
+} // namespace detail
+
+// Matrix multiply implementation with dispatch to appropriate backend
+template<>
+void matrix_mul<float>(float* result, const float* a, const float* b, size_t m, size_t k, size_t n) {
+    // Simple matrix multiplication
+    detail::matrix_mul_mma_f32(result, a, b, m, k, n);
+}
+
+// Quantized matrix multiplication with Q8_0 format (8-bit signed integers with scale)
+template<>
+void matrix_mul_q8_0<float>(float* result, const float* a, const int8_t* b, const float* b_scale, 
+                         size_t m, size_t k, size_t n) {
+    // Get active implementation
+    Implementation impl = get_active_implementation();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (impl >= Implementation::AVX) {
+        detail::matrix_mul_q8_0_avx_f32(result, a, b, b_scale, m, k, n);
+        return;
+    }
+#elif defined(CCSM_HAVE_NEON)
+    if (impl == Implementation::NEON) {
+        detail::matrix_mul_q8_0_neon_f32(result, a, b, b_scale, m, k, n);
+        return;
+    }
+#endif
+    
+    // Fallback scalar implementation
+    detail::matrix_mul_q8_0_scalar(result, a, b, b_scale, m, k, n);
+}
+
+// Q4_0 matrix multiplication (4-bit signed integers with scale)
+template<>
+void matrix_mul_q4_0<float>(float* result, const float* a, const uint8_t* b, const float* b_scale, 
+                         size_t m, size_t k, size_t n) {
+    // Get active implementation
+    Implementation impl = get_active_implementation();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (impl >= Implementation::AVX) {
+        detail::matrix_mul_q4_0_avx_f32(result, a, b, b_scale, m, k, n);
+        return;
+    }
+#elif defined(CCSM_HAVE_NEON)
+    if (impl == Implementation::NEON) {
+        detail::matrix_mul_q4_0_neon_f32(result, a, b, b_scale, m, k, n);
+        return;
+    }
+#endif
+    
+    // Fallback scalar implementation
+    detail::matrix_mul_q4_0_scalar(result, a, b, b_scale, m, k, n);
+}
+
+// Q4_1 matrix multiplication (4-bit unsigned integers with scale and bias)
+template<>
+void matrix_mul_q4_1<float>(float* result, const float* a, const uint8_t* b, const float* b_scale, 
+                         const float* b_bias, size_t m, size_t k, size_t n) {
+    // Get active implementation
+    Implementation impl = get_active_implementation();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (impl >= Implementation::AVX) {
+        detail::matrix_mul_q4_1_avx_f32(result, a, b, b_scale, b_bias, m, k, n);
+        return;
+    }
+#elif defined(CCSM_HAVE_NEON)
+    if (impl == Implementation::NEON) {
+        detail::matrix_mul_q4_1_neon_f32(result, a, b, b_scale, b_bias, m, k, n);
+        return;
+    }
+#endif
+    
+    // Fallback scalar implementation
+    detail::matrix_mul_q4_1_scalar(result, a, b, b_scale, b_bias, m, k, n);
+}
+
+// Matrix-vector multiplication (matmul with n=1)
+template<>
+void matrix_vector_mul<float>(float* result, const float* a, const float* v, size_t m, size_t k) {
+    // Using matrix_mul implementation with n=1
+    matrix_mul<float>(result, a, v, m, k, 1);
+}
+
+// Sigmoid activation function
+template<>
+void sigmoid<float>(float* output, const float* input, size_t n) {
+    // Get active implementation
+    Implementation impl = get_active_implementation();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (impl >= Implementation::AVX) {
+        detail::sigmoid_avx(output, input, n);
+        return;
+    }
+#elif defined(CCSM_HAVE_NEON)
+    if (impl == Implementation::NEON) {
+        detail::sigmoid_neon(output, input, n);
+        return;
+    }
+#endif
+    
+    // Fallback scalar implementation
+    detail::sigmoid_scalar(output, input, n);
+}
+
+// SiLU activation function (x * sigmoid(x))
+template<>
+void silu<float>(float* output, const float* input, size_t n) {
+    // Get active implementation
+    Implementation impl = get_active_implementation();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (impl >= Implementation::AVX) {
+        detail::silu_avx(output, input, n);
+        return;
+    }
+#elif defined(CCSM_HAVE_NEON)
+    if (impl == Implementation::NEON) {
+        detail::silu_neon(output, input, n);
+        return;
+    }
+#endif
+    
+    // Fallback scalar implementation
+    detail::silu_scalar(output, input, n);
+}
+
+// ReLU activation function
+template<>
+void relu<float>(float* output, const float* input, size_t n) {
+    // Get active implementation
+    Implementation impl = get_active_implementation();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (impl >= Implementation::AVX) {
+        detail::relu_avx(output, input, n);
+        return;
+    }
+#elif defined(CCSM_HAVE_NEON)
+    if (impl == Implementation::NEON) {
+        detail::relu_neon(output, input, n);
+        return;
+    }
+#endif
+    
+    // Fallback scalar implementation
+    detail::relu_scalar(output, input, n);
+}
+
+// Fused RMSNorm + SiLU implementation
+template<>
+void rms_norm_silu<float>(float* output, const float* input, const float* weight, size_t n, float eps) {
+    // Get active implementation
+    Implementation impl = get_active_implementation();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (impl >= Implementation::AVX) {
+        detail::rms_norm_silu_avx(output, input, weight, n, eps);
+        return;
+    }
+#elif defined(CCSM_HAVE_NEON)
+    if (impl == Implementation::NEON) {
+        detail::rms_norm_silu_neon(output, input, weight, n, eps);
+        return;
+    }
+#endif
+    
+    // Fallback scalar implementation
+    detail::rms_norm_silu_scalar(output, input, weight, n, eps);
+}
+
+// Fused Layer Normalization + ReLU implementation
+template<>
+void layer_norm_relu<float>(float* output, const float* input, const float* gamma, const float* beta, 
+                            size_t n, float eps) {
+    // Get active implementation
+    Implementation impl = get_active_implementation();
+    
+#if defined(CCSM_HAVE_AVX)
+    if (impl >= Implementation::AVX) {
+        detail::layer_norm_relu_avx(output, input, gamma, beta, n, eps);
+        return;
+    }
+#elif defined(CCSM_HAVE_NEON)
+    if (impl == Implementation::NEON) {
+        detail::layer_norm_relu_neon(output, input, gamma, beta, n, eps);
+        return;
+    }
+#endif
+    
+    // Fallback scalar implementation
+    detail::layer_norm_relu_scalar(output, input, gamma, beta, n, eps);
+}
+
+// Implementation of mixed precision operations
+namespace detail {
+
+// F32 to F16 conversion implementation
+void convert_f32_to_f16_scalar(const float* src, uint16_t* dst, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        float value = src[i];
+        
+        // Extract components from the float
+        uint32_t f32_bits;
+        std::memcpy(&f32_bits, &value, sizeof(float));
+        
+        uint16_t sign = (f32_bits >> 31) & 0x1;
+        int32_t exponent = ((f32_bits >> 23) & 0xFF) - 127;
+        uint32_t mantissa = f32_bits & 0x7FFFFF;
+        
+        // Handle special cases
+        if (std::isnan(value)) {
+            // NaN
+            dst[i] = 0x7E00;
+            continue;
+        }
+        
+        if (std::isinf(value)) {
+            // Infinity
+            dst[i] = sign ? 0xFC00 : 0x7C00;
+            continue;
+        }
+        
+        if (value == 0.0f) {
+            // Zero (preserve sign)
+            dst[i] = sign << 15;
+            continue;
+        }
+        
+        // Adjust for float16 bias and range
+        uint16_t f16_bits;
+        
+        if (exponent > 15) {
+            // Overflow, return infinity
+            f16_bits = (sign << 15) | 0x7C00;
+        } else if (exponent < -14) {
+            // Underflow or denormal
+            // For simplicity, we flush denormals to zero
+            f16_bits = sign << 15;
+        } else {
+            // Normal value
+            uint16_t f16_exponent = (exponent + 15) & 0x1F;
+            uint16_t f16_mantissa = (mantissa >> 13) & 0x3FF;
             
-            // Handle remaining elements
-            for (; l < k; l++) {
-                sum += a[i * k + l] * b[l * n + j];
+            f16_bits = (sign << 15) | (f16_exponent << 10) | f16_mantissa;
+        }
+        
+        dst[i] = f16_bits;
+    }
+}
+
+// F16 to F32 conversion implementation
+void convert_f16_to_f32_scalar(const uint16_t* src, float* dst, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        uint16_t value = src[i];
+        
+        // Extract components
+        uint16_t sign = (value >> 15) & 0x1;
+        uint16_t exponent = (value >> 10) & 0x1F;
+        uint16_t mantissa = value & 0x3FF;
+        
+        // Convert to IEEE 754 float
+        uint32_t f32_bits;
+        
+        if (exponent == 0x1F) {
+            // Infinity or NaN
+            if (mantissa == 0) {
+                // Infinity
+                f32_bits = (sign << 31) | 0x7F800000;
+            } else {
+                // NaN (preserve a portion of the mantissa)
+                f32_bits = (sign << 31) | 0x7FC00000 | (mantissa << 13);
             }
-            
-            // Apply ReLU
-            output[i * n + j] = std::max(0.0f, sum);
+        } else if (exponent == 0) {
+            if (mantissa == 0) {
+                // Zero
+                f32_bits = sign << 31;
+            } else {
+                // Denormal in F16, convert to normal in F32
+                // Find leading bit position in mantissa
+                int leading_zeros = 0;
+                uint16_t temp = mantissa;
+                for (int j = 9; j >= 0; j--) {
+                    if ((temp >> j) & 0x1) {
+                        break;
+                    }
+                    leading_zeros++;
+                }
+                
+                int32_t f32_exponent = -14 - leading_zeros;
+                uint32_t f32_mantissa = (mantissa << (23 - 10 + leading_zeros + 1)) & 0x7FFFFF;
+                f32_bits = (sign << 31) | ((f32_exponent + 127) << 23) | f32_mantissa;
+            }
+        } else {
+            // Normal value
+            int32_t f32_exponent = exponent - 15 + 127;
+            uint32_t f32_mantissa = mantissa << 13;
+            f32_bits = (sign << 31) | (f32_exponent << 23) | f32_mantissa;
+        }
+        
+        std::memcpy(&dst[i], &f32_bits, sizeof(float));
+    }
+}
+
+// F32 to BF16 conversion implementation
+void convert_f32_to_bf16_scalar(const float* src, uint16_t* dst, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        // BF16 is just the top 16 bits of F32
+        uint32_t f32_bits;
+        std::memcpy(&f32_bits, &src[i], sizeof(float));
+        
+        // Round to nearest even when truncating
+        uint32_t rounding_bit = (f32_bits >> 15) & 0x1;
+        uint32_t tie_bit = ((f32_bits >> 16) & 0x1);
+        uint32_t lower_bits = f32_bits & 0x7FFF;
+        
+        // Apply rounding
+        if (rounding_bit && (lower_bits > 0 || tie_bit)) {
+            f32_bits += 0x8000; // Round up
+        }
+        
+        dst[i] = static_cast<uint16_t>(f32_bits >> 16);
+    }
+}
+
+// BF16 to F32 conversion implementation
+void convert_bf16_to_f32_scalar(const uint16_t* src, float* dst, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        uint32_t f32_bits = static_cast<uint32_t>(src[i]) << 16;
+        std::memcpy(&dst[i], &f32_bits, sizeof(float));
+    }
+}
+
+// Edge case handling implementations
+// Enumerate possible special values
+enum class FloatSpecialValue {
+    NORMAL,     // Regular floating-point value
+    NAN_VALUE,  // Not-a-Number
+    INF_VALUE,  // Infinity
+    NEG_INF,    // Negative Infinity
+    DENORMAL    // Denormalized value
+};
+
+// Check for special floating point values
+FloatSpecialValue check_float_value(float value) {
+    // Check for NaN
+    if (std::isnan(value)) {
+        return FloatSpecialValue::NAN_VALUE;
+    }
+    
+    // Check for positive/negative infinity
+    if (std::isinf(value)) {
+        return value > 0 ? FloatSpecialValue::INF_VALUE : FloatSpecialValue::NEG_INF;
+    }
+    
+    // Check for denormals
+    if (std::fpclassify(value) == FP_SUBNORMAL) {
+        return FloatSpecialValue::DENORMAL;
+    }
+    
+    // Normal value
+    return FloatSpecialValue::NORMAL;
+}
+
+// Handle denormals (flush to zero for performance in contexts where it's safe)
+float handle_denormal(float value, bool flush_to_zero) {
+    if (flush_to_zero && std::fpclassify(value) == FP_SUBNORMAL) {
+        return std::copysign(0.0f, value); // Preserve sign of zero
+    }
+    return value;
+}
+
+// Handle NaN values in operations
+float handle_nan(float value, float replacement) {
+    if (std::isnan(value)) {
+        return replacement;
+    }
+    return value;
+}
+
+// Handle Infinity values in operations
+float handle_infinity(float value, 
+                     float pos_replacement,
+                     float neg_replacement) {
+    if (std::isinf(value)) {
+        return value > 0 ? pos_replacement : neg_replacement;
+    }
+    return value;
+}
+
+// Vector operations with safe handling for NaN/Inf/Denormals
+void vector_add_safe_scalar(float* result, const float* a, const float* b, size_t n,
+                          bool flush_denormals, bool replace_nan) {
+    for (size_t i = 0; i < n; i++) {
+        float val_a = a[i];
+        float val_b = b[i];
+        
+        // Handle special values if needed
+        if (flush_denormals) {
+            val_a = handle_denormal(val_a, true);
+            val_b = handle_denormal(val_b, true);
+        }
+        
+        if (replace_nan) {
+            val_a = handle_nan(val_a, 0.0f);
+            val_b = handle_nan(val_b, 0.0f);
+        }
+        
+        // Perform the addition
+        result[i] = val_a + val_b;
+        
+        // Handle special cases in the result if necessary
+        if (flush_denormals) {
+            result[i] = handle_denormal(result[i], true);
         }
     }
 }
 
-void fused_matmul_silu_neon_f32(float* output, const float* a, const float* b, size_t m, size_t k, size_t n) {
-    // Matrix multiply with SiLU activation
-    for (size_t i = 0; i < m; i++) {
-        for (size_t j = 0; j < n; j++) {
-            float32x4_t vsum = vdupq_n_f32(0.0f);
-            size_t l = 0;
-            
-            // Process 4 elements at a time for dot product
-            for (; l + 3 < k; l += 4) {
-                float32x4_t va = vld1q_f32(a + i * k + l);
-                
-                // Load b values with stride
-                float32x4_t vb;
-                vb = vdupq_n_f32(0.0f);
-                vb = vsetq_lane_f32(b[(l + 0) * n + j], vb, 0);
-                vb = vsetq_lane_f32(b[(l + 1) * n + j], vb, 1);
-                vb = vsetq_lane_f32(b[(l + 2) * n + j], vb, 2);
-                vb = vsetq_lane_f32(b[(l + 3) * n + j], vb, 3);
-                
-                vsum = vmlaq_f32(vsum, va, vb);
-            }
-            
-            // Sum up the vector elements
-            float32x2_t vsum_half = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
-            vsum_half = vpadd_f32(vsum_half, vsum_half);
-            float sum = vget_lane_f32(vsum_half, 0);
-            
-            // Handle remaining elements
-            for (; l < k; l++) {
-                sum += a[i * k + l] * b[l * n + j];
-            }
-            
-            // Apply SiLU: x * sigmoid(x)
-            float sigmoid = 1.0f / (1.0f + std::exp(-sum));
-            output[i * n + j] = sum * sigmoid;
+// Safe ReLU implementation with special value handling
+void relu_safe_scalar(float* output, const float* input, size_t n,
+                    bool flush_denormals, bool replace_nan) {
+    for (size_t i = 0; i < n; i++) {
+        float value = input[i];
+        
+        // Check for special values
+        auto special = check_float_value(value);
+        
+        if (special == FloatSpecialValue::NAN_VALUE && replace_nan) {
+            // Replace NaN with 0
+            output[i] = 0.0f;
+        } else if (special == FloatSpecialValue::DENORMAL && flush_denormals) {
+            // Flush denormals to 0
+            output[i] = 0.0f;
+        } else if (special == FloatSpecialValue::NEG_INF) {
+            // Negative infinity becomes 0 with ReLU
+            output[i] = 0.0f;
+        } else if (special == FloatSpecialValue::INF_VALUE) {
+            // Positive infinity stays infinity
+            output[i] = std::numeric_limits<float>::infinity();
+        } else {
+            // Normal case - regular ReLU
+            output[i] = std::max(0.0f, value);
         }
+    }
+}
+
+// In-place vector addition
+template<typename T>
+void vector_add_inplace_scalar(T* a, const T* b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        a[i] += b[i];
+    }
+}
+
+// In-place vector multiplication
+template<typename T>
+void vector_mul_inplace_scalar(T* a, const T* b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        a[i] *= b[i];
+    }
+}
+
+// In-place vector scaling
+template<typename T>
+void vector_scale_inplace_scalar(T* a, T scalar, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        a[i] *= scalar;
+    }
+}
+
+// In-place ReLU activation
+template<typename T>
+void relu_inplace_scalar(T* data, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        data[i] = std::max(T(0), data[i]);
     }
 }
 
 } // namespace detail
+
+// Public safe operation implementations
+void vector_add_safe(float* result, const float* a, const float* b, size_t n,
+                   bool flush_denormals, bool replace_nan) {
+    detail::vector_add_safe_scalar(result, a, b, n, flush_denormals, replace_nan);
+}
+
+void relu_safe(float* output, const float* input, size_t n,
+             bool flush_denormals, bool replace_nan) {
+    // Fall back to scalar implementation
+    detail::relu_safe_scalar(output, input, n, flush_denormals, replace_nan);
+}
+
+// Public in-place operation implementations
+// Template implementations for vector_add_inplace
+template<typename T>
+void vector_add_inplace(T* a, const T* b, size_t n) {
+    detail::vector_add_inplace_scalar(a, b, n);
+}
+
+// Explicit instantiations for common types
+template void vector_add_inplace<float>(float* a, const float* b, size_t n);
+template void vector_add_inplace<double>(double* a, const double* b, size_t n);
+template void vector_add_inplace<int32_t>(int32_t* a, const int32_t* b, size_t n);
+
+// Template implementations for vector_mul_inplace
+template<typename T>
+void vector_mul_inplace(T* a, const T* b, size_t n) {
+    detail::vector_mul_inplace_scalar(a, b, n);
+}
+
+// Explicit instantiations for common types
+template void vector_mul_inplace<float>(float* a, const float* b, size_t n);
+template void vector_mul_inplace<double>(double* a, const double* b, size_t n);
+template void vector_mul_inplace<int32_t>(int32_t* a, const int32_t* b, size_t n);
+
+// Template implementations for vector_scale_inplace
+template<typename T>
+void vector_scale_inplace(T* a, T scalar, size_t n) {
+    detail::vector_scale_inplace_scalar(a, scalar, n);
+}
+
+// Explicit instantiations for common types
+template void vector_scale_inplace<float>(float* a, float scalar, size_t n);
+template void vector_scale_inplace<double>(double* a, double scalar, size_t n);
+template void vector_scale_inplace<int32_t>(int32_t* a, int32_t scalar, size_t n);
+
+// In-place activation functions
+template<typename T>
+void relu_inplace(T* data, size_t n) {
+    detail::relu_inplace_scalar(data, n);
+}
+
+// Explicit instantiations for common types
+template void relu_inplace<float>(float* data, size_t n);
+template void relu_inplace<double>(double* data, size_t n);
+
 } // namespace simd
 } // namespace ccsm
-
-// Our implementation is already defined in the header file as inline functions
-// Adding the actual AVX and NEON implementations in the detail namespace
-
-// The detail namespace already contains the following:
-// - fused_matmul_relu_q4_0_avx_f32
-// - fused_matmul_silu_q4_0_avx_f32

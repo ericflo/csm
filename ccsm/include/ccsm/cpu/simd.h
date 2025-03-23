@@ -246,6 +246,33 @@ template<typename T>
 void fused_matmul_silu_q4_1(T* output, const T* a, const uint8_t* b, const float* b_scale, const float* b_bias,
                            size_t m, size_t k, size_t n);
 
+// Safe operations with NaN/denormal handling
+void vector_add_safe(float* result, const float* a, const float* b, size_t n,
+                   bool flush_denormals = false, bool replace_nan = true);
+
+void relu_safe(float* output, const float* input, size_t n,
+             bool flush_denormals = false, bool replace_nan = true);
+
+// In-place vector operations
+template<typename T>
+void vector_add_inplace(T* a, const T* b, size_t n);
+
+template<typename T>
+void vector_mul_inplace(T* a, const T* b, size_t n);
+
+template<typename T>
+void vector_scale_inplace(T* a, T scalar, size_t n);
+
+// In-place activation functions
+template<typename T>
+void relu_inplace(T* data, size_t n);
+
+template<typename T>
+void silu_inplace(T* data, size_t n);
+
+template<typename T>
+void softmax_inplace(T* data, size_t n);
+
 // Implementation details namespace (not part of public API)
 namespace detail {
 
