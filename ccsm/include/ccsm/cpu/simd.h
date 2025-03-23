@@ -561,6 +561,13 @@ void quantize_q8_0_neon_f32(int8_t* output, const float* input, size_t n);
 void dequantize_q8_0_neon_f32(float* output, const int8_t* input, const float* scale, size_t n);
 void matrix_mul_q8_0_neon_f32(float* result, const float* a, const int8_t* b, const float* b_scale, 
                             size_t m, size_t k, size_t n);
+void matrix_mul_q4_0_neon_f32(float* result, const float* a, const uint8_t* b, const float* b_scale, 
+                           size_t m, size_t k, size_t n);
+void matrix_mul_q4_1_neon_f32(float* result, const float* a, const uint8_t* b, const float* b_scale, 
+                           const float* b_bias, size_t m, size_t k, size_t n);
+void vector_mul_neon_f32(float* result, const float* a, const float* b, size_t n);
+void vector_fma_neon_f32(float* result, const float* a, const float* b, const float* c, size_t n);
+float vector_dot_neon_f32(const float* a, const float* b, size_t n);
 #endif
 
 // Vector add implementations

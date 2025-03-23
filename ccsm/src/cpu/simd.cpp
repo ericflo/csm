@@ -50,7 +50,7 @@ const CPUFeatures& CPUFeatures::get() {
                 features.avx2 = __builtin_cpu_supports("avx2");
                 features.avx512f = __builtin_cpu_supports("avx512f");
             #endif
-        #elif defined(CCSM_ARCH_ARM)
+        #elif defined(CCSM_ARCH_ARM) || defined(CCSM_ARCH_ARM64)
             // ARM feature detection
             #if defined(__aarch64__)
                 // ARM64 always has NEON
@@ -91,7 +91,7 @@ Implementation get_active_implementation() {
             } else if (features.sse2) {
                 impl = Implementation::SSE2;
             }
-        #elif defined(CCSM_ARCH_ARM)
+        #elif defined(CCSM_ARCH_ARM) || defined(CCSM_ARCH_ARM64)
             if (features.neon) {
                 impl = Implementation::NEON;
             }
@@ -116,7 +116,7 @@ std::string get_cpu_capabilities() {
         if (features.avx) result += "AVX ";
         if (features.avx2) result += "AVX2 ";
         if (features.avx512f) result += "AVX512F ";
-    #elif defined(CCSM_ARCH_ARM)
+    #elif defined(CCSM_ARCH_ARM) || defined(CCSM_ARCH_ARM64)
         if (features.neon) result += "NEON ";
     #endif
     
@@ -1367,6 +1367,84 @@ void matrix_mul_q4_1_neon_f32(float* result, const float* a, const uint8_t* b, c
     }
 }
 #endif
+
+// NOTE: The implementation of NEON matrix multiplication functions has been removed
+// because they are already defined elsewhere in the file. This was causing redefinition errors.
+// The existing implementations for matrix_mul_q8_0_neon_f32, matrix_mul_q4_0_neon_f32, and
+// matrix_mul_q4_1_neon_f32 are used instead.
+
+#if defined(CCSM_HAVE_NEON)
+// NEON implementations of vector operations (these are new and not defined elsewhere)
+void vector_add_neon_f32(float* result, const float* a, const float* b, size_t n) {
+    size_t i = 0;
+    // Process 4 elements at a time
+    for (; i + 4 <= n; i += 4) {
+        float32x4_t va = vld1q_f32(a + i);
+        float32x4_t vb = vld1q_f32(b + i);
+        float32x4_t vr = vaddq_f32(va, vb);
+        vst1q_f32(result + i, vr);
+    }
+    // Handle remaining elements
+    for (; i < n; i++) {
+        result[i] = a[i] + b[i];
+    }
+}
+
+void vector_mul_neon_f32(float* result, const float* a, const float* b, size_t n) {
+    size_t i = 0;
+    // Process 4 elements at a time
+    for (; i + 4 <= n; i += 4) {
+        float32x4_t va = vld1q_f32(a + i);
+        float32x4_t vb = vld1q_f32(b + i);
+        float32x4_t vr = vmulq_f32(va, vb);
+        vst1q_f32(result + i, vr);
+    }
+    // Handle remaining elements
+    for (; i < n; i++) {
+        result[i] = a[i] * b[i];
+    }
+}
+
+void vector_fma_neon_f32(float* result, const float* a, const float* b, const float* c, size_t n) {
+    size_t i = 0;
+    // Process 4 elements at a time
+    for (; i + 4 <= n; i += 4) {
+        float32x4_t va = vld1q_f32(a + i);
+        float32x4_t vb = vld1q_f32(b + i);
+        float32x4_t vc = vld1q_f32(c + i);
+        float32x4_t vr = vmlaq_f32(vc, va, vb); // a * b + c
+        vst1q_f32(result + i, vr);
+    }
+    // Handle remaining elements
+    for (; i < n; i++) {
+        result[i] = a[i] * b[i] + c[i];
+    }
+}
+
+float vector_dot_neon_f32(const float* a, const float* b, size_t n) {
+    float32x4_t vsum = vdupq_n_f32(0.0f);
+    size_t i = 0;
+    
+    // Process 4 elements at a time
+    for (; i + 4 <= n; i += 4) {
+        float32x4_t va = vld1q_f32(a + i);
+        float32x4_t vb = vld1q_f32(b + i);
+        vsum = vmlaq_f32(vsum, va, vb);
+    }
+    
+    // Horizontal sum
+    float32x2_t vsum2 = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
+    vsum2 = vpadd_f32(vsum2, vsum2);
+    float result = vget_lane_f32(vsum2, 0);
+    
+    // Handle remaining elements
+    for (; i < n; i++) {
+        result += a[i] * b[i];
+    }
+    
+    return result;
+}
+#endif // defined(CCSM_HAVE_NEON)
 
 } // namespace detail
 
