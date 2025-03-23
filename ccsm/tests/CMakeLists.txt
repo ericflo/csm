@@ -25,6 +25,7 @@ set(ADDITIONAL_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_serialization.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_quantized_operations.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_advanced_quantization.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_thread_pool.cpp"
 )
 
 # Append any missing files
@@ -34,10 +35,13 @@ foreach(SRC ${ADDITIONAL_TEST_SOURCES})
     endif()
 endforeach()
 
-# Make sure test_thread_pool.cpp is included
-if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_thread_pool.cpp")
-    message(WARNING "test_thread_pool.cpp not found. Thread pool tests will not be included.")
-endif()
+# Make sure test files exist
+foreach(SRC ${ADDITIONAL_TEST_SOURCES})
+    if(NOT EXISTS "${SRC}")
+        get_filename_component(FILENAME "${SRC}" NAME)
+        message(WARNING "${FILENAME} not found. Associated tests will not be included.")
+    endif()
+endforeach()
 
 # Create unit test executable
 add_executable(ccsm_unit_tests ${TEST_SOURCES})
@@ -76,6 +80,14 @@ add_executable(test_tensor_only
 target_link_libraries(test_tensor_only PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_tensor_only PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# Add a separate target for thread pool tests
+add_executable(test_thread_pool
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_thread_pool.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_thread_pool PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_thread_pool PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # We'll add integration tests after defining coverage targets
 
 # Add MLX tests conditionally
@@ -96,6 +108,7 @@ add_test(NAME UnitTests COMMAND ${CMAKE_CURRENT_BINARY_DIR}/ccsm_unit_tests)
 add_test(NAME TokenizerTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_tokenizer)
 add_test(NAME SIMDTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_simd)
 add_test(NAME TensorTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_tensor_only)
+add_test(NAME ThreadPoolTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_thread_pool)
 
 if(WITH_MLX AND MLX_TEST_SOURCES)
     add_test(NAME MLXTests COMMAND ccsm_mlx_tests)
@@ -133,9 +146,18 @@ if(WITH_COVERAGE)
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
     
+    # Setup the thread pool test coverage target
+    setup_target_for_coverage(
+        NAME coverage_thread_pool
+        EXECUTABLE test_thread_pool
+        DEPENDENCIES test_thread_pool
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool
         COMMENT "Generating combined code coverage report"
     )
     
