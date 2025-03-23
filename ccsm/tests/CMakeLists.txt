@@ -24,6 +24,7 @@ set(ADDITIONAL_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_type_promotion.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_serialization.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_quantized_operations.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_advanced_quantization.cpp"
 )
 
 # Append any missing files
