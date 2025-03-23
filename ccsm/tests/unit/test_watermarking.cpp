@@ -8,12 +8,8 @@
 
 using namespace ccsm;
 
-// Watermark detection result struct
-struct WatermarkResult {
-    bool detected = false;
-    std::string payload;
-    float confidence = 0.0f;
-};
+// Use the WatermarkResult struct from watermarking.h
+// No need to redefine it here
 
 // Mock implementation for Watermarker
 class MockWatermarker : public Watermarker {

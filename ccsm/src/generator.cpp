@@ -157,6 +157,15 @@ public:
         return true;
     }
     
+    WatermarkResult detect(const std::vector<float>& audio, float sample_rate) override {
+        // Mock implementation - always detect with default payload
+        WatermarkResult result;
+        result.detected = true;
+        result.payload = "mock-watermark";
+        result.confidence = 0.95f;
+        return result;
+    }
+    
     float get_strength() const override {
         return 0.5f;
     }

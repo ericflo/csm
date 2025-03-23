@@ -1557,34 +1557,9 @@ inline void vector_gt_mask<float>(float* result, const float* a, const float* b,
     detail::vector_gt_mask_scalar(result, a, b, n);
 }
 
+// Explicit template specialization for matrix_mul<float> - implemented in simd.cpp
 template<>
-inline void matrix_mul<float>(float* result, const float* a, const float* b, size_t m, size_t k, size_t n) {
-    const auto& features = CPUFeatures::get();
-    
-#if defined(CCSM_HAVE_AVX2)
-    if (features.avx2) {
-        detail::matrix_mul_avx2_f32(result, a, b, m, k, n);
-        return;
-    }
-#endif
-
-#if defined(CCSM_HAVE_AVX)
-    if (features.avx) {
-        detail::matrix_mul_avx_f32(result, a, b, m, k, n);
-        return;
-    }
-#endif
-
-#if defined(CCSM_HAVE_NEON)
-    if (features.neon) {
-        detail::matrix_mul_neon_f32(result, a, b, m, k, n);
-        return;
-    }
-#endif
-
-    // Fallback to scalar implementation
-    detail::matrix_mul_scalar(result, a, b, m, k, n);
-}
+void matrix_mul<float>(float* result, const float* a, const float* b, size_t m, size_t k, size_t n);
 
 template<>
 inline void softmax<float>(float* output, const float* input, size_t n) {
@@ -1608,49 +1583,14 @@ inline void softmax<float>(float* output, const float* input, size_t n) {
     detail::softmax_scalar(output, input, n);
 }
 
+// Explicit template specialization for relu<float> - implemented in simd.cpp
 template<>
-inline void relu<float>(float* output, const float* input, size_t n) {
-    const auto& features = CPUFeatures::get();
-    
-#if defined(CCSM_HAVE_AVX)
-    if (features.avx) {
-        detail::relu_avx_f32(output, input, n);
-        return;
-    }
-#endif
+void relu<float>(float* output, const float* input, size_t n);
 
-#if defined(CCSM_HAVE_NEON)
-    if (features.neon) {
-        detail::relu_neon_f32(output, input, n);
-        return;
-    }
-#endif
-
-    // Fallback to scalar implementation
-    detail::relu_scalar(output, input, n);
-}
-
+// Explicit template specialization for silu<float> - implemented in simd.cpp
 template<>
-inline void silu<float>(float* output, const float* input, size_t n) {
-    const auto& features = CPUFeatures::get();
-    
-#if defined(CCSM_HAVE_AVX)
-    if (features.avx) {
-        detail::silu_avx_f32(output, input, n);
-        return;
-    }
-#endif
+void silu<float>(float* output, const float* input, size_t n);
 
-#if defined(CCSM_HAVE_NEON)
-    if (features.neon) {
-        detail::silu_neon_f32(output, input, n);
-        return;
-    }
-#endif
-
-    // Fallback to scalar implementation
-    detail::silu_scalar(output, input, n);
-}
 
 template<>
 inline void rms_norm<float>(float* output, const float* input, const float* weight, float epsilon, size_t n) {
@@ -1847,50 +1787,20 @@ inline void dequantize_q4_1<float>(float* output, const uint8_t* input, const fl
 }
 
 // Template specializations for quantized matrix multiplications
+// Explicit template specialization for matrix_mul_q8_0<float> - implemented in simd.cpp
 template<>
-inline void matrix_mul_q8_0<float>(float* result, const float* a, const int8_t* b, const float* b_scale, 
-                                  size_t m, size_t k, size_t n) {
-    const auto& features = CPUFeatures::get();
-    
-#if defined(CCSM_HAVE_AVX)
-    if (features.avx) {
-        detail::matrix_mul_q8_0_avx_f32(result, a, b, b_scale, m, k, n);
-        return;
-    }
-#endif
+void matrix_mul_q8_0<float>(float* result, const float* a, const int8_t* b, const float* b_scale, 
+                           size_t m, size_t k, size_t n);
 
-#if defined(CCSM_HAVE_NEON)
-    if (features.neon) {
-        detail::matrix_mul_q8_0_neon_f32(result, a, b, b_scale, m, k, n);
-        return;
-    }
-#endif
-
-    // Fallback to scalar implementation
-    detail::matrix_mul_q8_0_scalar(result, a, b, b_scale, m, k, n);
-}
-
+// Explicit template specialization for matrix_mul_q4_0<float> - implemented in simd.cpp
 template<>
-inline void matrix_mul_q4_0<float>(float* result, const float* a, const uint8_t* b, const float* b_scale, 
-                                  size_t m, size_t k, size_t n) {
-    const auto& features = CPUFeatures::get();
-    
-    // We'll implement AVX and NEON versions later
-    
-    // Fallback to scalar implementation
-    detail::matrix_mul_q4_0_scalar(result, a, b, b_scale, m, k, n);
-}
+void matrix_mul_q4_0<float>(float* result, const float* a, const uint8_t* b, const float* b_scale, 
+                           size_t m, size_t k, size_t n);
 
+// Explicit template specialization for matrix_mul_q4_1<float> - implemented in simd.cpp
 template<>
-inline void matrix_mul_q4_1<float>(float* result, const float* a, const uint8_t* b, const float* b_scale, 
-                                  const float* b_bias, size_t m, size_t k, size_t n) {
-    const auto& features = CPUFeatures::get();
-    
-    // We'll implement AVX and NEON versions later
-    
-    // Fallback to scalar implementation
-    detail::matrix_mul_q4_1_scalar(result, a, b, b_scale, b_bias, m, k, n);
-}
+void matrix_mul_q4_1<float>(float* result, const float* a, const uint8_t* b, const float* b_scale, 
+                           const float* b_bias, size_t m, size_t k, size_t n);
 
 // Template specialization for fused matrix multiplication with quantized weights (Q8_0) and ReLU activation
 template<>
@@ -2046,6 +1956,38 @@ template<typename T>
 bool is_aligned(const T* ptr, size_t alignment) {
     return reinterpret_cast<uintptr_t>(ptr) % alignment == 0;
 }
+
+// Matrix-vector multiplication
+template<typename T>
+void matrix_vector_mul(T* result, const T* matrix, const T* vector, size_t m, size_t k);
+
+// Explicit template specialization for matrix_vector_mul<float> - implemented in simd.cpp
+template<>
+void matrix_vector_mul<float>(float* result, const float* matrix, const float* vector, size_t m, size_t k);
+
+// Sigmoid activation function
+template<typename T>
+void sigmoid(T* output, const T* input, size_t n);
+
+// Explicit template specialization for sigmoid<float> - implemented in simd.cpp
+template<>
+void sigmoid<float>(float* output, const float* input, size_t n);
+
+// RMS norm with SiLU activation
+template<typename T>
+void rms_norm_silu(T* output, const T* input, const T* weight, size_t n, T eps);
+
+// Explicit template specialization for rms_norm_silu<float> - implemented in simd.cpp
+template<>
+void rms_norm_silu<float>(float* output, const float* input, const float* weight, size_t n, float eps);
+
+// Layer normalization with ReLU activation
+template<typename T>
+void layer_norm_relu(T* output, const T* input, const T* gamma, const T* beta, size_t n, T eps);
+
+// Explicit template specialization for layer_norm_relu<float> - implemented in simd.cpp
+template<>
+void layer_norm_relu<float>(float* output, const float* input, const float* gamma, const float* beta, size_t n, float eps);
 
 } // namespace simd
 } // namespace ccsm
