@@ -25,6 +25,7 @@ set(ADDITIONAL_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_serialization.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_tensor_quantized_operations.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_advanced_quantization.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_kv_cache_quantization.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_thread_pool.cpp"
 )
 
@@ -88,6 +89,23 @@ add_executable(test_thread_pool
 target_link_libraries(test_thread_pool PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_thread_pool PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# Add a separate target for GGML KV cache quantization tests
+add_executable(test_ggml_kv_cache
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_kv_cache_quantization.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_ggml_kv_cache PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_ggml_kv_cache PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+# Add a separate target for Generator tests
+add_executable(test_generator
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator_advanced.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_generator PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_generator PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # We'll add integration tests after defining coverage targets
 
 # Add MLX tests conditionally
@@ -109,6 +127,8 @@ add_test(NAME TokenizerTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_tokenizer)
 add_test(NAME SIMDTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_simd)
 add_test(NAME TensorTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_tensor_only)
 add_test(NAME ThreadPoolTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_thread_pool)
+add_test(NAME GGMLKVCacheTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_ggml_kv_cache)
+add_test(NAME GeneratorTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator)
 
 if(WITH_MLX AND MLX_TEST_SOURCES)
     add_test(NAME MLXTests COMMAND ccsm_mlx_tests)
@@ -155,9 +175,27 @@ if(WITH_COVERAGE)
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
     
+    # Setup the GGML KV cache test coverage target
+    setup_target_for_coverage(
+        NAME coverage_ggml_kv_cache
+        EXECUTABLE test_ggml_kv_cache
+        DEPENDENCIES test_ggml_kv_cache
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
+    # Setup the Generator test coverage target
+    setup_target_for_coverage(
+        NAME coverage_generator
+        EXECUTABLE test_generator
+        DEPENDENCIES test_generator
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_ggml_kv_cache coverage_generator
         COMMENT "Generating combined code coverage report"
     )
     
