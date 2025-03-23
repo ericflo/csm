@@ -1444,7 +1444,70 @@ float vector_dot_neon_f32(const float* a, const float* b, size_t n) {
     
     return result;
 }
+
+void vector_scale_neon_f32(float* result, const float* a, float scalar, size_t n) {
+    float32x4_t vscalar = vdupq_n_f32(scalar);
+    size_t i = 0;
+    
+    // Process 4 elements at a time
+    for (; i + 4 <= n; i += 4) {
+        float32x4_t va = vld1q_f32(a + i);
+        float32x4_t vr = vmulq_f32(va, vscalar);
+        vst1q_f32(result + i, vr);
+    }
+    
+    // Handle remaining elements
+    for (; i < n; i++) {
+        result[i] = a[i] * scalar;
+    }
+}
+
+void vector_scale_inplace_neon_f32(float* a, float scalar, size_t n) {
+    float32x4_t vscalar = vdupq_n_f32(scalar);
+    size_t i = 0;
+    
+    // Process 4 elements at a time
+    for (; i + 4 <= n; i += 4) {
+        float32x4_t va = vld1q_f32(a + i);
+        float32x4_t vr = vmulq_f32(va, vscalar);
+        vst1q_f32(a + i, vr);
+    }
+    
+    // Handle remaining elements
+    for (; i < n; i++) {
+        a[i] *= scalar;
+    }
+}
+
+void vector_gt_mask_neon_f32(float* result, const float* a, const float* b, size_t n) {
+    size_t i = 0;
+    
+    // Process 4 elements at a time
+    for (; i + 4 <= n; i += 4) {
+        float32x4_t va = vld1q_f32(a + i);
+        float32x4_t vb = vld1q_f32(b + i);
+        
+        // Compare: result will be all 1s or all 0s for each element
+        uint32x4_t vcmp = vcgtq_f32(va, vb);
+        
+        // Convert to float: 0.0f or 1.0f
+        float32x4_t vresult = vreinterpretq_f32_u32(vcmp);
+        
+        // Store result
+        vst1q_f32(result + i, vresult);
+    }
+    
+    // Handle remaining elements
+    for (; i < n; i++) {
+        result[i] = (a[i] > b[i]) ? 1.0f : 0.0f;
+    }
+}
 #endif // defined(CCSM_HAVE_NEON)
+
+/********************************************************************
+ * Note: Scalar implementations of these functions are defined in the
+ * header file or elsewhere in this file, so we don't need to redefine them.
+ ********************************************************************/
 
 } // namespace detail
 
@@ -1969,8 +2032,39 @@ void vector_scale_inplace(T* a, T scalar, size_t n) {
     detail::vector_scale_inplace_scalar(a, scalar, n);
 }
 
-// Explicit instantiations for common types
-template void vector_scale_inplace<float>(float* a, float scalar, size_t n);
+// Specialization for float with SIMD dispatch
+template<>
+void vector_scale_inplace<float>(float* a, float scalar, size_t n) {
+    Implementation impl = get_active_implementation();
+    
+#if defined(CCSM_HAVE_AVX2)
+    if (impl >= Implementation::AVX2) {
+        // If AVX2 implementation is available in the future
+        detail::vector_scale_inplace_scalar(a, scalar, n);
+        return;
+    }
+#endif
+
+#if defined(CCSM_HAVE_AVX)
+    if (impl >= Implementation::AVX) {
+        // If AVX implementation is available in the future
+        detail::vector_scale_inplace_scalar(a, scalar, n);
+        return;
+    }
+#endif
+
+#if defined(CCSM_HAVE_NEON)
+    if (impl == Implementation::NEON) {
+        detail::vector_scale_inplace_neon_f32(a, scalar, n);
+        return;
+    }
+#endif
+
+    // Fallback to scalar implementation
+    detail::vector_scale_inplace_scalar(a, scalar, n);
+}
+
+// Explicit instantiations for other types
 template void vector_scale_inplace<double>(double* a, double scalar, size_t n);
 template void vector_scale_inplace<int32_t>(int32_t* a, int32_t scalar, size_t n);
 

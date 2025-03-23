@@ -116,6 +116,62 @@ TEST(NEONVectorTest, VectorDot) {
     EXPECT_NEAR(expected, result, 1e-2f);
 }
 
+TEST(NEONVectorTest, VectorScale) {
+    const size_t size = 100;
+    auto a = generate_vector(size);
+    float scalar = 3.14f;
+    
+    // Compute reference result
+    std::vector<float> expected(size);
+    for (size_t i = 0; i < size; i++) {
+        expected[i] = a[i] * scalar;
+    }
+    
+    // Compute SIMD result
+    std::vector<float> result(size);
+    simd::vector_scale(result.data(), a.data(), scalar, size);
+    
+    // Compare results
+    EXPECT_TRUE(compare_vectors(expected, result));
+}
+
+TEST(NEONVectorTest, VectorScaleInplace) {
+    const size_t size = 100;
+    auto a = generate_vector(size);
+    auto expected = a; // Create a copy of original vector
+    float scalar = 2.71f;
+    
+    // Compute reference result
+    for (size_t i = 0; i < size; i++) {
+        expected[i] *= scalar;
+    }
+    
+    // Compute SIMD result in-place
+    simd::vector_scale_inplace(a.data(), scalar, size);
+    
+    // Compare results
+    EXPECT_TRUE(compare_vectors(expected, a));
+}
+
+TEST(NEONVectorTest, VectorGtMask) {
+    const size_t size = 100;
+    auto a = generate_vector(size);
+    auto b = generate_vector(size, 456);
+    
+    // Compute reference result
+    std::vector<float> expected(size);
+    for (size_t i = 0; i < size; i++) {
+        expected[i] = (a[i] > b[i]) ? 1.0f : 0.0f;
+    }
+    
+    // Compute SIMD result
+    std::vector<float> result(size);
+    simd::vector_gt_mask(result.data(), a.data(), b.data(), size);
+    
+    // Compare results
+    EXPECT_TRUE(compare_vectors(expected, result));
+}
+
 TEST(NEONVectorTest, PrintActiveImplementation) {
     std::cout << "SIMD capabilities: " << simd::get_cpu_capabilities() << std::endl;
     std::cout << "Active implementation: ";
