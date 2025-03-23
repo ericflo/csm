@@ -155,8 +155,12 @@ std::vector<uint8_t> decompress(const void* data, size_t compressed_size, size_t
     return std::vector<uint8_t>(bytes, bytes + compressed_size);
 }
 
+// Forward declarations
+class MemoryTensorImpl;
+class TensorSliceView;
+
 // Basic Tensor implementation for holding data in memory
-class MemoryTensorImpl : public TensorImpl {
+class MemoryTensorImpl : public TensorImpl, public std::enable_shared_from_this<MemoryTensorImpl> {
 public:
     MemoryTensorImpl(const std::vector<size_t>& shape, DataType dtype) 
         : shape_(shape), dtype_(dtype) {
@@ -165,6 +169,14 @@ public:
         size_t num_elements = 1;
         for (size_t dim : shape) {
             num_elements *= dim;
+        }
+        
+        // Calculate default row-major strides
+        strides_.resize(shape.size());
+        size_t stride = 1;
+        for (int i = shape.size() - 1; i >= 0; i--) {
+            strides_[i] = stride;
+            stride *= shape[i];
         }
         
         // Allocate memory for data
@@ -221,6 +233,14 @@ public:
         }
     }
     
+    // Constructor with custom strides
+    MemoryTensorImpl(const std::vector<size_t>& shape, DataType dtype, const std::vector<size_t>& strides)
+        : MemoryTensorImpl(shape, dtype) {
+        if (strides.size() == shape.size()) {
+            strides_ = strides;
+        }
+    }
+    
     // Implement TensorImpl interface
     size_t shape(int dim) const override {
         if (dim < 0 || dim >= static_cast<int>(shape_.size())) {
@@ -249,6 +269,14 @@ public:
         return dtype_;
     }
     
+    std::vector<size_t> strides() const override {
+        return strides_;
+    }
+    
+    bool has_strides() const override {
+        return !strides_.empty();
+    }
+    
     void* data() override {
         return data_.data();
     }
@@ -274,59 +302,9 @@ public:
         return result;
     }
     
-    std::shared_ptr<TensorImpl> view(const std::vector<size_t>& new_shape) const override {
-        // Check if new shape has the same number of elements
-        size_t new_size = 1;
-        for (size_t dim : new_shape) {
-            new_size *= dim;
-        }
-        
-        if (new_size != size()) {
-            throw std::invalid_argument("View: new shape must have the same total size");
-        }
-        
-        // For a simple CPU implementation, view is the same as reshape
-        // In more complex implementations, view would return a tensor that shares the same memory
-        auto result = std::make_shared<MemoryTensorImpl>(new_shape, dtype_);
-        std::memcpy(result->data_.data(), data_.data(), data_.size());
-        return result;
-    }
+    std::shared_ptr<TensorImpl> view(const std::vector<size_t>& new_shape) const override;  // Implemented after TensorView class definition
     
-    std::shared_ptr<TensorImpl> slice(int dim, size_t start, size_t end) const override {
-        // Check dimension is valid
-        if (dim < 0 || dim >= ndim()) {
-            throw std::invalid_argument("Slice: dimension out of range");
-        }
-        
-        // Check start and end are valid
-        if (start >= shape_[dim] || end > shape_[dim] || start >= end) {
-            throw std::invalid_argument("Slice: invalid start or end");
-        }
-        
-        // Create new shape for the slice
-        std::vector<size_t> new_shape = shape_;
-        new_shape[dim] = end - start;
-        
-        // Create a new tensor for the slice
-        auto result = std::make_shared<MemoryTensorImpl>(new_shape, dtype_);
-        
-        // For a simple implementation, just copy the data
-        // This doesn't handle the general case correctly, but is a placeholder
-        size_t element_size = get_dtype_size(dtype_);
-        
-        // Simple case for 1D tensor
-        if (ndim() == 1) {
-            size_t offset = start * element_size;
-            size_t slice_size = (end - start) * element_size;
-            std::memcpy(result->data(), static_cast<const uint8_t*>(data()) + offset, slice_size);
-        } else {
-            // For multi-dimensional tensors, this is only a placeholder
-            // Real implementation would need to handle strides
-            throw std::runtime_error("Multi-dimensional slice not implemented");
-        }
-        
-        return result;
-    }
+    std::shared_ptr<TensorImpl> slice(int dim, size_t start, size_t end) const override;  // Implemented after TensorSliceView class definition
     
     void print(const std::string& name) const override {
         std::cout << "Tensor" << (name.empty() ? "" : " ") << name << " [";
@@ -355,8 +333,368 @@ public:
 private:
     std::vector<uint8_t> data_;
     std::vector<size_t> shape_;
+    std::vector<size_t> strides_;
     DataType dtype_;
 };
+
+// TensorView implementation - for efficient memory sharing between tensors
+class TensorView : public TensorImpl {
+public:
+    TensorView(std::shared_ptr<const MemoryTensorImpl> parent, const std::vector<size_t>& new_shape)
+        : parent_(parent), shape_(new_shape) {
+        // Verify that the total size matches the parent tensor
+        size_t new_size = 1;
+        for (size_t dim : new_shape) {
+            new_size *= dim;
+        }
+        
+        if (new_size != parent->size()) {
+            throw std::invalid_argument("View: new shape must have the same total size");
+        }
+        
+        // Inherit strides from parent
+        if (parent->has_strides()) {
+            // Since we're reshaping, we can't directly use parent strides
+            // We just calculate new default strides for the new shape
+            strides_.resize(new_shape.size());
+            size_t stride = 1;
+            for (int i = new_shape.size() - 1; i >= 0; i--) {
+                strides_[i] = stride;
+                stride *= new_shape[i];
+            }
+        }
+    }
+
+    // Method to get default strides for a shape
+    static std::vector<size_t> default_strides(const std::vector<size_t>& shape) {
+        std::vector<size_t> strides(shape.size());
+        size_t stride = 1;
+        for (int i = shape.size() - 1; i >= 0; i--) {
+            strides[i] = stride;
+            stride *= shape[i];
+        }
+        return strides;
+    }
+    
+    // Implement TensorImpl interface
+    size_t shape(int dim) const override {
+        if (dim < 0 || dim >= static_cast<int>(shape_.size())) {
+            throw std::out_of_range("Dimension index out of range");
+        }
+        return shape_[dim];
+    }
+    
+    std::vector<size_t> shape() const override {
+        return shape_;
+    }
+    
+    int ndim() const override {
+        return static_cast<int>(shape_.size());
+    }
+    
+    size_t size() const override {
+        size_t s = 1;
+        for (size_t dim : shape_) {
+            s *= dim;
+        }
+        return s;
+    }
+    
+    DataType dtype() const override {
+        return parent_->dtype();
+    }
+    
+    std::vector<size_t> strides() const override {
+        return strides_;
+    }
+    
+    bool has_strides() const override {
+        return !strides_.empty();
+    }
+    
+    void* data() override {
+        // This is safe because the parent tensor's memory isn't modified,
+        // we're just providing non-const access to a memory block that's
+        // shared between tensors
+        return const_cast<void*>(parent_->data());
+    }
+    
+    const void* data() const override {
+        return parent_->data();
+    }
+    
+    std::shared_ptr<TensorImpl> reshape(const std::vector<size_t>& new_shape) const override {
+        // Check if new shape has the same number of elements
+        size_t new_size = 1;
+        for (size_t dim : new_shape) {
+            new_size *= dim;
+        }
+        
+        if (new_size != size()) {
+            throw std::invalid_argument("Reshape: new shape must have the same total size");
+        }
+        
+        // Create a new view with the same parent but different shape
+        return std::shared_ptr<TensorImpl>(new TensorView(parent_, new_shape));
+    }
+    
+    std::shared_ptr<TensorImpl> view(const std::vector<size_t>& new_shape) const override {
+        // Check if new shape has the same number of elements
+        size_t new_size = 1;
+        for (size_t dim : new_shape) {
+            new_size *= dim;
+        }
+        
+        if (new_size != size()) {
+            throw std::invalid_argument("View: new shape must have the same total size");
+        }
+        
+        // Create a new view with the same parent but different shape
+        return std::shared_ptr<TensorImpl>(new TensorView(parent_, new_shape));
+    }
+    
+    std::shared_ptr<TensorImpl> slice(int dim, size_t start, size_t end) const override {
+        // For now, delegate to parent's slice implementation
+        // In a more advanced implementation, we could create a slice view
+        // that keeps reference to the parent and applies offsets
+        
+        // First create a tensor with the original shape
+        Tensor temp(parent_->reshape(shape_));
+        
+        // Then create a slice
+        return temp.slice(dim, start, end).impl();
+    }
+    
+    void print(const std::string& name = "") const override {
+        std::cout << "TensorView" << (name.empty() ? "" : " ") << name << " [";
+        for (size_t i = 0; i < shape_.size(); ++i) {
+            std::cout << shape_[i];
+            if (i < shape_.size() - 1) {
+                std::cout << " x ";
+            }
+        }
+        std::cout << "] " << get_dtype_str(dtype()) << " (shares memory with parent)" << std::endl;
+    }
+    
+private:
+    std::shared_ptr<const MemoryTensorImpl> parent_; // Original tensor we're viewing
+    std::vector<size_t> shape_;                // New shape for this view
+    std::vector<size_t> strides_;              // Strides for this view
+};
+
+// TensorSliceView implementation - for memory sharing between sliced tensors
+class TensorSliceView : public TensorImpl {
+public:
+    TensorSliceView(std::shared_ptr<const MemoryTensorImpl> parent, int dim, size_t start, size_t end)
+        : parent_(parent), offset_(0) {
+        // Validate input
+        if (dim < 0 || dim >= parent->ndim()) {
+            throw std::invalid_argument("Slice: dimension out of range");
+        }
+        
+        if (start >= parent->shape(dim) || end > parent->shape(dim) || start >= end) {
+            throw std::invalid_argument("Slice: invalid start or end indices");
+        }
+        
+        // Copy the parent's shape
+        shape_ = parent->shape();
+        
+        // Modify the sliced dimension
+        shape_[dim] = end - start;
+        
+        // Calculate total size
+        size_t total_size = 1;
+        for (size_t d : shape_) {
+            total_size *= d;
+        }
+        
+        // Get or compute parent strides
+        std::vector<size_t> parent_strides = parent->has_strides() 
+                                          ? parent->strides() 
+                                          : TensorView::default_strides(parent->shape());
+        
+        // Copy the parent's strides
+        strides_ = parent_strides;
+        
+        // Calculate offset based on start index and dimension stride
+        offset_ = start * parent_strides[dim];
+    }
+    
+    // Implement TensorImpl interface
+    size_t shape(int dim) const override {
+        if (dim < 0 || dim >= static_cast<int>(shape_.size())) {
+            throw std::out_of_range("Dimension index out of range");
+        }
+        return shape_[dim];
+    }
+    
+    std::vector<size_t> shape() const override {
+        return shape_;
+    }
+    
+    int ndim() const override {
+        return static_cast<int>(shape_.size());
+    }
+    
+    size_t size() const override {
+        size_t s = 1;
+        for (size_t dim : shape_) {
+            s *= dim;
+        }
+        return s;
+    }
+    
+    DataType dtype() const override {
+        return parent_->dtype();
+    }
+    
+    std::vector<size_t> strides() const override {
+        return strides_;
+    }
+    
+    bool has_strides() const override {
+        return !strides_.empty();
+    }
+    
+    void* data() override {
+        // Calculate the memory offset
+        size_t element_size = get_dtype_size(dtype());
+        uint8_t* base_ptr = static_cast<uint8_t*>(const_cast<void*>(parent_->data()));
+        
+        // Return pointer with appropriate offset
+        return base_ptr + (offset_ * element_size);
+    }
+    
+    const void* data() const override {
+        // Calculate the memory offset
+        size_t element_size = get_dtype_size(dtype());
+        const uint8_t* base_ptr = static_cast<const uint8_t*>(parent_->data());
+        
+        // Return pointer with appropriate offset
+        return base_ptr + (offset_ * element_size);
+    }
+    
+    std::shared_ptr<TensorImpl> reshape(const std::vector<size_t>& new_shape) const override {
+        // Check if new shape has the same number of elements
+        size_t new_size = 1;
+        for (size_t dim : new_shape) {
+            new_size *= dim;
+        }
+        
+        if (new_size != size()) {
+            throw std::invalid_argument("Reshape: new shape must have the same total size");
+        }
+        
+        // First create a TensorView from this slice
+        Tensor temp(std::shared_ptr<TensorImpl>(new TensorView(parent_, shape_)));
+        
+        // Then reshape it
+        return temp.reshape(new_shape).impl();
+    }
+    
+    std::shared_ptr<TensorImpl> view(const std::vector<size_t>& new_shape) const override {
+        // Check if new shape has the same number of elements
+        size_t new_size = 1;
+        for (size_t dim : new_shape) {
+            new_size *= dim;
+        }
+        
+        if (new_size != size()) {
+            throw std::invalid_argument("View: new shape must have the same total size");
+        }
+        
+        // Create a TensorView from our parent but with the new shape
+        // and pass along our offset
+        auto view = std::make_shared<TensorSliceView>(parent_, 0, 0, parent_->shape(0));
+        view->shape_ = new_shape;
+        view->offset_ = offset_;
+        
+        // Calculate new default strides for the new shape
+        view->strides_.resize(new_shape.size());
+        size_t stride = 1;
+        for (int i = new_shape.size() - 1; i >= 0; i--) {
+            view->strides_[i] = stride;
+            stride *= new_shape[i];
+        }
+        
+        return view;
+    }
+    
+    std::shared_ptr<TensorImpl> slice(int dim, size_t start, size_t end) const override {
+        // Validate dimension
+        if (dim < 0 || dim >= ndim()) {
+            throw std::invalid_argument("Slice: dimension out of range");
+        }
+        
+        // Validate start and end
+        if (start >= shape_[dim] || end > shape_[dim] || start >= end) {
+            throw std::invalid_argument("Slice: invalid start or end indices");
+        }
+        
+        // Create a new slice with adjusted shape and updated offset
+        auto new_slice = std::make_shared<TensorSliceView>(parent_, 0, 0, parent_->shape(0));
+        new_slice->shape_ = shape_;
+        new_slice->shape_[dim] = end - start;
+        new_slice->strides_ = strides_;
+        
+        // Update offset to account for the new slice
+        new_slice->offset_ = offset_ + (start * strides_[dim]);
+        
+        return new_slice;
+    }
+    
+    void print(const std::string& name = "") const override {
+        std::cout << "TensorSliceView" << (name.empty() ? "" : " ") << name << " [";
+        for (size_t i = 0; i < shape_.size(); ++i) {
+            std::cout << shape_[i];
+            if (i < shape_.size() - 1) {
+                std::cout << " x ";
+            }
+        }
+        std::cout << "] " << get_dtype_str(dtype()) << " (shares memory with offset " << offset_ << ")" << std::endl;
+    }
+    
+private:
+    std::shared_ptr<const MemoryTensorImpl> parent_; // Original tensor we're viewing
+    std::vector<size_t> shape_;                // Shape of this slice
+    std::vector<size_t> strides_;              // Strides for this slice
+    size_t offset_;                            // Offset in elements from the start of parent's data
+    
+    // Allow the MemoryTensorImpl::slice method to access our internals
+    friend std::shared_ptr<TensorImpl> MemoryTensorImpl::slice(int, size_t, size_t) const;
+};
+
+// Implementation of MemoryTensorImpl::view now that TensorView is defined
+std::shared_ptr<TensorImpl> MemoryTensorImpl::view(const std::vector<size_t>& new_shape) const {
+    // Check if new shape has the same number of elements
+    size_t new_size = 1;
+    for (size_t dim : new_shape) {
+        new_size *= dim;
+    }
+    
+    if (new_size != size()) {
+        throw std::invalid_argument("View: new shape must have the same total size");
+    }
+    
+    // Create a shared view of the tensor that uses the same underlying memory
+    return std::shared_ptr<TensorImpl>(new TensorView(shared_from_this(), new_shape));
+}
+
+// Implementation of MemoryTensorImpl::slice now that TensorSliceView is defined
+std::shared_ptr<TensorImpl> MemoryTensorImpl::slice(int dim, size_t start, size_t end) const {
+    // Check dimension is valid
+    if (dim < 0 || dim >= ndim()) {
+        throw std::invalid_argument("Slice: dimension out of range");
+    }
+    
+    // Check start and end are valid
+    if (start >= shape_[dim] || end > shape_[dim] || start >= end) {
+        throw std::invalid_argument("Slice: invalid start or end");
+    }
+    
+    // Create a TensorSliceView that shares memory with this tensor
+    return std::shared_ptr<TensorImpl>(new TensorSliceView(shared_from_this(), dim, start, end));
+}
 
 // Tensor implementation
 
@@ -404,6 +742,20 @@ std::string Tensor::dtype_str() const {
         throw std::runtime_error("Tensor not initialized");
     }
     return get_dtype_str(impl_->dtype());
+}
+
+std::vector<size_t> Tensor::strides() const {
+    if (!impl_) {
+        throw std::runtime_error("Tensor not initialized");
+    }
+    return impl_->strides();
+}
+
+bool Tensor::has_strides() const {
+    if (!impl_) {
+        throw std::runtime_error("Tensor not initialized");
+    }
+    return impl_->has_strides();
 }
 
 void* Tensor::data() {

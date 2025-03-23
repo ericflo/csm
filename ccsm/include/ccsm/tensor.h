@@ -66,6 +66,10 @@ public:
     DataType dtype() const;
     std::string dtype_str() const;
     
+    // Stride information (for strided views)
+    std::vector<size_t> strides() const;
+    bool has_strides() const;
+    
     // Data access
     void* data();
     const void* data() const;
@@ -108,6 +112,10 @@ public:
     virtual std::shared_ptr<TensorImpl> reshape(const std::vector<size_t>& new_shape) const = 0;
     virtual std::shared_ptr<TensorImpl> view(const std::vector<size_t>& new_shape) const = 0;
     virtual std::shared_ptr<TensorImpl> slice(int dim, size_t start, size_t end) const = 0;
+    
+    // Optional stride information (for strided views)
+    virtual std::vector<size_t> strides() const { return {}; }
+    virtual bool has_strides() const { return false; }
     
     // Debug
     virtual void print(const std::string& name = "") const = 0;
