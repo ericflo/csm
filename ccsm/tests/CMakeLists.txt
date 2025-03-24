@@ -203,6 +203,18 @@ if(WITH_MLX)
     endif()
 endif()
 
+# Add a separate target for MLX weight converter tests
+add_executable(test_mlx_weight_converter
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_mlx_weight_converter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+if(WITH_MLX)
+    target_link_libraries(test_mlx_weight_converter PRIVATE ccsm_core ccsm_mlx GTest::gtest)
+else()
+    target_link_libraries(test_mlx_weight_converter PRIVATE ccsm_core GTest::gtest)
+endif()
+target_include_directories(test_mlx_weight_converter PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # Add the tests to CTest - specify full paths for test binaries
 add_test(NAME UnitTests COMMAND ${CMAKE_CURRENT_BINARY_DIR}/ccsm_unit_tests)
 add_test(NAME TokenizerTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_tokenizer)
@@ -220,6 +232,7 @@ add_test(NAME QuantizedMatrixMulTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_qu
 add_test(NAME KVCachePruningTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_kv_cache_pruning)
 add_test(NAME GeneratorMemoryOptimizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator_memory_optimization)
 add_test(NAME WatermarkingTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_watermarking)
+add_test(NAME MLXWeightConverterTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_weight_converter)
 
 if(WITH_MLX AND MLX_TEST_SOURCES)
     add_test(NAME MLXTests COMMAND ccsm_mlx_tests)
@@ -365,9 +378,18 @@ if(WITH_COVERAGE)
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
     
+    # Setup the MLX weight converter test coverage target
+    setup_target_for_coverage(
+        NAME coverage_mlx_weight_converter
+        EXECUTABLE test_mlx_weight_converter
+        DEPENDENCIES test_mlx_weight_converter
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_ggml_kv_cache coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_watermarking
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_ggml_kv_cache coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_watermarking coverage_mlx_weight_converter
         COMMENT "Generating combined code coverage report"
     )
     
