@@ -117,6 +117,10 @@ public:
     int get_speaker_token_id(int speaker_id) const override {
         return 100 + speaker_id;
     }
+    
+    std::vector<int> get_audio_token_ids() const override {
+        return {1000, 1001, 1002, 1003};
+    }
 };
 
 // Mock audio codec

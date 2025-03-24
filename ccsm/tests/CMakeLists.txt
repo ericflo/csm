@@ -34,6 +34,7 @@ set(ADDITIONAL_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_kv_cache_memory_optimization.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_model_memory_optimization.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator_memory_optimization.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator_stress.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_kv_cache_pruning.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_watermarking.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_model_factory.cpp"
@@ -122,6 +123,7 @@ target_include_directories(test_ggml_kv_cache_quantization PRIVATE ${CMAKE_SOURC
 add_executable(test_generator
     ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator_advanced.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator_stress.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
 )
 target_link_libraries(test_generator PRIVATE ccsm_core GTest::gtest)
@@ -158,6 +160,14 @@ add_executable(test_generator_memory_optimization
 )
 target_link_libraries(test_generator_memory_optimization PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_generator_memory_optimization PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+# Add a separate target for Generator stress tests
+add_executable(test_generator_stress
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator_stress.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_generator_stress PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_generator_stress PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
 # Add a separate target for GGMLModel memory optimization tests
 add_executable(test_model_memory_optimization
@@ -234,6 +244,7 @@ add_test(NAME ModelQuantizationMemoryTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/te
 add_test(NAME QuantizedMatrixMulTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_quantized_matrix_mul)
 add_test(NAME KVCachePruningTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_kv_cache_pruning)
 add_test(NAME GeneratorMemoryOptimizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator_memory_optimization)
+add_test(NAME GeneratorStressTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator_stress)
 add_test(NAME WatermarkingTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_watermarking)
 add_test(NAME MLXWeightConverterTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_weight_converter)
 
@@ -372,6 +383,15 @@ if(WITH_COVERAGE)
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
     
+    # Setup the generator stress test coverage target
+    setup_target_for_coverage(
+        NAME coverage_generator_stress
+        EXECUTABLE test_generator_stress
+        DEPENDENCIES test_generator_stress
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
     # Setup the watermarking test coverage target
     setup_target_for_coverage(
         NAME coverage_watermarking
@@ -392,7 +412,7 @@ if(WITH_COVERAGE)
     
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_watermarking coverage_mlx_weight_converter
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_generator_stress coverage_watermarking coverage_mlx_weight_converter
         COMMENT "Generating combined code coverage report"
     )
     
