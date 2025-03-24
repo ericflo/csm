@@ -36,6 +36,9 @@ set(ADDITIONAL_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator_memory_optimization.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_kv_cache_pruning.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_watermarking.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_model_factory.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_mlx_weight_converter.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_unified_model.cpp"
 )
 
 # Append any missing files

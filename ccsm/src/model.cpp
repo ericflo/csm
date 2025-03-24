@@ -1,5 +1,9 @@
 #include <ccsm/model.h>
 #include <ccsm/utils.h>
+#include <ccsm/cpu/ggml_model.h>
+#ifdef CCSM_WITH_MLX
+#include <ccsm/mlx/mlx_model.h>
+#endif
 #include <unordered_map>
 #include <stdexcept>
 
@@ -20,7 +24,19 @@ std::shared_ptr<Model> ModelFactory::create(const std::string& backend, const Mo
         throw std::runtime_error("Backend '" + backend + "' is not available");
     }
     
-    // TODO: Create specific model implementations
+    if (backend == "cpu" || backend == "ggml") {
+        // Create CPU/GGML backend model
+        return std::make_shared<GGMLModel>(config);
+    }
+    else if (backend == "mlx") {
+        // Create MLX backend model
+        #ifdef CCSM_WITH_MLX
+        return std::make_shared<MLXModel>(config);
+        #else
+        throw std::runtime_error("MLX backend requested but not compiled in");
+        #endif
+    }
+    
     throw std::runtime_error("ModelFactory::create not implemented yet for backend: " + backend);
 }
 
