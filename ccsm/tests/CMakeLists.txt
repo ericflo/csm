@@ -39,6 +39,9 @@ set(ADDITIONAL_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_watermarking.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_model_factory.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_mlx_weight_converter.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_mlx_tensor.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_mlx_model.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_mlx_transformer.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_unified_model.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_thread_pool_stress.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_memory_optimization_edge_cases.cpp"
@@ -238,6 +241,42 @@ else()
 endif()
 target_include_directories(test_mlx_weight_converter PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# Add a separate target for MLX tensor tests
+add_executable(test_mlx_tensor
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_mlx_tensor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+if(WITH_MLX)
+    target_link_libraries(test_mlx_tensor PRIVATE ccsm_core ccsm_mlx GTest::gtest)
+else()
+    target_link_libraries(test_mlx_tensor PRIVATE ccsm_core GTest::gtest)
+endif()
+target_include_directories(test_mlx_tensor PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+# Add a separate target for MLX transformer tests
+add_executable(test_mlx_transformer
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_mlx_transformer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+if(WITH_MLX)
+    target_link_libraries(test_mlx_transformer PRIVATE ccsm_core ccsm_mlx GTest::gtest)
+else()
+    target_link_libraries(test_mlx_transformer PRIVATE ccsm_core GTest::gtest)
+endif()
+target_include_directories(test_mlx_transformer PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+# Add a separate target for MLX model tests
+add_executable(test_mlx_model
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_mlx_model.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+if(WITH_MLX)
+    target_link_libraries(test_mlx_model PRIVATE ccsm_core ccsm_mlx GTest::gtest)
+else()
+    target_link_libraries(test_mlx_model PRIVATE ccsm_core GTest::gtest)
+endif()
+target_include_directories(test_mlx_model PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # Add a separate target for memory optimization edge cases tests
 add_executable(test_memory_optimization_edge_cases
     ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_memory_optimization_edge_cases.cpp
@@ -266,6 +305,9 @@ add_test(NAME GeneratorMemoryOptimizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR
 add_test(NAME GeneratorStressTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator_stress)
 add_test(NAME WatermarkingTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_watermarking)
 add_test(NAME MLXWeightConverterTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_weight_converter)
+add_test(NAME MLXTensorTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_tensor)
+add_test(NAME MLXTransformerTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_transformer)
+add_test(NAME MLXModelTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_model)
 add_test(NAME MemoryOptimizationEdgeCasesTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_memory_optimization_edge_cases)
 
 if(WITH_MLX AND MLX_TEST_SOURCES)
@@ -439,6 +481,33 @@ if(WITH_COVERAGE)
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
     
+    # Setup the MLX tensor test coverage target
+    setup_target_for_coverage(
+        NAME coverage_mlx_tensor
+        EXECUTABLE test_mlx_tensor
+        DEPENDENCIES test_mlx_tensor
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
+    # Setup the MLX transformer test coverage target
+    setup_target_for_coverage(
+        NAME coverage_mlx_transformer
+        EXECUTABLE test_mlx_transformer
+        DEPENDENCIES test_mlx_transformer
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
+    # Setup the MLX model test coverage target
+    setup_target_for_coverage(
+        NAME coverage_mlx_model
+        EXECUTABLE test_mlx_model
+        DEPENDENCIES test_mlx_model
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
     # Setup the memory optimization edge cases test coverage target
     setup_target_for_coverage(
         NAME coverage_memory_optimization_edge_cases
@@ -450,7 +519,7 @@ if(WITH_COVERAGE)
     
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_thread_pool_stress coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_generator_stress coverage_watermarking coverage_mlx_weight_converter coverage_memory_optimization_edge_cases
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_thread_pool_stress coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_generator_stress coverage_watermarking coverage_mlx_weight_converter coverage_mlx_tensor coverage_mlx_transformer coverage_mlx_model coverage_memory_optimization_edge_cases
         COMMENT "Generating combined code coverage report"
     )
     
