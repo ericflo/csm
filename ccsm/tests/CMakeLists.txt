@@ -111,12 +111,12 @@ target_link_libraries(test_thread_pool_advanced PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_thread_pool_advanced PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
 # Add a separate target for GGML KV cache quantization tests
-add_executable(test_ggml_kv_cache
+add_executable(test_ggml_kv_cache_quantization
     ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_kv_cache_quantization.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
 )
-target_link_libraries(test_ggml_kv_cache PRIVATE ccsm_core GTest::gtest)
-target_include_directories(test_ggml_kv_cache PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_ggml_kv_cache_quantization PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_ggml_kv_cache_quantization PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
 # Add a separate target for Generator tests
 add_executable(test_generator
@@ -225,7 +225,7 @@ add_test(NAME SIMDTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_simd)
 add_test(NAME TensorTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_tensor_only)
 add_test(NAME ThreadPoolTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_thread_pool)
 add_test(NAME ThreadPoolAdvancedTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_thread_pool_advanced --gtest_filter="ThreadPoolAdvancedTest.*")
-add_test(NAME GGMLKVCacheTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_ggml_kv_cache)
+add_test(NAME GGMLKVCacheQuantizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_ggml_kv_cache_quantization)
 add_test(NAME GeneratorTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator)
 add_test(NAME GGMLModelQuantizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_ggml_model_quantization)
 add_test(NAME KVCacheMemoryTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_kv_cache_memory)
@@ -291,11 +291,11 @@ if(WITH_COVERAGE)
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
     
-    # Setup the GGML KV cache test coverage target
+    # Setup the GGML KV cache quantization test coverage target
     setup_target_for_coverage(
-        NAME coverage_ggml_kv_cache
-        EXECUTABLE test_ggml_kv_cache
-        DEPENDENCIES test_ggml_kv_cache
+        NAME coverage_ggml_kv_cache_quantization
+        EXECUTABLE test_ggml_kv_cache_quantization
+        DEPENDENCIES test_ggml_kv_cache_quantization
         LCOV_ARGS --no-external
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
@@ -392,7 +392,7 @@ if(WITH_COVERAGE)
     
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_ggml_kv_cache coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_watermarking coverage_mlx_weight_converter
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_watermarking coverage_mlx_weight_converter
         COMMENT "Generating combined code coverage report"
     )
     

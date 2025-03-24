@@ -296,7 +296,7 @@ cd build && ctest
 2. ✅ Focus on Core Tensor System tests (type promotion, serialization)
 3. ✅ Add quantization-aware operations with SIMD support
 4. ✅ Implement additional SIMD optimizations (mixed precision, edge case handling, in-place operations)
-5. Expand GGML backend tests to include quantization
+5. ✅ Expand GGML backend tests to include quantization (KV cache quantization)
 6. Begin implementing Generator tests
 7. Create tests for Thread Pool implementation
 8. Implement and test memory management optimizations

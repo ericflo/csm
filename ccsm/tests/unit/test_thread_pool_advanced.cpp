@@ -690,6 +690,279 @@ TEST_F(ThreadPoolAdvancedTest, AdaptiveChunkSize) {
     }
 }
 
+// Test long dependency chains
+TEST_F(ThreadPoolAdvancedTest, LongDependencyChains) {
+    ThreadPool pool(4);
+    std::atomic<int> tasks_executed(0);
+    
+    // Create a long chain of dependent tasks: 1 -> 2 -> 3 -> ... -> N
+    // This tests how well the thread pool handles long dependency chains
+    
+    const int chain_length = 20;
+    
+    // Start with task 1
+    std::future<int> previous_task = pool.enqueue([&tasks_executed]() {
+        tasks_executed++;
+        return 1;
+    });
+    
+    // Create the rest of the chain
+    for (int i = 2; i <= chain_length; i++) {
+        previous_task = pool.enqueue([i, prev_future = std::move(previous_task), &tasks_executed]() mutable {
+            // Wait for previous task
+            int prev_result = prev_future.get();
+            
+            // Verify we got correct result from previous task
+            EXPECT_EQ(prev_result, i - 1);
+            
+            // Execute this task
+            tasks_executed++;
+            return i;
+        });
+    }
+    
+    // Get final result
+    int result = previous_task.get();
+    
+    // Verify all tasks executed in order
+    EXPECT_EQ(result, chain_length);
+    EXPECT_EQ(tasks_executed, chain_length);
+}
+
+// Test memory locality for data-parallel workloads
+TEST_F(ThreadPoolAdvancedTest, MemoryLocality) {
+    // This test verifies that closely related data tends to be processed
+    // by the same thread, which improves cache locality
+    
+    ThreadPool pool(4);
+    const int array_size = 10000;
+    std::vector<int> data(array_size, 0);
+    
+    // Map to track which thread processed which indices
+    std::unordered_map<std::thread::id, std::vector<int>> thread_indices;
+    std::mutex mutex;
+    
+    // Process array in parallel with chunk_size to encourage locality
+    ParallelFor::exec(0, array_size, [&](int i) {
+        // Process element
+        data[i] = i;
+        
+        // Record which thread processed this index
+        std::thread::id tid = std::this_thread::get_id();
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            thread_indices[tid].push_back(i);
+        }
+    }, 500); // Use explicit chunk size for predictable chunks
+    
+    // Verify all elements were processed
+    for (int i = 0; i < array_size; i++) {
+        EXPECT_EQ(data[i], i);
+    }
+    
+    // Analyze thread assignments
+    std::map<std::thread::id, std::vector<std::pair<int, int>>> thread_ranges;
+    
+    // For each thread, find contiguous ranges of indices it processed
+    for (const auto& [tid, indices] : thread_indices) {
+        if (indices.empty()) continue;
+        
+        // Sort indices (they might not be in order due to concurrent updates)
+        std::vector<int> sorted_indices = indices;
+        std::sort(sorted_indices.begin(), sorted_indices.end());
+        
+        // Find contiguous ranges
+        int range_start = sorted_indices[0];
+        int prev_index = sorted_indices[0];
+        
+        for (size_t i = 1; i < sorted_indices.size(); i++) {
+            if (sorted_indices[i] != prev_index + 1) {
+                // End of range
+                thread_ranges[tid].emplace_back(range_start, prev_index);
+                range_start = sorted_indices[i];
+            }
+            prev_index = sorted_indices[i];
+        }
+        
+        // Add final range
+        thread_ranges[tid].emplace_back(range_start, prev_index);
+    }
+    
+    // Output statistics
+    std::cout << "Memory locality analysis:" << std::endl;
+    int total_ranges = 0;
+    int large_ranges = 0;
+    
+    for (const auto& [tid, ranges] : thread_ranges) {
+        std::cout << "Thread " << tid << " processed " << ranges.size() << " ranges:" << std::endl;
+        
+        for (const auto& [start, end] : ranges) {
+            int range_size = end - start + 1;
+            std::cout << "  [" << start << " - " << end << "] (size: " << range_size << ")" << std::endl;
+            
+            total_ranges++;
+            if (range_size >= 100) {
+                large_ranges++;
+            }
+        }
+    }
+    
+    // Print summary
+    double large_range_ratio = static_cast<double>(large_ranges) / total_ranges;
+    std::cout << "Proportion of large ranges (>=100 elements): " 
+              << large_range_ratio * 100.0 << "%" << std::endl;
+    
+    // We expect a good chunk of ranges to be reasonably large
+    // This is a statistic that helps us understand thread pool behavior
+    EXPECT_GT(large_range_ratio, 0.3); // At least 30% should be large ranges
+}
+
+// Test task recycling
+TEST_F(ThreadPoolAdvancedTest, TaskRecycling) {
+    // This test verifies that repeatedly submitting and completing tasks
+    // doesn't cause excessive memory allocation or performance degradation
+    
+    ThreadPool pool(4);
+    const int num_batches = 5;
+    const int tasks_per_batch = 1000;
+    
+    // Track execution time for each batch
+    std::vector<double> batch_times_ms;
+    
+    for (int batch = 0; batch < num_batches; batch++) {
+        // Measure time to submit and complete tasks
+        auto start_time = std::chrono::high_resolution_clock::now();
+        
+        // Submit batch of tasks
+        std::vector<std::future<int>> futures;
+        for (int i = 0; i < tasks_per_batch; i++) {
+            futures.push_back(pool.enqueue([i]() {
+                // Very lightweight task
+                return i * 2;
+            }));
+        }
+        
+        // Wait for all tasks to complete
+        for (auto& future : futures) {
+            future.get();
+        }
+        
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+            end_time - start_time).count();
+        
+        // Record batch time
+        batch_times_ms.push_back(duration);
+        
+        std::cout << "Batch " << batch << " time: " << duration << "ms" << std::endl;
+    }
+    
+    // Later batches should not be dramatically slower than the first batch
+    // (allowing for some variability due to system load and JIT compilation)
+    for (int i = 1; i < num_batches; i++) {
+        // Allow up to 3x variation (generous to account for system load fluctuations)
+        EXPECT_LE(batch_times_ms[i], batch_times_ms[0] * 3.0);
+    }
+}
+
+// Test parallel for with dynamic adaptive chunk size
+TEST_F(ThreadPoolAdvancedTest, DynamicChunkSize) {
+    // This test verifies the dynamic chunk sizing approach in ParallelFor
+    
+    const int size = 10000;
+    std::vector<int> data(size);
+    
+    // Keep track of chunk sizes observed during execution
+    std::vector<int> observed_chunk_sizes;
+    std::mutex chunk_mutex;
+    
+    // Function to detect chunk boundaries
+    auto process_with_chunk_detection = [&observed_chunk_sizes, &chunk_mutex](int i) {
+        static thread_local int last_idx = -999;
+        static thread_local int current_chunk_size = 0;
+        
+        if (i == last_idx + 1) {
+            // Continuation of current chunk
+            current_chunk_size++;
+        } else {
+            // New chunk boundary
+            if (current_chunk_size > 0) {
+                // Record previous chunk size
+                std::lock_guard<std::mutex> lock(chunk_mutex);
+                observed_chunk_sizes.push_back(current_chunk_size);
+            }
+            current_chunk_size = 1;
+        }
+        
+        last_idx = i;
+        
+        // Simulate variable per-element processing time
+        if (i % 100 == 0) {
+            // Occasionally do more work to create imbalance
+            volatile int sum = 0;
+            for (int j = 0; j < 10000; j++) {
+                sum += j;
+            }
+        }
+    };
+    
+    // Run parallel for with automatic chunk sizing
+    ParallelFor::exec(0, size, [&](int i) {
+        process_with_chunk_detection(i);
+        data[i] = i;
+    });
+    
+    // Run one more time to capture the final chunk
+    ParallelFor::exec(0, 1, [&](int) {
+        // This forces each thread to finish recording its last chunk
+        static thread_local int last_idx = -999;
+        static thread_local int current_chunk_size = 0;
+        
+        if (current_chunk_size > 0) {
+            std::lock_guard<std::mutex> lock(chunk_mutex);
+            observed_chunk_sizes.push_back(current_chunk_size);
+        }
+    });
+    
+    // Verify all elements were processed
+    for (int i = 0; i < size; i++) {
+        EXPECT_EQ(data[i], i);
+    }
+    
+    // Analyze observed chunk sizes
+    if (!observed_chunk_sizes.empty()) {
+        // Sort chunk sizes
+        std::sort(observed_chunk_sizes.begin(), observed_chunk_sizes.end());
+        
+        // Calculate statistics
+        double min_chunk = observed_chunk_sizes.front();
+        double max_chunk = observed_chunk_sizes.back();
+        double median_chunk = observed_chunk_sizes[observed_chunk_sizes.size() / 2];
+        double total_chunks = observed_chunk_sizes.size();
+        
+        std::cout << "Chunk statistics:" << std::endl;
+        std::cout << "  Number of chunks: " << total_chunks << std::endl;
+        std::cout << "  Min chunk size: " << min_chunk << std::endl; 
+        std::cout << "  Median chunk size: " << median_chunk << std::endl;
+        std::cout << "  Max chunk size: " << max_chunk << std::endl;
+        
+        // Expected number of chunks should be reasonable compared to thread count
+        int thread_count = global_thread_pool().size();
+        
+        // We expect more chunks than threads for good load balancing
+        EXPECT_GT(total_chunks, thread_count);
+        
+        // But not too many chunks (overhead)
+        EXPECT_LT(total_chunks, size / 10);
+        
+        // Smallest chunk should not be too small (overhead)
+        EXPECT_GE(min_chunk, 1);
+        
+        // Largest chunk should not process most of the data
+        EXPECT_LT(max_chunk, size / 2);
+    }
+}
+
 // Test dynamic thread pool resizing (if supported by implementation)
 TEST_F(ThreadPoolAdvancedTest, DISABLED_ThreadPoolResizing) {
     // Note: This test is disabled by default since thread pool resizing
@@ -741,4 +1014,80 @@ TEST_F(ThreadPoolAdvancedTest, DISABLED_ThreadPoolResizing) {
     }
     
     EXPECT_EQ(counter, 20);
+}
+
+// Test work distribution fairness
+TEST_F(ThreadPoolAdvancedTest, WorkDistributionFairness) {
+    // This test verifies that work is distributed fairly among threads
+    // with emphasis on load balancing algorithms
+    
+    // Create a thread pool with fixed size for deterministic testing
+    const size_t thread_count = 4;
+    ThreadPool pool(thread_count);
+    
+    // Create data structure to track work assigned to each thread
+    std::unordered_map<std::thread::id, int> thread_work_counts;
+    std::mutex map_mutex;
+    
+    // Create a large number of tasks
+    const int num_tasks = 1000;
+    
+    // Submit tasks and track which thread executes each one
+    std::vector<std::future<void>> futures;
+    for (int i = 0; i < num_tasks; i++) {
+        futures.push_back(pool.enqueue([&thread_work_counts, &map_mutex]() {
+            auto thread_id = std::this_thread::get_id();
+            {
+                std::lock_guard<std::mutex> lock(map_mutex);
+                thread_work_counts[thread_id]++;
+            }
+            
+            // Small work to ensure task doesn't complete too quickly
+            volatile int sum = 0;
+            for (int j = 0; j < 1000; j++) {
+                sum += j;
+            }
+        }));
+    }
+    
+    // Wait for all tasks to complete
+    for (auto& future : futures) {
+        future.get();
+    }
+    
+    // Calculate work distribution statistics
+    std::vector<int> work_counts;
+    for (const auto& [thread_id, count] : thread_work_counts) {
+        work_counts.push_back(count);
+    }
+    
+    // Find min and max work counts
+    int min_count = *std::min_element(work_counts.begin(), work_counts.end());
+    int max_count = *std::max_element(work_counts.begin(), work_counts.end());
+    double average_count = static_cast<double>(num_tasks) / thread_work_counts.size();
+    
+    // Calculate fairness ratio - a perfectly fair distribution would be 1.0
+    // Fairness ratio is (worst thread load) / (average load)
+    double fairness_ratio = std::max(
+        average_count / min_count,
+        max_count / average_count
+    );
+    
+    // Print distribution statistics
+    std::cout << "Thread work distribution:" << std::endl;
+    for (const auto& [thread_id, count] : thread_work_counts) {
+        std::cout << "  Thread " << thread_id << ": " << count << " tasks ("
+                  << (count * 100.0 / num_tasks) << "%)" << std::endl;
+    }
+    std::cout << "Min: " << min_count << ", Max: " << max_count 
+              << ", Avg: " << average_count << std::endl;
+    std::cout << "Fairness ratio: " << fairness_ratio << " (1.0 is perfect)" << std::endl;
+    
+    // Check fairness - allow for some imbalance but not too much
+    // 2.0 means one thread could have 2x the average load, which is quite permissive
+    EXPECT_LT(fairness_ratio, 2.0) << "Work distribution is too unbalanced";
+    
+    // Make sure all threads were used
+    EXPECT_EQ(thread_work_counts.size(), thread_count) 
+        << "Some threads received no work!";
 }

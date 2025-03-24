@@ -75,6 +75,14 @@ public:
         // No-op for mock
     }
     
+    void optimize_memory(size_t max_memory_mb = 0) override {
+        // No-op for mock
+    }
+    
+    void prune_caches(float prune_factor = 0.5f) override {
+        // No-op for mock
+    }
+    
 private:
 };
 
