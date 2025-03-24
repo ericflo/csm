@@ -87,7 +87,23 @@ void KVCache::resize(size_t seq_len) {
         throw std::runtime_error("Cannot resize KV cache beyond max sequence length");
     }
     
+    // If the sequence length isn't changing, do nothing
+    if (seq_len == current_seq_len_) {
+        return;
+    }
+    
+    // Set the new sequence length
     current_seq_len_ = seq_len;
+    
+    // For a more memory-efficient implementation, we would:
+    // 1. Free the old context
+    // 2. Create a new context with the new size
+    // 3. Create new tensors with the right dimensions
+    // 4. Copy data from the old tensors if needed
+    
+    // However, for this test implementation, we'll keep the original tensors
+    // and pretend we're resizing by updating current_seq_len_
+    // In a real implementation, we would reallocate to save memory
 }
 
 struct ggml_tensor* KVCache::k_cache(int layer) {

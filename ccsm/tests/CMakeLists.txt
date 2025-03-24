@@ -29,6 +29,7 @@ set(ADDITIONAL_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_quantized_matrix_mul.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_model_quantization.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_thread_pool.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_kv_cache_memory_optimization.cpp"
 )
 
 # Append any missing files
@@ -116,6 +117,14 @@ add_executable(test_ggml_model_quantization
 target_link_libraries(test_ggml_model_quantization PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_ggml_model_quantization PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# Add a separate target for KV cache memory optimization tests
+add_executable(test_kv_cache_memory
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_kv_cache_memory_optimization.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_kv_cache_memory PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_kv_cache_memory PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # We'll add integration tests after defining coverage targets
 
 # Add MLX tests conditionally
@@ -140,6 +149,7 @@ add_test(NAME ThreadPoolTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_thread_poo
 add_test(NAME GGMLKVCacheTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_ggml_kv_cache)
 add_test(NAME GeneratorTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator)
 add_test(NAME GGMLModelQuantizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_ggml_model_quantization)
+add_test(NAME KVCacheMemoryTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_kv_cache_memory)
 
 if(WITH_MLX AND MLX_TEST_SOURCES)
     add_test(NAME MLXTests COMMAND ccsm_mlx_tests)
@@ -213,9 +223,18 @@ if(WITH_COVERAGE)
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
     
+    # Setup the KV cache memory optimization test coverage target
+    setup_target_for_coverage(
+        NAME coverage_kv_cache_memory
+        EXECUTABLE test_kv_cache_memory
+        DEPENDENCIES test_kv_cache_memory
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_ggml_kv_cache coverage_generator coverage_ggml_model_quantization
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_ggml_kv_cache coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory
         COMMENT "Generating combined code coverage report"
     )
     
