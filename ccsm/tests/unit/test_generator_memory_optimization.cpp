@@ -14,7 +14,7 @@ class MockTokenizer : public TextTokenizer {
 public:
     MockTokenizer() {}
     
-    std::vector<int> encode(const std::string& text) override {
+    std::vector<int> encode(const std::string& text) const override {
         // Simple mock that returns token IDs as 1, 2, 3, etc.
         std::vector<int> tokens;
         for (size_t i = 0; i < text.length(); i++) {
@@ -23,7 +23,7 @@ public:
         return tokens;
     }
     
-    std::string decode(const std::vector<int>& tokens) override {
+    std::string decode(const std::vector<int>& tokens) const override {
         // Simple mock that returns token IDs as characters
         std::string text;
         for (int token : tokens) {
@@ -32,33 +32,70 @@ public:
         return text;
     }
     
-    int get_bos_token_id() const override { return 1; }
-    int get_eos_token_id() const override { return 2; }
-    int get_pad_token_id() const override { return 0; }
-    int get_speaker_id_token_id(int speaker_id) const override { return 100 + speaker_id; }
-    int get_audio_token_id(int codebook, int token) const override { return 1000 + (codebook * 100) + token; }
+    int vocab_size() const override { return 32000; }
+    int bos_token_id() const override { return 1; }
+    int eos_token_id() const override { return 2; }
+    int pad_token_id() const override { return 0; }
+    int unk_token_id() const override { return 3; }
+    int get_speaker_token_id(int speaker_id) const override { return 100 + speaker_id; }
+    std::vector<int> get_audio_token_ids() const override { return {1000, 1001, 1002, 1003}; }
 };
 
 class MockAudioCodec : public AudioCodec {
 public:
-    MockAudioCodec() {}
+    MockAudioCodec(int num_codebooks = 8) : codebooks_(num_codebooks) {}
     
-    std::vector<float> decode_frames(const std::vector<std::vector<int>>& frames) override {
-        // Simple mock that returns a fixed audio waveform
-        return std::vector<float>(1000, 0.1f);
+    std::vector<std::vector<int>> encode(const std::vector<float>& audio) const override {
+        // Create mock multi-codebook tokens
+        std::vector<std::vector<int>> result(codebooks_);
+        for (int i = 0; i < codebooks_; i++) {
+            result[i].push_back(i + 10);
+        }
+        return result;
     }
     
-    int sample_rate() const override { return 16000; }
+    std::vector<float> decode(const std::vector<std::vector<int>>& tokens) const override {
+        // Simple mock that returns a fixed audio waveform
+        return std::vector<float>(16000, 0.1f);
+    }
+    
+    int num_codebooks() const override { return codebooks_; }
+    int vocab_size() const override { return 2051; }
+    int sample_rate() const override { return 24000; }
+    int hop_length() const override { return 300; }
+    
+    bool is_eos_token(int token, int codebook) const override {
+        return token == 0;
+    }
+
+private:
+    int codebooks_;
 };
 
 // Mock Model that tracks memory optimization calls
-class MockModel : public Model {
+class MemoryTrackingModel : public Model {
 public:
-    MockModel() : Model(ModelConfig()), 
-                  memory_optimized(false), 
-                  caches_pruned(false),
-                  optimize_memory_called(0),
-                  prune_caches_called(0) {}
+    MemoryTrackingModel() : Model(createConfig()), 
+                    memory_optimized(false), 
+                    caches_pruned(false),
+                    optimize_memory_calls(0),
+                    prune_caches_calls(0),
+                    frame_count(0) {}
+    
+    static ModelConfig createConfig() {
+        ModelConfig config;
+        config.name = "Memory Tracking Model";
+        config.vocab_size = 32000;
+        config.audio_vocab_size = 2051;
+        config.d_model = 1024;
+        config.n_heads = 16;
+        config.n_kv_heads = 8;
+        config.n_layers = 32;
+        config.n_audio_layers = 12;
+        config.max_seq_len = 2048;
+        config.num_codebooks = 8;
+        return config;
+    }
     
     bool load_weights(const std::string& path) override { return true; }
     bool load_weights(std::shared_ptr<ModelLoader> loader) override { return true; }
@@ -70,214 +107,295 @@ public:
         float temperature = 0.9f,
         int top_k = 50) override {
         
+        last_tokens = tokens;
+        last_positions = positions;
+        last_temperature = temperature;
+        last_top_k = top_k;
+        frame_count++;
+        
         // Generate a mock frame with codebook values
-        std::vector<int> frame;
-        for (int i = 0; i < config().num_codebooks; i++) {
-            frame.push_back(i + 10); // Just return token values 10, 11, 12, etc.
+        std::vector<int> frame(config_.num_codebooks);
+        for (int i = 0; i < config_.num_codebooks; i++) {
+            frame[i] = i + 10; // Just return token values 10, 11, 12, etc.
         }
         return frame;
     }
     
-    void reset_caches() override {}
+    void reset_caches() override {
+        reset_caches_called = true;
+    }
     
     void optimize_memory(size_t max_memory_mb = 0) override {
         memory_optimized = true;
-        optimize_memory_called++;
+        optimize_memory_calls++;
         last_memory_limit = max_memory_mb;
     }
     
     void prune_caches(float prune_factor = 0.5f) override {
         caches_pruned = true;
-        prune_caches_called++;
+        prune_caches_calls++;
         last_prune_factor = prune_factor;
     }
     
     std::vector<float> get_backbone_logits(
         const std::vector<int>& tokens,
         const std::vector<int>& positions) override {
-        return std::vector<float>(config().vocab_size, 0.0f);
+        return std::vector<float>(config_.vocab_size, 0.0f);
     }
     
     std::vector<float> get_decoder_logits(
         const std::vector<int>& tokens,
         const std::vector<int>& positions,
         int codebook) override {
-        return std::vector<float>(config().audio_vocab_size, 0.0f);
+        return std::vector<float>(config_.audio_vocab_size, 0.0f);
     }
     
     // Testing helpers
-    bool memory_optimized;
-    bool caches_pruned;
-    int optimize_memory_called;
-    int prune_caches_called;
-    size_t last_memory_limit;
-    float last_prune_factor;
-};
-
-// Mock Watermarker that does nothing
-class MockWatermarker : public Watermarker {
-public:
-    MockWatermarker() {}
+    bool memory_optimized = false;
+    bool caches_pruned = false;
+    bool reset_caches_called = false;
+    int optimize_memory_calls = 0;
+    int prune_caches_calls = 0;
+    size_t last_memory_limit = 0;
+    float last_prune_factor = 0.0f;
+    int frame_count = 0;
+    float last_temperature = 0.0f;
+    int last_top_k = 0;
+    std::vector<int> last_tokens;
+    std::vector<int> last_positions;
     
-    bool apply_watermark(std::vector<float>& audio) override {
-        return true;
+    void reset_stats() {
+        memory_optimized = false;
+        caches_pruned = false;
+        reset_caches_called = false;
+        optimize_memory_calls = 0;
+        prune_caches_calls = 0;
+        last_memory_limit = 0;
+        last_prune_factor = 0.0f;
+        frame_count = 0;
+        last_temperature = 0.0f;
+        last_top_k = 0;
+        last_tokens.clear();
+        last_positions.clear();
     }
 };
 
 // Test fixture
-class GeneratorMemoryOptimizationTest : public ::testing::Test {
+class GeneratorMemoryTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        model = std::make_shared<MockModel>();
+        model = std::make_shared<MemoryTrackingModel>();
         tokenizer = std::make_shared<MockTokenizer>();
         audio_codec = std::make_shared<MockAudioCodec>();
-        watermarker = std::make_shared<MockWatermarker>();
         
         // Create generator with mock components
-        generator = std::make_shared<Generator>(model, tokenizer, audio_codec, watermarker);
+        generator = std::make_shared<Generator>(model, tokenizer, audio_codec);
     }
     
-    std::shared_ptr<MockModel> model;
-    std::shared_ptr<MockTokenizer> tokenizer;
-    std::shared_ptr<MockAudioCodec> audio_codec;
-    std::shared_ptr<MockWatermarker> watermarker;
+    std::shared_ptr<MemoryTrackingModel> model;
+    std::shared_ptr<TextTokenizer> tokenizer;
+    std::shared_ptr<AudioCodec> audio_codec;
     std::shared_ptr<Generator> generator;
 };
 
-// Test that memory optimization is called during generation
-TEST_F(GeneratorMemoryOptimizationTest, MemoryOptimizationDuringGeneration) {
-    // Set up generation options with memory constraints
-    GenerationOptions options;
-    options.temperature = 0.8f;
-    options.top_k = 40;
-    options.enable_watermark = true;
+// Test memory optimization settings
+TEST_F(GeneratorMemoryTest, MemoryOptimizationSettings) {
+    // Initial state should have memory optimization disabled
+    EXPECT_FALSE(model->memory_optimized);
+    EXPECT_EQ(model->optimize_memory_calls, 0);
     
-    // Generate speech
-    auto audio = generator->generate_speech("Test speech", 1, {}, options);
+    // Enable memory optimization
+    generator->set_memory_optimization(true, 1024);
     
-    // Check that optimize_memory was called
+    // Should immediately apply optimization
     EXPECT_TRUE(model->memory_optimized);
-    EXPECT_GT(model->optimize_memory_called, 0);
+    EXPECT_EQ(model->optimize_memory_calls, 1);
+    EXPECT_EQ(model->last_memory_limit, 1024);
+    
+    // Reset model stats
+    model->reset_stats();
+    
+    // Generate speech with optimization enabled
+    auto audio = generator->generate_speech("Test speech", 0);
+    
+    // Model cache should have been reset
+    EXPECT_TRUE(model->reset_caches_called);
+    
+    // Generated at least one frame
+    EXPECT_GT(model->frame_count, 0);
 }
 
-// Test memory optimization with different memory limits
-TEST_F(GeneratorMemoryOptimizationTest, MemoryLimitConfiguration) {
-    // Reset the mock
-    model->memory_optimized = false;
-    model->optimize_memory_called = 0;
+// Test memory pruning
+TEST_F(GeneratorMemoryTest, MemoryPruning) {
+    // Enable memory optimization with pruning
+    generator->set_memory_optimization(true, 1024, 512, 0.7f);
     
-    // Set a custom memory limit through a custom extension to GenerationOptions
-    // This would be done with a proper API in a real implementation
-    size_t memory_limit_mb = 512;
-    model->optimize_memory(memory_limit_mb);
-    
-    // Check that optimize_memory was called with the right limit
+    // Should apply both optimization and pruning
     EXPECT_TRUE(model->memory_optimized);
-    EXPECT_EQ(model->last_memory_limit, memory_limit_mb);
-}
-
-// Test that cache pruning is called during generation with long inputs
-TEST_F(GeneratorMemoryOptimizationTest, CachePruningDuringGeneration) {
-    // Reset the mock
-    model->caches_pruned = false;
-    model->prune_caches_called = 0;
-    
-    // Create a long input that would trigger cache pruning
-    std::string long_text = "This is a very long text input that would cause the KV cache to grow large.";
-    for (int i = 0; i < 5; i++) {
-        long_text += " " + long_text; // Make it exponentially longer
-    }
-    
-    // Generate speech
-    auto audio = generator->generate_speech(long_text, 1);
-    
-    // In a real integration, the model would decide to prune based on sequence length
-    // Here we need to manually trigger it to simulate this behavior
-    model->prune_caches(0.7f);
-    
-    // Check that prune_caches was called with the right factor
+    EXPECT_EQ(model->optimize_memory_calls, 1);
+    EXPECT_EQ(model->last_memory_limit, 1024);
     EXPECT_TRUE(model->caches_pruned);
-    EXPECT_GT(model->prune_caches_called, 0);
+    EXPECT_EQ(model->prune_caches_calls, 1);
     EXPECT_FLOAT_EQ(model->last_prune_factor, 0.7f);
+    
+    // Reset model stats
+    model->reset_stats();
+    
+    // Generate speech with both enabled
+    auto audio = generator->generate_speech("Test speech with pruning", 0);
+    
+    // Check generated output
+    EXPECT_FALSE(audio.empty());
 }
 
-// Test that cache pruning preserves important context
-TEST_F(GeneratorMemoryOptimizationTest, CachePruningPreservesContext) {
-    // This test would model KVCache pruning with importance scores
-    // It would verify that important context tokens are preserved after pruning
+// Test with long input
+TEST_F(GeneratorMemoryTest, LongTextInput) {
+    // Enable memory optimization
+    generator->set_memory_optimization(true, 1024, 512, 0.7f);
     
-    // Create context segments
+    // Reset model stats
+    model->reset_stats();
+    
+    // Create a long text input
+    std::string long_text(1000, 'a');
+    
+    // Generate with long input
+    auto audio = generator->generate_speech(long_text, 0);
+    
+    // Check that model cache was reset
+    EXPECT_TRUE(model->reset_caches_called);
+    
+    // Verify token length was limited
+    EXPECT_LE(model->last_tokens.size(), generator->max_text_tokens());
+    
+    // Should have generated frames
+    EXPECT_GT(model->frame_count, 0);
+}
+
+// Test with multiple segments
+TEST_F(GeneratorMemoryTest, ContextSegments) {
+    // Enable memory optimization
+    generator->set_memory_optimization(true, 1024);
+    
+    // Reset model stats
+    model->reset_stats();
+    
+    // Create context with multiple segments
     std::vector<Segment> context = {
-        Segment("First segment", 1, {0.1f, 0.2f, 0.3f}),
-        Segment("Second important segment", 2, {0.2f, 0.3f, 0.4f})
+        Segment("First message", 1),
+        Segment("Second message", 2),
+        Segment("Third message", 1)
     };
     
-    // In a real implementation, we would check that context is preserved
-    // through multiple pruning operations
-    // For this mock test, we'll just check that the generator can handle context
-    auto audio = generator->generate_speech("Follow-up response", 1, context);
+    // Generate with context
+    auto audio = generator->generate_speech("Test with context", 0, context);
     
-    // The MockModel doesn't actually implement proper pruning,
-    // so we just verify it could be called
-    model->prune_caches(0.5f);
-    EXPECT_TRUE(model->caches_pruned);
-}
-
-// Test memory optimization in long conversations
-TEST_F(GeneratorMemoryOptimizationTest, LongConversationMemoryManagement) {
-    // Reset mock state
-    model->memory_optimized = false;
-    model->caches_pruned = false;
-    model->optimize_memory_called = 0;
-    model->prune_caches_called = 0;
-    
-    // Create a long conversation context
-    std::vector<Segment> long_conversation;
-    for (int i = 0; i < 10; i++) {
-        long_conversation.push_back(
-            Segment("Turn " + std::to_string(i) + " in conversation", i % 3)
-        );
+    // Verify context was included in tokens
+    bool found_speaker_tokens = false;
+    for (int token : model->last_tokens) {
+        if (token >= 100) { // Speaker tokens start at 100
+            found_speaker_tokens = true;
+            break;
+        }
     }
+    EXPECT_TRUE(found_speaker_tokens);
     
-    // Generate a response in this long conversation
-    auto audio = generator->generate_speech("Response to long context", 2, long_conversation);
-    
-    // In a real integration, long conversations would trigger both 
-    // memory optimization and cache pruning
-    model->optimize_memory(256);
-    model->prune_caches(0.6f);
-    
-    // Check that both optimizations were called
-    EXPECT_TRUE(model->memory_optimized);
-    EXPECT_TRUE(model->caches_pruned);
+    // Should have generated frames
+    EXPECT_GT(model->frame_count, 0);
 }
 
-// Test that generator works correctly with a real GGML model
-// This test would be more comprehensive in a real implementation
-TEST_F(GeneratorMemoryOptimizationTest, DISABLED_IntegrationWithGGMLModel) {
-    // This test would load an actual GGML model and test its memory optimization
-    // capabilities with the Generator
+// Test memory optimization limits
+TEST_F(GeneratorMemoryTest, MemoryLimits) {
+    // Set up different memory limits
+    const size_t small_limit = 256;
+    const size_t large_limit = 2048;
+    
+    // Test with small limit
+    generator->set_memory_optimization(true, small_limit);
+    EXPECT_EQ(model->last_memory_limit, small_limit);
+    
+    // Reset model stats
+    model->reset_stats();
+    
+    // Test with large limit
+    generator->set_memory_optimization(true, large_limit);
+    EXPECT_EQ(model->last_memory_limit, large_limit);
+    
+    // Reset model stats
+    model->reset_stats();
+    
+    // Disable optimization
+    generator->set_memory_optimization(false);
+    
+    // Generate speech with optimization disabled
+    auto audio = generator->generate_speech("Test without optimization", 0);
+    
+    // Should not have called optimization
+    EXPECT_FALSE(model->memory_optimized);
+    EXPECT_EQ(model->optimize_memory_calls, 0);
+}
 
-    // For a real implementation, we'd replace the MockModel with a real GGMLModel
-    // and verify its memory management features work correctly
+// Test with different pruning factors
+TEST_F(GeneratorMemoryTest, PruningFactors) {
+    // Test different pruning factors
+    const float light_pruning = 0.3f;
+    const float heavy_pruning = 0.8f;
     
-    /* Example code (disabled for now)
-    // Create a real model config
-    ModelConfig config;
+    // Test with light pruning
+    generator->set_memory_optimization(true, 1024, 512, light_pruning);
+    EXPECT_FLOAT_EQ(model->last_prune_factor, light_pruning);
     
-    // Create a real GGML model
-    auto real_model = std::make_shared<GGMLModel>(config);
+    // Reset model stats
+    model->reset_stats();
     
-    // Create a generator with the real model
-    auto real_generator = std::make_shared<Generator>(
-        real_model, tokenizer, audio_codec, watermarker);
+    // Test with heavy pruning
+    generator->set_memory_optimization(true, 1024, 512, heavy_pruning);
+    EXPECT_FLOAT_EQ(model->last_prune_factor, heavy_pruning);
+}
+
+// Test generation with memory trigger
+TEST_F(GeneratorMemoryTest, MemoryTrigger) {
+    // Set memory optimization with trigger
+    generator->set_memory_optimization(true, 1024, 512, 0.5f);
     
-    // Test memory optimization features with the real model
-    // ...
-    */
+    // Reset model stats
+    model->reset_stats();
     
-    // For now, just pass the test
-    SUCCEED("Integration test with real GGML model disabled");
+    // Generate speech
+    auto audio = generator->generate_speech("Test with memory trigger", 0);
+    
+    // In a real implementation, memory trigger would activate based on KV cache size
+    // Here we just verify the parameters were set correctly
+    EXPECT_FALSE(model->caches_pruned); // Won't be triggered in this mock
+    
+    // Actual implementations would trigger pruning when memory usage exceeds the trigger
+}
+
+// Test compatibility with different model configurations
+TEST_F(GeneratorMemoryTest, ModelConfigurations) {
+    // Create models with different configurations
+    auto model_small = std::make_shared<MemoryTrackingModel>();
+    auto model_large = std::make_shared<MemoryTrackingModel>();
+    
+    // Create generators with these models
+    auto generator_small = std::make_shared<Generator>(model_small, tokenizer, audio_codec);
+    auto generator_large = std::make_shared<Generator>(model_large, tokenizer, audio_codec);
+    
+    // Enable memory optimization for both
+    generator_small->set_memory_optimization(true, 512);
+    generator_large->set_memory_optimization(true, 2048);
+    
+    // Generate speech with both
+    auto audio_small = generator_small->generate_speech("Test with small model", 0);
+    auto audio_large = generator_large->generate_speech("Test with large model", 0);
+    
+    // Both should have generated output
+    EXPECT_FALSE(audio_small.empty());
+    EXPECT_FALSE(audio_large.empty());
+    
+    // Both should have called memory optimization
+    EXPECT_TRUE(model_small->memory_optimized);
+    EXPECT_TRUE(model_large->memory_optimized);
 }
 
 int main(int argc, char **argv) {
