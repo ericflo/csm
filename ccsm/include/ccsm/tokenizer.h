@@ -39,6 +39,9 @@ public:
     
     // Get speaker token ID
     virtual int get_speaker_token_id(int speaker_id) const = 0;
+    
+    // Get audio token IDs for semantic codebook
+    virtual std::vector<int> get_audio_token_ids() const = 0;
 };
 
 // Audio tokenizer interface

@@ -56,6 +56,10 @@ public:
     // Reset KV caches
     virtual void reset_caches() = 0;
     
+    // Memory optimization methods
+    virtual void optimize_memory(size_t max_memory_mb = 0) = 0;
+    virtual void prune_caches(float prune_factor = 0.5f) = 0;
+    
     // Get backbone model logits
     virtual std::vector<float> get_backbone_logits(
         const std::vector<int>& tokens,

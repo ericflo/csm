@@ -92,18 +92,112 @@ void KVCache::resize(size_t seq_len) {
         return;
     }
     
-    // Set the new sequence length
+    // If the new sequence length is 0, just clear the cache
+    if (seq_len == 0) {
+        clear();
+        return;
+    }
+    
+    // Save original sequence length for potential data copying
+    size_t old_seq_len = current_seq_len_;
+    
+    // Temporary storage for copied values if we need to preserve data
+    std::vector<std::vector<float>> k_data;
+    std::vector<std::vector<float>> v_data;
+    
+    // Only copy data if we're shrinking and have existing data
+    bool copy_data = (seq_len < old_seq_len) && (old_seq_len > 0);
+    
+    if (copy_data) {
+        k_data.resize(n_layers_);
+        v_data.resize(n_layers_);
+        
+        // Only copy data up to the new sequence length
+        for (size_t i = 0; i < n_layers_; i++) {
+            // Extract data from existing tensors
+            k_data[i].resize(n_kv_heads_ * head_dim_ * seq_len);
+            v_data[i].resize(n_kv_heads_ * head_dim_ * seq_len);
+            
+            // Copy data from tensors
+            float* k_ptr = (float*)k_caches_[i]->data;
+            float* v_ptr = (float*)v_caches_[i]->data;
+            
+            for (size_t h = 0; h < n_kv_heads_; h++) {
+                for (size_t s = 0; s < seq_len; s++) {
+                    for (size_t d = 0; d < head_dim_; d++) {
+                        size_t old_idx = h * max_seq_len_ * head_dim_ + s * head_dim_ + d;
+                        size_t new_idx = h * seq_len * head_dim_ + s * head_dim_ + d;
+                        
+                        if (old_idx < n_kv_heads_ * max_seq_len_ * head_dim_ && 
+                            new_idx < k_data[i].size()) {
+                            k_data[i][new_idx] = k_ptr[old_idx];
+                            v_data[i][new_idx] = v_ptr[old_idx];
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Free the old context
+    if (ctx_) {
+        ggml_free(ctx_);
+        ctx_ = nullptr;
+    }
+    
+    // Calculate memory needed for new caches
+    size_t total_size_k = n_layers_ * n_kv_heads_ * head_dim_ * seq_len * sizeof(float);
+    size_t total_size_v = n_layers_ * n_kv_heads_ * head_dim_ * seq_len * sizeof(float);
+    
+    // Add some extra memory for padding and alignment
+    size_t total_size = total_size_k + total_size_v + 1024 * 1024;
+    
+    // Initialize new context
+    struct ggml_init_params params = {
+        .mem_size   = total_size,
+        .mem_buffer = NULL,
+        .no_alloc   = false,
+    };
+    
+    ctx_ = ggml_init(params);
+    if (!ctx_) {
+        throw std::runtime_error("Failed to initialize KV cache context during resize");
+    }
+    
+    // Create new cache tensors with the new sequence length
+    k_caches_.resize(n_layers_);
+    v_caches_.resize(n_layers_);
+    
+    for (size_t i = 0; i < n_layers_; i++) {
+        k_caches_[i] = ggml_new_tensor_3d(ctx_, GGML_TYPE_F32, head_dim_, n_kv_heads_, seq_len);
+        v_caches_[i] = ggml_new_tensor_3d(ctx_, GGML_TYPE_F32, head_dim_, n_kv_heads_, seq_len);
+        
+        // Zero initialize
+        ggml_set_zero(k_caches_[i]);
+        ggml_set_zero(v_caches_[i]);
+        
+        // Copy back saved data if needed
+        if (copy_data) {
+            float* k_ptr = (float*)k_caches_[i]->data;
+            float* v_ptr = (float*)v_caches_[i]->data;
+            
+            for (size_t h = 0; h < n_kv_heads_; h++) {
+                for (size_t s = 0; s < seq_len; s++) {
+                    for (size_t d = 0; d < head_dim_; d++) {
+                        size_t idx = h * seq_len * head_dim_ + s * head_dim_ + d;
+                        
+                        if (idx < k_data[i].size()) {
+                            k_ptr[idx] = k_data[i][idx];
+                            v_ptr[idx] = v_data[i][idx];
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Update current sequence length
     current_seq_len_ = seq_len;
-    
-    // For a more memory-efficient implementation, we would:
-    // 1. Free the old context
-    // 2. Create a new context with the new size
-    // 3. Create new tensors with the right dimensions
-    // 4. Copy data from the old tensors if needed
-    
-    // However, for this test implementation, we'll keep the original tensors
-    // and pretend we're resizing by updating current_seq_len_
-    // In a real implementation, we would reallocate to save memory
 }
 
 struct ggml_tensor* KVCache::k_cache(int layer) {
@@ -130,6 +224,220 @@ size_t KVCache::max_seq_len() const {
 
 size_t KVCache::current_seq_len() const {
     return current_seq_len_;
+}
+
+size_t KVCache::memory_usage() const {
+    if (!ctx_) {
+        return 0;
+    }
+    
+    // Calculate memory usage based on current allocation
+    size_t total_memory = 0;
+    
+    // Add memory for each tensor
+    for (size_t i = 0; i < n_layers_; i++) {
+        // Key cache
+        if (k_caches_[i]) {
+            size_t tensor_size = 1;
+            for (int d = 0; d < GGML_MAX_DIMS; d++) {
+                tensor_size *= k_caches_[i]->ne[d];
+            }
+            total_memory += tensor_size * sizeof(float); // Assuming F32 tensors
+        }
+        
+        // Value cache
+        if (v_caches_[i]) {
+            size_t tensor_size = 1;
+            for (int d = 0; d < GGML_MAX_DIMS; d++) {
+                tensor_size *= v_caches_[i]->ne[d];
+            }
+            total_memory += tensor_size * sizeof(float); // Assuming F32 tensors
+        }
+    }
+    
+    return total_memory;
+}
+
+size_t KVCache::prune(size_t target_len, const std::vector<float>& importance, size_t keep_last_n) {
+    // Ensure we have a valid current sequence length
+    if (current_seq_len_ == 0) {
+        return 0;
+    }
+    
+    // If our current sequence length is already less than or equal to target, do nothing
+    if (current_seq_len_ <= target_len) {
+        return current_seq_len_;
+    }
+    
+    // Ensure importance vector has the correct size
+    if (importance.size() != current_seq_len_) {
+        throw std::invalid_argument("Importance vector size must match current sequence length");
+    }
+    
+    // Ensure we're not trying to keep more recent tokens than our total target
+    if (keep_last_n > target_len) {
+        keep_last_n = target_len;
+    }
+    
+    // Calculate how many tokens we can select based on importance
+    size_t importance_select_count = target_len - keep_last_n;
+    
+    // If we're keeping all recent tokens, no need for importance selection
+    if (importance_select_count == 0) {
+        // Just keep the last keep_last_n tokens
+        std::vector<size_t> keep_indices;
+        for (size_t i = current_seq_len_ - keep_last_n; i < current_seq_len_; i++) {
+            keep_indices.push_back(i);
+        }
+        
+        // Create a new cache with only the selected positions
+        return resize_with_selected_positions(keep_indices);
+    }
+    
+    // Otherwise, we need to select tokens based on importance and recency
+    
+    // Create indices for all positions
+    std::vector<size_t> indices(current_seq_len_);
+    std::iota(indices.begin(), indices.end(), 0);
+    
+    // If we need to keep the most recent tokens, exclude them from importance selection
+    std::vector<size_t> recent_indices;
+    if (keep_last_n > 0) {
+        for (size_t i = current_seq_len_ - keep_last_n; i < current_seq_len_; i++) {
+            recent_indices.push_back(i);
+        }
+        indices.resize(current_seq_len_ - keep_last_n);
+    }
+    
+    // Sort indices by importance (highest to lowest)
+    std::sort(indices.begin(), indices.end(),
+              [&importance](size_t a, size_t b) {
+                  return importance[a] > importance[b];
+              });
+    
+    // Select the most important tokens
+    std::vector<size_t> keep_indices;
+    keep_indices.reserve(target_len);
+    
+    // Add importance-selected tokens
+    for (size_t i = 0; i < importance_select_count && i < indices.size(); i++) {
+        keep_indices.push_back(indices[i]);
+    }
+    
+    // Add recent tokens
+    keep_indices.insert(keep_indices.end(), recent_indices.begin(), recent_indices.end());
+    
+    // Sort indices by position for easier memory copying
+    std::sort(keep_indices.begin(), keep_indices.end());
+    
+    // Create a new cache with only the selected positions
+    return resize_with_selected_positions(keep_indices);
+}
+
+// Helper method to resize the cache using only selected positions
+size_t KVCache::resize_with_selected_positions(const std::vector<size_t>& positions) {
+    if (positions.empty()) {
+        // If no positions to keep, just clear the cache
+        clear();
+        return 0;
+    }
+    
+    // The new sequence length will be the number of positions we're keeping
+    size_t new_seq_len = positions.size();
+    
+    // Temporary storage for copied values
+    std::vector<std::vector<float>> k_data;
+    std::vector<std::vector<float>> v_data;
+    
+    k_data.resize(n_layers_);
+    v_data.resize(n_layers_);
+    
+    // Extract data for only the selected positions
+    for (size_t i = 0; i < n_layers_; i++) {
+        // Allocate space for new data
+        k_data[i].resize(n_kv_heads_ * head_dim_ * new_seq_len);
+        v_data[i].resize(n_kv_heads_ * head_dim_ * new_seq_len);
+        
+        // Copy data from tensors
+        float* k_ptr = (float*)k_caches_[i]->data;
+        float* v_ptr = (float*)v_caches_[i]->data;
+        
+        // For each position we're keeping
+        for (size_t new_pos = 0; new_pos < positions.size(); new_pos++) {
+            size_t old_pos = positions[new_pos];
+            
+            // Ensure old position is valid
+            if (old_pos >= current_seq_len_) {
+                continue;
+            }
+            
+            // Copy data for this position
+            for (size_t h = 0; h < n_kv_heads_; h++) {
+                for (size_t d = 0; d < head_dim_; d++) {
+                    // Calculate source and destination indices
+                    size_t old_idx = h * max_seq_len_ * head_dim_ + old_pos * head_dim_ + d;
+                    size_t new_idx = h * new_seq_len * head_dim_ + new_pos * head_dim_ + d;
+                    
+                    if (old_idx < n_kv_heads_ * max_seq_len_ * head_dim_ && 
+                        new_idx < k_data[i].size()) {
+                        k_data[i][new_idx] = k_ptr[old_idx];
+                        v_data[i][new_idx] = v_ptr[old_idx];
+                    }
+                }
+            }
+        }
+    }
+    
+    // Free the old context
+    if (ctx_) {
+        ggml_free(ctx_);
+        ctx_ = nullptr;
+    }
+    
+    // Calculate memory needed for new caches
+    size_t total_size_k = n_layers_ * n_kv_heads_ * head_dim_ * new_seq_len * sizeof(float);
+    size_t total_size_v = n_layers_ * n_kv_heads_ * head_dim_ * new_seq_len * sizeof(float);
+    
+    // Add some extra memory for padding and alignment
+    size_t total_size = total_size_k + total_size_v + 1024 * 1024;
+    
+    // Initialize new context
+    struct ggml_init_params params = {
+        .mem_size   = total_size,
+        .mem_buffer = NULL,
+        .no_alloc   = false,
+    };
+    
+    ctx_ = ggml_init(params);
+    if (!ctx_) {
+        throw std::runtime_error("Failed to initialize KV cache context during pruning");
+    }
+    
+    // Create new cache tensors with the new sequence length
+    k_caches_.resize(n_layers_);
+    v_caches_.resize(n_layers_);
+    
+    for (size_t i = 0; i < n_layers_; i++) {
+        k_caches_[i] = ggml_new_tensor_3d(ctx_, GGML_TYPE_F32, head_dim_, n_kv_heads_, new_seq_len);
+        v_caches_[i] = ggml_new_tensor_3d(ctx_, GGML_TYPE_F32, head_dim_, n_kv_heads_, new_seq_len);
+        
+        // Zero initialize
+        ggml_set_zero(k_caches_[i]);
+        ggml_set_zero(v_caches_[i]);
+        
+        // Copy back saved data
+        float* k_ptr = (float*)k_caches_[i]->data;
+        float* v_ptr = (float*)v_caches_[i]->data;
+        
+        // Copy all data
+        memcpy(k_ptr, k_data[i].data(), k_data[i].size() * sizeof(float));
+        memcpy(v_ptr, v_data[i].data(), v_data[i].size() * sizeof(float));
+    }
+    
+    // Update current sequence length
+    current_seq_len_ = new_seq_len;
+    
+    return new_seq_len;
 }
 
 // GGMLModel implementation
@@ -1283,6 +1591,173 @@ struct ggml_context* GGMLModel::create_computation_context(size_t mem_size) {
     };
     
     return ggml_init(params);
+}
+
+void GGMLModel::optimize_memory(size_t max_memory_mb) {
+    // If no max memory specified, use a reasonable default (4GB)
+    if (max_memory_mb == 0) {
+        max_memory_mb = 4 * 1024; // 4GB default
+    }
+    
+    // Convert to bytes
+    size_t max_memory_bytes = max_memory_mb * 1024 * 1024;
+    
+    // Calculate current memory usage
+    size_t backbone_memory = backbone_kv_cache_ ? backbone_kv_cache_->memory_usage() : 0;
+    size_t decoder_memory = decoder_kv_cache_ ? decoder_kv_cache_->memory_usage() : 0;
+    size_t total_memory = backbone_memory + decoder_memory;
+    
+    CCSM_INFO("Current KV cache memory usage: ", total_memory / (1024 * 1024), " MB (backbone: ",
+             backbone_memory / (1024 * 1024), " MB, decoder: ", decoder_memory / (1024 * 1024), " MB)");
+    
+    // If we're already under the memory limit, nothing to optimize
+    if (total_memory <= max_memory_bytes) {
+        CCSM_INFO("Memory usage is already under the limit, no optimization needed");
+        return;
+    }
+    
+    // Calculate how much we need to reduce
+    float reduction_factor = static_cast<float>(max_memory_bytes) / total_memory;
+    CCSM_INFO("Need to reduce memory by factor: ", reduction_factor);
+    
+    // Determine new sequence lengths based on reduction factor
+    // Apply proportionally to both caches
+    if (backbone_kv_cache_) {
+        size_t current_len = backbone_kv_cache_->current_seq_len();
+        size_t new_len = static_cast<size_t>(current_len * reduction_factor);
+        
+        // Ensure we keep at least some minimum context
+        new_len = std::max(new_len, static_cast<size_t>(64));
+        new_len = std::min(new_len, current_len);
+        
+        CCSM_INFO("Resizing backbone KV cache from ", current_len, " to ", new_len, " tokens");
+        
+        // For simple resize, use the resize method
+        if (new_len < current_len) {
+            backbone_kv_cache_->resize(new_len);
+        }
+    }
+    
+    if (decoder_kv_cache_) {
+        size_t current_len = decoder_kv_cache_->current_seq_len();
+        size_t new_len = static_cast<size_t>(current_len * reduction_factor);
+        
+        // Ensure we keep at least some minimum context
+        new_len = std::max(new_len, static_cast<size_t>(64));
+        new_len = std::min(new_len, current_len);
+        
+        CCSM_INFO("Resizing decoder KV cache from ", current_len, " to ", new_len, " tokens");
+        
+        // For simple resize, use the resize method
+        if (new_len < current_len) {
+            decoder_kv_cache_->resize(new_len);
+        }
+    }
+    
+    // Check memory after optimization
+    backbone_memory = backbone_kv_cache_ ? backbone_kv_cache_->memory_usage() : 0;
+    decoder_memory = decoder_kv_cache_ ? decoder_kv_cache_->memory_usage() : 0;
+    total_memory = backbone_memory + decoder_memory;
+    
+    CCSM_INFO("After optimization, KV cache memory usage: ", total_memory / (1024 * 1024), 
+              " MB (backbone: ", backbone_memory / (1024 * 1024), 
+              " MB, decoder: ", decoder_memory / (1024 * 1024), " MB)");
+}
+
+void GGMLModel::prune_caches(float prune_factor) {
+    // If prune factor is 0 or negative, do nothing
+    if (prune_factor <= 0.0f) {
+        return;
+    }
+    
+    // Limit prune factor to a reasonable range
+    prune_factor = std::min(prune_factor, 0.9f);
+    
+    // Calculate current sequence lengths
+    size_t backbone_seq_len = backbone_kv_cache_ ? backbone_kv_cache_->current_seq_len() : 0;
+    size_t decoder_seq_len = decoder_kv_cache_ ? decoder_kv_cache_->current_seq_len() : 0;
+    
+    // Only proceed if we have sequences to prune
+    if (backbone_seq_len == 0 && decoder_seq_len == 0) {
+        CCSM_INFO("No KV caches to prune");
+        return;
+    }
+    
+    // Calculate target lengths after pruning
+    size_t backbone_target_len = static_cast<size_t>(backbone_seq_len * (1.0f - prune_factor));
+    size_t decoder_target_len = static_cast<size_t>(decoder_seq_len * (1.0f - prune_factor));
+    
+    // Ensure minimum reasonable context size
+    backbone_target_len = std::max(backbone_target_len, static_cast<size_t>(64));
+    decoder_target_len = std::max(decoder_target_len, static_cast<size_t>(64));
+    
+    // Keep a percentage of recent tokens regardless of importance
+    size_t backbone_keep_recent = std::max(static_cast<size_t>(backbone_seq_len * 0.1f), static_cast<size_t>(16));
+    size_t decoder_keep_recent = std::max(static_cast<size_t>(decoder_seq_len * 0.1f), static_cast<size_t>(16));
+    
+    // Generate importance scores for backbone cache tokens
+    if (backbone_kv_cache_ && backbone_seq_len > backbone_target_len) {
+        std::vector<float> importance(backbone_seq_len);
+        
+        // Simple importance heuristic:
+        // 1. Beginning of sequence is important (5%)
+        // 2. End of sequence is already handled separately
+        // 3. For middle tokens, use a cubic ramp that gives higher importance to 
+        //    more recent tokens but still preserves some old tokens
+        
+        size_t begin_important = backbone_seq_len * 0.05f;
+        
+        for (size_t i = 0; i < backbone_seq_len; i++) {
+            if (i < begin_important) {
+                // Beginning of sequence - high importance
+                importance[i] = 0.8f + 0.2f * (1.0f - static_cast<float>(i) / begin_important);
+            } else {
+                // For middle tokens, use cubic ramp giving higher importance to more recent tokens
+                float pos = static_cast<float>(i - begin_important) / (backbone_seq_len - begin_important);
+                importance[i] = 0.1f + 0.7f * (1.0f - std::pow(1.0f - pos, 3));
+            }
+        }
+        
+        // Add some noise to break ties randomly
+        std::mt19937 rng(42); // Fixed seed for reproducibility
+        std::uniform_real_distribution<float> dist(-0.05f, 0.05f);
+        for (auto& imp : importance) {
+            imp += dist(rng);
+            imp = std::max(0.0f, std::min(imp, 1.0f)); // Clamp to [0, 1]
+        }
+        
+        CCSM_INFO("Pruning backbone KV cache from ", backbone_seq_len, " to ", backbone_target_len, 
+                 " tokens (keeping ", backbone_keep_recent, " recent tokens)");
+        
+        size_t new_len = backbone_kv_cache_->prune(backbone_target_len, importance, backbone_keep_recent);
+        CCSM_INFO("After pruning, backbone KV cache has ", new_len, " tokens");
+    }
+    
+    // Generate importance scores for decoder cache tokens
+    if (decoder_kv_cache_ && decoder_seq_len > decoder_target_len) {
+        std::vector<float> importance(decoder_seq_len);
+        
+        // For decoder cache, recent tokens are more important for audio generation fluency
+        for (size_t i = 0; i < decoder_seq_len; i++) {
+            // Exponential decay of importance for older tokens
+            float pos = static_cast<float>(i) / decoder_seq_len;
+            importance[i] = std::exp((pos - 1.0f) * 5.0f);
+        }
+        
+        // Add some noise to break ties randomly
+        std::mt19937 rng(43); // Different seed from backbone
+        std::uniform_real_distribution<float> dist(-0.02f, 0.02f);
+        for (auto& imp : importance) {
+            imp += dist(rng);
+            imp = std::max(0.0f, std::min(imp, 1.0f)); // Clamp to [0, 1]
+        }
+        
+        CCSM_INFO("Pruning decoder KV cache from ", decoder_seq_len, " to ", decoder_target_len, 
+                 " tokens (keeping ", decoder_keep_recent, " recent tokens)");
+        
+        size_t new_len = decoder_kv_cache_->prune(decoder_target_len, importance, decoder_keep_recent);
+        CCSM_INFO("After pruning, decoder KV cache has ", new_len, " tokens");
+    }
 }
 
 } // namespace ccsm

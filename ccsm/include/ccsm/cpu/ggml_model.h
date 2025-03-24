@@ -24,6 +24,17 @@ public:
     void clear();
     void resize(size_t seq_len);
     
+    /**
+     * Prune the KV cache by keeping only the most important tokens.
+     * This is useful for long contexts where memory is constrained.
+     * 
+     * @param target_len The target sequence length after pruning
+     * @param importance Vector of importance scores for each position (higher = more important)
+     * @param keep_last_n Number of most recent tokens to always keep (e.g., for recent context)
+     * @return The number of positions actually kept
+     */
+    size_t prune(size_t target_len, const std::vector<float>& importance, size_t keep_last_n = 0);
+    
     struct ggml_tensor* k_cache(int layer);
     struct ggml_tensor* v_cache(int layer);
     
@@ -31,7 +42,13 @@ public:
     size_t max_seq_len() const;
     size_t current_seq_len() const;
     
+    // Helper method to get memory usage of the KV cache
+    size_t memory_usage() const;
+    
 private:
+    // Helper method to resize the cache keeping only selected positions
+    size_t resize_with_selected_positions(const std::vector<size_t>& positions);
+
     size_t n_layers_;
     size_t n_heads_;
     size_t n_kv_heads_;
@@ -63,6 +80,10 @@ public:
         int top_k = 50) override;
     
     void reset_caches() override;
+    
+    // Memory optimization methods
+    void optimize_memory(size_t max_memory_mb = 0) override;
+    void prune_caches(float prune_factor = 0.5f) override;
     
     std::vector<float> get_backbone_logits(
         const std::vector<int>& tokens,

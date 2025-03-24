@@ -196,31 +196,136 @@ TEST_F(KVCacheMemoryOptimizationTest, BasicMemoryAllocation) {
     // Expected memory should be adaptive to sequence length
     size_t expected_resized_memory = 2 * n_layers * n_kv_heads * head_dim * small_seq_len * sizeof(float);
     
-    // Note: In our current implementation, we don't actually resize the memory
-    // This test demonstrates the design concept rather than testing an implementation
-    // In a real implementation we would expect: resized_memory <= expected_resized_memory * overhead_factor
-    
-    // Simply verify the current sequence length was updated
-    EXPECT_EQ(kv_cache->current_seq_len(), small_seq_len);
-    
-    // Memory usage should be proportional to sequence length
+    // Verify memory usage is proportional to sequence length
     float memory_ratio = static_cast<float>(resized_memory) / initial_memory;
     float seq_len_ratio = static_cast<float>(small_seq_len) / max_seq_len;
     
     std::cout << "Memory ratio: " << memory_ratio << std::endl;
     std::cout << "Sequence length ratio: " << seq_len_ratio << std::endl;
     
-    // Note: In our current implementation, KVCache::resize doesn't actually reallocate memory.
-    // The design is that we *could* make it memory-efficient by reallocating.
-    // For this test, we'll just check that the KVCache interface works correctly.
-    // In a real implementation, we would want memory_ratio ≈ seq_len_ratio
+    // With our memory-efficient implementation, memory usage should be proportional to sequence length
+    // Allow for some variance due to implementation details
+    EXPECT_NEAR(memory_ratio, seq_len_ratio, 0.2f);
     
-    // Skipping memory comparison since we're just demonstrating the concept
-    // EXPECT_NEAR(memory_ratio, seq_len_ratio, 0.2f);
+    // Verify the resized memory is close to expected
+    EXPECT_NEAR(static_cast<float>(resized_memory), static_cast<float>(expected_resized_memory), 
+               expected_resized_memory * 0.2f);
     
     // Clear the cache and verify memory is minimized
     kv_cache->clear();
     EXPECT_EQ(kv_cache->current_seq_len(), 0);
+}
+
+// Test the memory_usage method
+TEST_F(KVCacheMemoryOptimizationTest, MemoryUsage) {
+    // Initially cache is empty
+    EXPECT_EQ(kv_cache->current_seq_len(), 0);
+    
+    // Fill cache with data
+    size_t test_seq_len = 128;
+    fill_kv_cache(test_seq_len);
+    kv_cache->resize(test_seq_len);
+    
+    // Verify current sequence length
+    EXPECT_EQ(kv_cache->current_seq_len(), test_seq_len);
+    
+    // Get memory usage using the built-in method
+    size_t memory_usage = kv_cache->memory_usage();
+    
+    // Calculate expected memory
+    size_t expected_memory = 2 * n_layers * n_kv_heads * head_dim * test_seq_len * sizeof(float);
+    
+    // Verify memory usage is close to expected (allowing for some overhead)
+    std::cout << "Memory usage: " << memory_usage << " bytes" << std::endl;
+    std::cout << "Expected memory: " << expected_memory << " bytes" << std::endl;
+    
+    // Allow for some variance due to implementation details
+    EXPECT_NEAR(static_cast<float>(memory_usage), static_cast<float>(expected_memory), 
+                expected_memory * 0.2f);
+}
+
+// Test cache pruning with importance scores
+TEST_F(KVCacheMemoryOptimizationTest, PruningWithImportance) {
+    // Fill cache with test data and resize
+    size_t original_seq_len = 100;
+    fill_kv_cache(original_seq_len);
+    kv_cache->resize(original_seq_len);
+    
+    // Verify cache size
+    EXPECT_EQ(kv_cache->current_seq_len(), original_seq_len);
+    
+    // Create importance scores - make positions 10, 20, 30, 40, 50 important
+    std::vector<float> importance(original_seq_len, 0.1f);
+    importance[10] = 0.9f;
+    importance[20] = 0.9f;
+    importance[30] = 0.9f;
+    importance[40] = 0.9f;
+    importance[50] = 0.9f;
+    
+    // Also make the last few tokens important (recency bias)
+    importance[original_seq_len - 1] = 0.8f;
+    importance[original_seq_len - 2] = 0.8f;
+    importance[original_seq_len - 3] = 0.8f;
+    
+    // Target a smaller cache size
+    size_t target_len = 20;
+    
+    // Prune the cache
+    size_t new_len = kv_cache->prune(target_len, importance, 3);
+    
+    // Verify we kept target_len positions
+    EXPECT_EQ(new_len, target_len);
+    EXPECT_EQ(kv_cache->current_seq_len(), target_len);
+    
+    // Calculate memory after pruning
+    size_t pruned_memory = kv_cache->memory_usage();
+    
+    // Expected memory after pruning
+    size_t expected_pruned_memory = 2 * n_layers * n_kv_heads * head_dim * target_len * sizeof(float);
+    
+    // Verify memory usage is proportional to target length
+    std::cout << "Pruned memory: " << pruned_memory << " bytes" << std::endl;
+    std::cout << "Expected pruned memory: " << expected_pruned_memory << " bytes" << std::endl;
+    
+    // Allow for some implementation variance
+    EXPECT_NEAR(static_cast<float>(pruned_memory), static_cast<float>(expected_pruned_memory), 
+                expected_pruned_memory * 0.2f);
+}
+
+// Test pruning with only keeping recent tokens
+TEST_F(KVCacheMemoryOptimizationTest, PruningKeepRecent) {
+    // Fill cache with test data
+    size_t original_seq_len = 100;
+    fill_kv_cache(original_seq_len);
+    kv_cache->resize(original_seq_len);
+    
+    // Verify cache size
+    EXPECT_EQ(kv_cache->current_seq_len(), original_seq_len);
+    
+    // Create importance scores - all equal
+    std::vector<float> importance(original_seq_len, 0.5f);
+    
+    // Target a smaller cache size, but keep all tokens as recent
+    size_t target_len = 20;
+    
+    // Prune the cache - keeping all tokens as recent (no importance-based selection)
+    size_t new_len = kv_cache->prune(target_len, importance, target_len);
+    
+    // Verify we kept target_len positions
+    EXPECT_EQ(new_len, target_len);
+    EXPECT_EQ(kv_cache->current_seq_len(), target_len);
+    
+    // Verify memory usage matches target length
+    size_t pruned_memory = kv_cache->memory_usage();
+    size_t expected_pruned_memory = 2 * n_layers * n_kv_heads * head_dim * target_len * sizeof(float);
+    
+    // Allow for some implementation variance
+    EXPECT_NEAR(static_cast<float>(pruned_memory), static_cast<float>(expected_pruned_memory), 
+                expected_pruned_memory * 0.2f);
+    
+    // Verify we kept the most recent tokens
+    // This would require tracking which tokens were kept, which we don't have in this test
+    // In a real application, we would verify the tokens kept are the most recent ones
 }
 
 } // namespace

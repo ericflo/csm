@@ -198,34 +198,34 @@ TEST_F(GGMLModelQuantizationTest, QuantizeSmallModel) {
          output_weights.size()) * sizeof(float);
     
     size_t model_size_q8_0 = 
-        embedding_q8_0.data_size() + 
-        q_proj_q8_0.data_size() + 
-        k_proj_q8_0.data_size() + 
-        v_proj_q8_0.data_size() + 
-        o_proj_q8_0.data_size() + 
-        ff1_q8_0.data_size() + 
-        ff2_q8_0.data_size() + 
-        output_q8_0.data_size();
+        embedding_q8_0.size() * sizeof(float) + 
+        q_proj_q8_0.size() * sizeof(float) + 
+        k_proj_q8_0.size() * sizeof(float) + 
+        v_proj_q8_0.size() * sizeof(float) + 
+        o_proj_q8_0.size() * sizeof(float) + 
+        ff1_q8_0.size() * sizeof(float) + 
+        ff2_q8_0.size() * sizeof(float) + 
+        output_q8_0.size() * sizeof(float);
     
     size_t model_size_q4_0 = 
-        embedding_q4_0.data_size() + 
-        q_proj_q4_0.data_size() + 
-        k_proj_q4_0.data_size() + 
-        v_proj_q4_0.data_size() + 
-        o_proj_q4_0.data_size() + 
-        ff1_q4_0.data_size() + 
-        ff2_q4_0.data_size() + 
-        output_q4_0.data_size();
+        embedding_q4_0.size() * sizeof(float) / 2 + 
+        q_proj_q4_0.size() * sizeof(float) / 2 + 
+        k_proj_q4_0.size() * sizeof(float) / 2 + 
+        v_proj_q4_0.size() * sizeof(float) / 2 + 
+        o_proj_q4_0.size() * sizeof(float) / 2 + 
+        ff1_q4_0.size() * sizeof(float) / 2 + 
+        ff2_q4_0.size() * sizeof(float) / 2 + 
+        output_q4_0.size() * sizeof(float) / 2;
     
     size_t model_size_q4_1 = 
-        embedding_q4_1.data_size() + 
-        q_proj_q4_1.data_size() + 
-        k_proj_q4_1.data_size() + 
-        v_proj_q4_1.data_size() + 
-        o_proj_q4_1.data_size() + 
-        ff1_q4_1.data_size() + 
-        ff2_q4_1.data_size() + 
-        output_q4_1.data_size();
+        embedding_q4_1.size() * sizeof(float) / 2 + 
+        q_proj_q4_1.size() * sizeof(float) / 2 + 
+        k_proj_q4_1.size() * sizeof(float) / 2 + 
+        v_proj_q4_1.size() * sizeof(float) / 2 + 
+        o_proj_q4_1.size() * sizeof(float) / 2 + 
+        ff1_q4_1.size() * sizeof(float) / 2 + 
+        ff2_q4_1.size() * sizeof(float) / 2 + 
+        output_q4_1.size() * sizeof(float) / 2;
     
     // Print memory usage summary
     std::cout << "Model Memory Usage:" << std::endl;

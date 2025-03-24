@@ -116,6 +116,12 @@ public:
         // Fall back to using the unknown token ID
         return unk_id_;
     }
+    
+    std::vector<int> get_audio_token_ids() const override {
+        // Return a default set of audio token IDs (this implementation may vary)
+        // Typically these would be special tokens designated for audio
+        return {1, 2, 3, 4}; // Placeholder implementation
+    }
 };
 
 // Audio tokenizer implementation (simplified)
