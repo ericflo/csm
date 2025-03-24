@@ -36,7 +36,7 @@ This approach ensures robust, well-tested code with high test coverage.
 | Tokenizer | 🟢 Complete | Text tokenization with SentencePiece |
 | SIMD Optimizations | 🟢 Complete | Matrix multiplication, normalization, activation functions, kernel fusion, mixed precision, edge case handling, and in-place operations implemented |
 | MLX Acceleration | 🟠 Planning | Basic infrastructure only |
-| Generator | 🔴 Not Started | Requires tensor/model systems first |
+| Generator | 🟡 In Progress | Basic functionality and tests implemented |
 | Watermarking | 🟡 In Progress | Initial interface implemented, needs full implementation |
 | Thread Pool | 🟡 In Progress | Basic functionality implemented |
 | CLI Arguments | 🟢 Complete | Argument parsing and validation |
@@ -205,7 +205,7 @@ CCSM follows a comprehensive testing strategy with multiple test types:
 | GGML Subsystem | 85%+ | ~40% | 🟡 Partial |
 | SIMD Optimizations | 85%+ | ~60% | 🟢 Good |
 | Tokenizer | 90%+ | ~80% | 🟢 Good |
-| Generator | 90%+ | ~20% | 🟡 Low |
+| Generator | 90%+ | ~60% | 🟡 Partial |
 | MLX Acceleration | 80%+ | <5% | 🔴 Not Started |
 | Watermarking | 85%+ | <5% | 🔴 Not Started |
 | Thread Pool | 80%+ | ~50% | 🟡 Partial |
@@ -297,7 +297,7 @@ cd build && ctest
 3. ✅ Add quantization-aware operations with SIMD support
 4. ✅ Implement additional SIMD optimizations (mixed precision, edge case handling, in-place operations)
 5. ✅ Expand GGML backend tests to include quantization (KV cache quantization)
-6. Begin implementing Generator tests
+6. ✅ Begin implementing Generator tests
 7. Create tests for Thread Pool implementation
 8. Implement and test memory management optimizations
 9. Complete watermarking implementation
