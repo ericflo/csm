@@ -33,6 +33,8 @@ set(ADDITIONAL_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_thread_pool_advanced.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_kv_cache_memory_optimization.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_model_memory_optimization.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator_memory_optimization.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_kv_cache_pruning.cpp"
 )
 
 # Append any missing files
@@ -137,6 +139,22 @@ add_executable(test_kv_cache_memory
 target_link_libraries(test_kv_cache_memory PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_kv_cache_memory PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# Add a separate target for KV cache pruning tests
+add_executable(test_kv_cache_pruning
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_kv_cache_pruning.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_kv_cache_pruning PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_kv_cache_pruning PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+# Add a separate target for Generator memory optimization tests
+add_executable(test_generator_memory_optimization
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator_memory_optimization.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_generator_memory_optimization PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_generator_memory_optimization PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # Add a separate target for GGMLModel memory optimization tests
 add_executable(test_model_memory_optimization
     ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_model_memory_optimization.cpp
@@ -190,6 +208,8 @@ add_test(NAME KVCacheMemoryTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_kv_cach
 add_test(NAME ModelMemoryOptimizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_model_memory_optimization)
 add_test(NAME ModelQuantizationMemoryTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_model_quantization_memory)
 add_test(NAME QuantizedMatrixMulTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_quantized_matrix_mul)
+add_test(NAME KVCachePruningTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_kv_cache_pruning)
+add_test(NAME GeneratorMemoryOptimizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator_memory_optimization)
 
 if(WITH_MLX AND MLX_TEST_SOURCES)
     add_test(NAME MLXTests COMMAND ccsm_mlx_tests)
@@ -308,9 +328,27 @@ if(WITH_COVERAGE)
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
     
+    # Setup the KV cache pruning test coverage target
+    setup_target_for_coverage(
+        NAME coverage_kv_cache_pruning
+        EXECUTABLE test_kv_cache_pruning
+        DEPENDENCIES test_kv_cache_pruning
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
+    # Setup the generator memory optimization test coverage target
+    setup_target_for_coverage(
+        NAME coverage_generator_memory_optimization
+        EXECUTABLE test_generator_memory_optimization
+        DEPENDENCIES test_generator_memory_optimization
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_ggml_kv_cache coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_ggml_kv_cache coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization
         COMMENT "Generating combined code coverage report"
     )
     
