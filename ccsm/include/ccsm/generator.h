@@ -34,6 +34,13 @@ struct GenerationOptions {
     bool debug = false;
 };
 
+// Generation result containing audio and token information
+struct GenerationResult {
+    std::vector<float> audio;
+    std::vector<int> frame;
+    std::vector<std::vector<int>> frames;
+};
+
 // Generator interface for text-to-speech
 class Generator {
 public:
@@ -49,7 +56,7 @@ public:
     // Main generation function
     virtual std::vector<float> generate_speech(
         const std::string& text,
-        int speaker_id,
+        int speaker_id = -1,
         const std::vector<Segment>& context = {},
         const GenerationOptions& options = {},
         std::function<void(int, int)> progress_callback = nullptr);
@@ -57,23 +64,64 @@ public:
     // Generate from pre-tokenized text
     virtual std::vector<float> generate_speech_from_tokens(
         const std::vector<int>& tokens,
-        int speaker_id,
+        int speaker_id = -1,
         const std::vector<Segment>& context = {},
         const GenerationOptions& options = {},
         std::function<void(int, int)> progress_callback = nullptr);
+    
+    // Convenience overloads for simple generation
+    virtual std::vector<float> generate_speech(
+        const std::string& text, 
+        int speaker_id, 
+        float temperature,
+        int top_k = 50) {
+        GenerationOptions options;
+        options.temperature = temperature;
+        options.top_k = top_k;
+        return generate_speech(text, speaker_id, {}, options);
+    }
+    
+    // Configuration methods
+    void set_default_temperature(float temperature);
+    float default_temperature() const;
+    
+    void set_default_top_k(int top_k);
+    int default_top_k() const;
+    
+    void set_enable_watermarking(bool enable);
+    bool is_watermarking_enabled() const;
+    
+    void set_max_text_tokens(int max_tokens);
+    int max_text_tokens() const;
+    
+    void set_memory_optimization(bool enable, size_t max_memory_mb = 0, 
+                                int trigger_mb = 0, float prune_factor = 0.5f);
     
     // Getters
     int sample_rate() const;
     std::shared_ptr<Model> model() const;
     std::shared_ptr<TextTokenizer> text_tokenizer() const;
     std::shared_ptr<AudioCodec> audio_codec() const;
+    std::shared_ptr<Watermarker> watermarker() const;
     
 protected:
     std::shared_ptr<Model> model_;
     std::shared_ptr<TextTokenizer> text_tokenizer_;
     std::shared_ptr<AudioCodec> audio_codec_;
     std::shared_ptr<Watermarker> watermarker_;
-    int sample_rate_;
+    
+    // Default parameters
+    float default_temperature_ = 0.9f;
+    int default_top_k_ = 50;
+    bool enable_watermarking_ = true;
+    int max_text_tokens_ = 2048;
+    int sample_rate_ = 24000;
+    
+    // Memory optimization
+    bool memory_optimization_enabled_ = false;
+    size_t max_memory_mb_ = 0;
+    int memory_trigger_mb_ = 0;
+    float prune_factor_ = 0.5f;
 };
 
 // Factory function to create a generator with the CSM-1B model

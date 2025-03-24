@@ -1,878 +1,586 @@
-#include <gtest/gtest.h>
 #include <ccsm/generator.h>
 #include <ccsm/model.h>
 #include <ccsm/tokenizer.h>
 #include <ccsm/watermarking.h>
-#include <cmath>
+#include <gtest/gtest.h>
 #include <memory>
-#include <random>
-#include <string>
 #include <vector>
-#include <chrono>
+#include <string>
 #include <functional>
-#include <stdexcept>
-#include <iomanip>
-#include <iostream>
+#include <random>
+#include <chrono>
 
-using namespace ccsm;
+namespace ccsm {
+namespace {
 
-// Define GenerationState enum for testing
-enum class GenerationState {
-    Tokenizing,
-    Generating,
-    Decoding,
-    Complete
-};
-
-// Define GenerationCallback type for testing
-using GenerationCallback = std::function<bool(float, GenerationState)>;
-
-// Extension of GenerationOptions for testing
-class TestGenerationOptions : public GenerationOptions {
+// Mock classes for testing Generator functionality
+class MockTextTokenizer : public TextTokenizer {
 public:
-    TestGenerationOptions() : GenerationOptions() {}
-    
-    // Add progress_callback field for testing
-    GenerationCallback progress_callback = nullptr;
-};
-
-// Advanced mock model that provides more control over behavior
-class AdvancedMockModel : public Model {
-public:
-    AdvancedMockModel(const ModelConfig& config) : Model(config) {}
-    
-    bool load_weights(const std::string& path) override {
-        return true;
-    }
-    
-    bool load_weights(std::shared_ptr<ModelLoader> loader) override {
-        return true;
-    }
-    
-    bool load_weights(const WeightMap& weights) override {
-        return true;
-    }
-    
-    std::vector<int> generate_frame(
-        const std::vector<int>& tokens,
-        const std::vector<int>& positions,
-        float temperature,
-        int top_k
-    ) override {
-        // Track call parameters for testing
-        tokens_history.push_back(tokens);
-        positions_history.push_back(positions);
-        temperature_history.push_back(temperature);
-        top_k_history.push_back(top_k);
-        
-        // Deterministic but semi-random token generation based on the seed
-        std::mt19937 gen(seed + call_count);
-        call_count++;
-        
-        // Optionally return EOS tokens if configured to do so
-        if (return_eos_frames && frames_generated >= max_frames) {
-            std::vector<int> eos_frame(config_.num_codebooks, 2); // Using 2 as EOS token
-            return eos_frame;
-        }
-        
-        // Generate tokens affected by the temperature and top_k parameters
-        std::vector<int> result(config_.num_codebooks);
-        std::uniform_int_distribution<> dist(1, std::max(1, config_.audio_vocab_size - 1));
-        
-        for (size_t i = 0; i < result.size(); i++) {
-            // Make token selection affected by temperature
-            int range = std::max(1, static_cast<int>((config_.audio_vocab_size - 3) / (1.0 + temperature)));
-            int offset = std::min(dist(gen) % range, top_k);
-            
-            // Deterministic but variable token
-            result[i] = 3 + offset;  // Starting at 3 to avoid special tokens 0-2
-        }
-        
-        frames_generated++;
-        return result;
-    }
-    
-    std::vector<float> get_backbone_logits(
-        const std::vector<int>& tokens,
-        const std::vector<int>& positions
-    ) override {
-        // Track call for testing
-        backbone_calls++;
-        
-        // Generate logits with a specific pattern dependent on tokens
-        std::vector<float> result(config_.audio_vocab_size);
-        
-        // Create a pattern where a few tokens have high logits
-        for (size_t i = 0; i < result.size(); i++) {
-            // Default low probability
-            result[i] = -10.0f;
-        }
-        
-        // Set a few "preferred" tokens with high logits
-        // This depends on the input tokens to make it deterministic but variable
-        size_t offset = 0;
-        for (int token : tokens) {
-            offset = (offset + token) % (config_.audio_vocab_size - 3);
-        }
-        
-        // Add high logits for a few tokens
-        for (int i = 0; i < 10; i++) {
-            size_t idx = (3 + offset + i * 7) % (config_.audio_vocab_size - 3) + 3;
-            result[idx] = 5.0f;
-        }
-        
-        return result;
-    }
-    
-    std::vector<float> get_decoder_logits(
-        const std::vector<int>& tokens,
-        const std::vector<int>& positions,
-        int codebook
-    ) override {
-        // Track call for testing
-        decoder_calls++;
-        
-        // Simulated logits that are affected by codebook
-        std::vector<float> result(config_.audio_vocab_size);
-        
-        // Create pattern where logits vary by codebook
-        for (size_t i = 0; i < result.size(); i++) {
-            // Default low probability
-            result[i] = -10.0f;
-        }
-        
-        // Make each codebook prefer different ranges of tokens
-        size_t start_idx = 3 + (codebook * 20) % (config_.audio_vocab_size - 20);
-        
-        // Set a range of tokens with high logits
-        for (size_t i = 0; i < 20; i++) {
-            size_t idx = (start_idx + i) % config_.audio_vocab_size;
-            if (idx >= 3) { // Skip special tokens
-                result[idx] = 3.0f;
-            }
-        }
-        
-        return result;
-    }
-    
-    void reset_caches() override {
-        cache_resets++;
-    }
-    
-    // Test control functions
-    void set_seed(int new_seed) {
-        seed = new_seed;
-        call_count = 0;
-    }
-    
-    void set_eos_behavior(bool return_eos, int max_frames_before_eos) {
-        return_eos_frames = return_eos;
-        max_frames = max_frames_before_eos;
-    }
-    
-    void reset_history() {
-        tokens_history.clear();
-        positions_history.clear();
-        temperature_history.clear();
-        top_k_history.clear();
-        frames_generated = 0;
-        backbone_calls = 0;
-        decoder_calls = 0;
-        cache_resets = 0;
-    }
-    
-    // History trackers for testing
-    std::vector<std::vector<int>> tokens_history;
-    std::vector<std::vector<int>> positions_history;
-    std::vector<float> temperature_history;
-    std::vector<int> top_k_history;
-    
-    int frames_generated = 0;
-    int backbone_calls = 0;
-    int decoder_calls = 0;
-    int cache_resets = 0;
-    
-private:
-    int seed = 42;
-    int call_count = 0;
-    bool return_eos_frames = false;
-    int max_frames = 100;
-};
-
-// Advanced mock text tokenizer that tracks usage
-class AdvancedMockTextTokenizer : public TextTokenizer {
-public:
-    AdvancedMockTextTokenizer() = default;
+    MockTextTokenizer(int vocab_size = 32000) : vocab_size_(vocab_size) {}
     
     std::vector<int> encode(const std::string& text) const override {
-        encode_calls++;
-        last_encoded_text = text;
-        
-        // Generate tokens based on text
+        // Return a deterministic sequence based on the input text length
         std::vector<int> tokens;
-        
-        // Start with BOS token
-        tokens.push_back(bos_token_id());
-        
-        // Add tokens based on text (a simplistic mapping)
-        for (char c : text) {
-            // Use character code as basis for token, wrapped to avoid going out of range
-            int token_id = ((c - 32) % 100) + 10; // Start at 10 to avoid special tokens
-            tokens.push_back(token_id);
+        for (size_t i = 0; i < text.length(); i++) {
+            tokens.push_back(static_cast<int>(text[i]) % vocab_size_);
         }
-        
-        // End with EOS token
-        tokens.push_back(eos_token_id());
-        
         return tokens;
     }
     
     std::string decode(const std::vector<int>& tokens) const override {
-        decode_calls++;
-        last_decoded_tokens = tokens;
-        
-        // Simple decoding - convert tokens back to characters
+        // Simple decoding strategy
         std::string result;
-        for (int token : tokens) {
-            // Skip special tokens
-            if (token <= 5) continue;
-            
-            // Convert token back to char
-            char c = ((token - 10) % 100) + 32;
-            result.push_back(c);
+        for (auto token : tokens) {
+            result += static_cast<char>((token % 26) + 'a');
         }
-        
         return result;
     }
     
-    int vocab_size() const override {
-        return 32000;
-    }
-    
-    int bos_token_id() const override {
-        return 1;
-    }
-    
-    int eos_token_id() const override {
-        return 2;
-    }
-    
-    int pad_token_id() const override {
-        return 0;
-    }
-    
-    int unk_token_id() const override {
-        return 3;
-    }
+    int vocab_size() const override { return vocab_size_; }
+    int bos_token_id() const override { return 1; }
+    int eos_token_id() const override { return 2; }
+    int pad_token_id() const override { return 0; }
+    int unk_token_id() const override { return 3; }
     
     int get_speaker_token_id(int speaker_id) const override {
-        last_speaker_id = speaker_id;
-        speaker_token_calls++;
         return 10000 + speaker_id;
     }
     
-    // Testing accessors
-    void reset_tracking() const {
-        encode_calls = 0;
-        decode_calls = 0;
-        speaker_token_calls = 0;
-        last_encoded_text = "";
-        last_decoded_tokens.clear();
-        last_speaker_id = -1;
+    std::vector<int> get_audio_token_ids() const override {
+        return {5000, 5001, 5002, 5003};
     }
-    
-    mutable int encode_calls = 0;
-    mutable int decode_calls = 0;
-    mutable int speaker_token_calls = 0;
-    mutable std::string last_encoded_text;
-    mutable std::vector<int> last_decoded_tokens;
-    mutable int last_speaker_id = -1;
+
+private:
+    int vocab_size_;
 };
 
-// Advanced mock audio codec with testing capabilities
-class AdvancedMockAudioCodec : public AudioCodec {
+class MockAudioCodec : public AudioCodec {
 public:
-    AdvancedMockAudioCodec() = default;
+    MockAudioCodec(int num_codebooks = 8, int vocab_size = 2051, int sample_rate = 24000) 
+        : num_codebooks_(num_codebooks), vocab_size_(vocab_size), sample_rate_(sample_rate) {}
     
-    // From AudioCodec interface
     std::vector<std::vector<int>> encode(const std::vector<float>& audio) const override {
-        encode_calls++;
-        last_encoded_audio = audio;
+        // Create mock encoded audio with multiple codebooks
+        std::vector<std::vector<int>> result(num_codebooks_);
+        size_t frames = audio.size() / (sample_rate_ / 10); // Approx 100ms frames
         
-        // Generate tokens based on audio data
-        std::vector<std::vector<int>> result;
-        
-        // Calculate number of frames based on hop_length
-        size_t num_frames = audio.size() / hop_length() + 1;
-        
-        // Convert to frames with multiple codebooks
-        for (size_t i = 0; i < num_frames; i++) {
-            std::vector<int> frame(num_codebooks());
-            for (size_t j = 0; j < frame.size(); j++) {
-                // Generate a token influenced by the audio data
-                float sum = 0.0f;
-                size_t start = i * hop_length();
-                size_t end = std::min(start + hop_length(), audio.size());
-                
-                for (size_t k = start; k < end; k++) {
-                    sum += std::abs(audio[k]);
-                }
-                
-                // Convert to a token between 3 and vocab_size-1
-                int token = 3 + static_cast<int>((sum * 100) + j) % (vocab_size() - 3);
-                frame[j] = token;
+        for (int cb = 0; cb < num_codebooks_; cb++) {
+            for (size_t i = 0; i < frames; i++) {
+                result[cb].push_back((i + cb) % (vocab_size_ - 1) + 1); // Avoid 0 (EOS)
             }
-            result.push_back(frame);
         }
         
         return result;
     }
     
     std::vector<float> decode(const std::vector<std::vector<int>>& tokens) const override {
-        decode_calls++;
-        last_decoded_tokens = tokens;
-        
-        // Verify input
-        if (tokens.empty()) {
-            return {};
+        // Generate simple audio based on tokens
+        size_t max_frames = 0;
+        for (const auto& codebook : tokens) {
+            max_frames = std::max(max_frames, codebook.size());
         }
         
-        // Calculate output audio length based on hop_length
-        size_t output_length = tokens.size() * hop_length();
-        std::vector<float> result(output_length, 0.0f);
+        // Create audio: 10ms per frame at sample_rate_
+        size_t samples_per_frame = sample_rate_ / 100;
+        std::vector<float> result(max_frames * samples_per_frame, 0.0f);
         
-        // Fill with a pattern based on the tokens
-        for (size_t i = 0; i < tokens.size(); i++) {
-            const auto& frame = tokens[i];
-            
-            // Skip if this is an EOS frame
-            bool is_eos = true;
-            for (int token : frame) {
-                if (!is_eos_token(token, 0)) {
-                    is_eos = false;
-                    break;
-                }
-            }
-            if (is_eos) continue;
-            
-            // Generate a waveform pattern based on the tokens in this frame
-            for (size_t j = 0; j < frame.size(); j++) {
-                int token = frame[j];
-                float frequency = 100.0f + (token % 20) * 50.0f; // Hz
-                float amplitude = 0.1f + (j % 8) * 0.01f;
-                
-                // Fill one frame worth of audio
-                for (size_t k = 0; k < hop_length() && (i * hop_length() + k) < result.size(); k++) {
-                    float t = static_cast<float>(i * hop_length() + k) / sample_rate();
-                    result[i * hop_length() + k] += amplitude * std::sin(2.0f * M_PI * frequency * t);
-                }
-            }
+        // Fill with simple patterns
+        for (size_t i = 0; i < result.size(); i++) {
+            result[i] = 0.1f * sin(2.0f * 3.14159f * 440.0f * i / sample_rate_);
         }
         
         return result;
     }
     
-    int num_codebooks() const override {
-        return 8;
-    }
-    
-    int vocab_size() const override {
-        return 2051;
-    }
-    
-    int sample_rate() const override {
-        return 24000;
-    }
-    
-    int hop_length() const override {
-        return 320;
-    }
+    int num_codebooks() const override { return num_codebooks_; }
+    int vocab_size() const override { return vocab_size_; }
+    int sample_rate() const override { return sample_rate_; }
+    int hop_length() const override { return sample_rate_ / 100; }
     
     bool is_eos_token(int token, int codebook) const override {
-        is_eos_token_calls++;
-        return token == 2;
+        return token == 0;
     }
-    
-    // Testing accessors
-    void reset_tracking() const {
-        encode_calls = 0;
-        decode_calls = 0;
-        is_eos_token_calls = 0;
-        last_encoded_audio.clear();
-        last_decoded_tokens.clear();
-    }
-    
-    mutable int encode_calls = 0;
-    mutable int decode_calls = 0;
-    mutable int is_eos_token_calls = 0;
-    mutable std::vector<float> last_encoded_audio;
-    mutable std::vector<std::vector<int>> last_decoded_tokens;
+
+private:
+    int num_codebooks_;
+    int vocab_size_;
+    int sample_rate_;
 };
 
-// Advanced mock watermarker that tracks usage and provides detailed results
-class AdvancedMockWatermarker : public Watermarker {
+class MockWatermarker : public Watermarker {
 public:
-    AdvancedMockWatermarker() = default;
+    MockWatermarker(float strength = 0.5f) : strength_(strength) {}
     
     std::vector<float> apply_watermark(const std::vector<float>& audio) override {
-        apply_watermark_calls++;
-        last_watermarked_audio = audio;
-        
-        // Create a copy with a subtle modification to simulate watermarking
+        // Copy the audio and add a slight offset to simulate watermarking
         std::vector<float> result = audio;
         for (size_t i = 0; i < result.size(); i++) {
-            // Add a very small sinusoidal pattern as the "watermark"
-            float t = static_cast<float>(i) / 24000.0f; // Assume 24kHz sample rate
-            result[i] += watermark_strength * 0.01f * std::sin(2.0f * M_PI * 50.0f * t);
+            result[i] += strength_ * 0.01f * sin(i * 0.1f);
         }
-        
+        was_applied_ = true;
         return result;
     }
     
     bool detect_watermark(const std::vector<float>& audio) override {
-        detect_watermark_calls++;
-        last_detected_audio = audio;
-        
-        // Simple detection logic - simulate finding the watermark based on audio length
-        return audio.size() > 1000;
+        return was_applied_;
     }
     
     WatermarkResult detect(const std::vector<float>& audio, float sample_rate) override {
-        detect_calls++;
-        last_detected_audio = audio;
-        last_sample_rate = sample_rate;
-        
         WatermarkResult result;
-        
-        // More sophisticated detection logic that depends on audio content
-        if (audio.size() > 1000) {
-            // Calculate a confidence based on audio properties
-            float sum = 0.0f;
-            for (size_t i = 0; i < std::min(audio.size(), static_cast<size_t>(1000)); i++) {
-                sum += std::abs(audio[i]);
-            }
-            
-            float avg_amplitude = sum / std::min(audio.size(), static_cast<size_t>(1000));
-            
-            // Watermark is "detected" if amplitude is in a certain range
-            if (avg_amplitude > 0.01f && avg_amplitude < 0.5f) {
-                result.detected = true;
-                result.confidence = 0.5f + avg_amplitude;
-                
-                // Generate a payload based on audio content
-                std::string payload = "wm-";
-                payload += std::to_string(static_cast<int>(avg_amplitude * 1000));
-                result.payload = payload;
-            } else {
-                result.detected = false;
-                result.confidence = 0.1f;
-                result.payload = "";
-            }
-        } else {
-            // Too short to detect
-            result.detected = false;
-            result.confidence = 0.0f;
-            result.payload = "";
-        }
-        
+        result.detected = was_applied_;
+        result.payload = "test-payload";
+        result.confidence = was_applied_ ? 0.95f : 0.05f;
         return result;
     }
     
-    float get_strength() const override {
-        return watermark_strength;
-    }
+    float get_strength() const override { return strength_; }
+    void set_strength(float strength) override { strength_ = strength; }
+    std::string get_key() const override { return "test-key"; }
     
-    void set_strength(float strength) override {
-        watermark_strength = strength;
-    }
-    
-    std::string get_key() const override {
-        return watermark_key;
-    }
-    
-    // Test control functions
-    void set_key(const std::string& key) {
-        watermark_key = key;
-    }
-    
-    void reset_tracking() {
-        apply_watermark_calls = 0;
-        detect_watermark_calls = 0;
-        detect_calls = 0;
-        last_watermarked_audio.clear();
-        last_detected_audio.clear();
-        last_sample_rate = 0.0f;
-    }
-    
-    // Tracking for testing
-    int apply_watermark_calls = 0;
-    int detect_watermark_calls = 0;
-    int detect_calls = 0;
-    std::vector<float> last_watermarked_audio;
-    std::vector<float> last_detected_audio;
-    float last_sample_rate = 0.0f;
-    
+    // For testing whether watermarking was applied
+    bool was_applied() const { return was_applied_; }
+    void reset_applied() { was_applied_ = false; }
+
 private:
-    float watermark_strength = 0.5f;
-    std::string watermark_key = "test-key";
+    float strength_;
+    bool was_applied_ = false;
 };
 
-// Test fixture for advanced generator tests
-class AdvancedGeneratorTest : public ::testing::Test {
+class MockModel : public Model {
+public:
+    MockModel() : Model(ModelConfig()) {
+        config_.name = "Mock Model";
+        config_.vocab_size = 32000;
+        config_.audio_vocab_size = 2048;
+        config_.d_model = 1024;
+        config_.n_heads = 16;
+        config_.n_kv_heads = 16;
+        config_.n_layers = 32;
+        config_.max_seq_len = 2048;
+    }
+    
+    bool load_weights(const std::string& path) override { return true; }
+    bool load_weights(std::shared_ptr<ModelLoader> loader) override { return true; }
+    bool load_weights(const WeightMap& weights) override { return true; }
+    
+    void reset_caches() override {
+        // Verify the reset was called
+        reset_called_++;
+    }
+    
+    void optimize_memory(size_t max_memory_mb = 0) override {
+        // Keep track of optimization calls
+        optimize_called_ = true;
+        last_max_memory_mb_ = max_memory_mb;
+    }
+    
+    void prune_caches(float prune_factor = 0.5f) override {
+        // Keep track of pruning calls
+        prune_called_ = true;
+        last_prune_factor_ = prune_factor;
+    }
+    
+    std::vector<int> generate_frame(
+        const std::vector<int>& tokens,
+        const std::vector<int>& positions,
+        float temperature = 0.9f,
+        int top_k = 50) override {
+        // Keep track of parameters used
+        last_temperature_ = temperature;
+        last_top_k_ = top_k;
+        frame_count_++;
+        
+        // Use random number generator with seed controlled by temperature 
+        // This allows tests to verify different temperatures produce different results
+        std::mt19937 rng(static_cast<unsigned int>(temperature * 100));
+        std::uniform_int_distribution<int> dist(1, config_.audio_vocab_size - 1);
+        
+        // Generate tokens based on config
+        std::vector<int> result(config_.num_codebooks);
+        for (int i = 0; i < config_.num_codebooks; i++) {
+            result[i] = dist(rng);
+        }
+        
+        // Return mock result
+        return result;
+    }
+    
+    std::vector<float> get_backbone_logits(
+        const std::vector<int>& tokens,
+        const std::vector<int>& positions) override {
+        // Return dummy logits
+        return std::vector<float>(config_.vocab_size, 0.0f);
+    }
+    
+    std::vector<float> get_decoder_logits(
+        const std::vector<int>& tokens,
+        const std::vector<int>& positions,
+        int codebook) override {
+        // Return dummy logits
+        return std::vector<float>(config_.audio_vocab_size, 0.0f);
+    }
+    
+    // Mock helper methods for testing
+    int frame_count() const { return frame_count_; }
+    float last_temperature() const { return last_temperature_; }
+    int last_top_k() const { return last_top_k_; }
+    int reset_called() const { return reset_called_; }
+    void reset_metrics() {
+        frame_count_ = 0;
+        last_temperature_ = 0.0f;
+        last_top_k_ = 0;
+        reset_called_ = 0;
+        optimize_called_ = false;
+        last_max_memory_mb_ = 0;
+        prune_called_ = false;
+        last_prune_factor_ = 0.0f;
+    }
+    
+    bool optimize_called() const { return optimize_called_; }
+    size_t last_max_memory_mb() const { return last_max_memory_mb_; }
+    bool prune_called() const { return prune_called_; }
+    float last_prune_factor() const { return last_prune_factor_; }
+
+private:
+    int frame_count_ = 0;
+    float last_temperature_ = 0.0f;
+    int last_top_k_ = 0;
+    int reset_called_ = 0;
+    bool optimize_called_ = false;
+    size_t last_max_memory_mb_ = 0;
+    bool prune_called_ = false;
+    float last_prune_factor_ = 0.0f;
+};
+
+// Test fixture
+class GeneratorAdvancedTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Create model config
-        config.vocab_size = 32000;
-        config.audio_vocab_size = 2051;
-        config.d_model = 4096;
-        config.n_heads = 32;
-        config.n_kv_heads = 4;
-        config.n_layers = 32;
-        config.n_audio_layers = 12;
-        config.max_seq_len = 2048;
-        config.num_codebooks = 8;
-        config.name = "test-model";
+        // Create mock components
+        model_ = std::make_shared<MockModel>();
+        tokenizer_ = std::make_shared<MockTextTokenizer>();
+        codec_ = std::make_shared<MockAudioCodec>();
+        watermarker_ = std::make_shared<MockWatermarker>();
         
-        // Create advanced mocks
-        model = std::make_shared<AdvancedMockModel>(config);
-        text_tokenizer = std::make_shared<AdvancedMockTextTokenizer>();
-        audio_codec = std::make_shared<AdvancedMockAudioCodec>();
-        watermarker = std::make_shared<AdvancedMockWatermarker>();
-        
-        // Create generator with mocks
-        generator = std::make_shared<Generator>(model, text_tokenizer, audio_codec, watermarker);
+        // Create generator with mock components
+        generator_ = std::make_shared<Generator>(model_, tokenizer_, codec_, watermarker_);
     }
     
-    void TearDown() override {
-        // Reset tracking data in mocks
-        text_tokenizer->reset_tracking();
-        audio_codec->reset_tracking();
-        watermarker->reset_tracking();
-        model->reset_history();
+    // Get mock components with proper types for testing
+    std::shared_ptr<MockModel> model() {
+        return std::static_pointer_cast<MockModel>(model_);
     }
     
-    // Helper to run generation with callback
-    std::vector<float> generate_with_callback(const std::string& text, int speaker_id, 
-                                              const std::vector<Segment>& segments = {},
-                                              const GenerationOptions& options = {}) {
-        progress_updates.clear();
-        
-        // Create a progress callback
-        GenerationCallback callback = [this](float progress, GenerationState state) {
-            progress_updates.push_back({progress, state});
-            return true; // Continue generation
-        };
-        
-        // Create our test options with progress callback
-        TestGenerationOptions test_opts;
-        test_opts.temperature = options.temperature;
-        test_opts.top_k = options.top_k;
-        test_opts.max_audio_length_ms = options.max_audio_length_ms;
-        test_opts.seed = options.seed;
-        test_opts.enable_watermark = options.enable_watermark;
-        test_opts.debug = options.debug;
-        test_opts.progress_callback = callback;
-        
-        // For testing, we're just using the regular options without callback
-        // In a real implementation, the Generator would check for the TestGenerationOptions type
-        return generator->generate_speech(text, speaker_id, segments, options);
+    std::shared_ptr<MockWatermarker> watermarker() {
+        return std::static_pointer_cast<MockWatermarker>(watermarker_);
     }
     
-    // Helper to verify generation flow
-    void verify_basic_generation_flow(const std::string& text, int speaker_id) {
-        // Generate speech
-        std::vector<float> audio = generator->generate_speech(text, speaker_id);
-        
-        // Verify text was tokenized
-        EXPECT_GT(text_tokenizer->encode_calls, 0);
-        EXPECT_EQ(text_tokenizer->last_encoded_text, text);
-        
-        // Verify speaker ID was looked up
-        EXPECT_GT(text_tokenizer->speaker_token_calls, 0);
-        EXPECT_EQ(text_tokenizer->last_speaker_id, speaker_id);
-        
-        // Verify model generated frames
-        EXPECT_GT(model->frames_generated, 0);
-        
-        // Verify frames were decoded to audio
-        EXPECT_GT(audio_codec->decode_calls, 0);
-        EXPECT_FALSE(audio_codec->last_decoded_tokens.empty());
-        
-        // Verify audio was produced
-        EXPECT_FALSE(audio.empty());
-    }
+    // Mock components
+    std::shared_ptr<Model> model_;
+    std::shared_ptr<TextTokenizer> tokenizer_;
+    std::shared_ptr<AudioCodec> codec_;
+    std::shared_ptr<Watermarker> watermarker_;
     
-    ModelConfig config;
-    std::shared_ptr<AdvancedMockModel> model;
-    std::shared_ptr<AdvancedMockTextTokenizer> text_tokenizer;
-    std::shared_ptr<AdvancedMockAudioCodec> audio_codec;
-    std::shared_ptr<AdvancedMockWatermarker> watermarker;
-    std::shared_ptr<Generator> generator;
-    
-    // For tracking progress callback
-    std::vector<std::pair<float, GenerationState>> progress_updates;
+    // Generator
+    std::shared_ptr<Generator> generator_;
 };
 
-// Test basic generation flow with detailed verification
-TEST_F(AdvancedGeneratorTest, BasicGenerationFlow) {
-    // Test with simple input
-    verify_basic_generation_flow("Hello, world!", 0);
+// Test different generation parameters
+TEST_F(GeneratorAdvancedTest, GenerationParameters) {
+    // Setup
+    model()->reset_metrics();
+    watermarker()->reset_applied();
     
-    // Check model was called with appropriate tokens
-    EXPECT_FALSE(model->tokens_history.empty());
+    // Test with default parameters
+    GenerationOptions default_options;
+    auto result1 = generator_->generate_speech("Test text", 0, {}, default_options);
     
-    // Check positions were properly incremented
-    EXPECT_FALSE(model->positions_history.empty());
+    // Verify default parameters were used
+    EXPECT_NEAR(model()->last_temperature(), 0.9f, 1e-6);
+    EXPECT_EQ(model()->last_top_k(), 50);
     
-    // Check temperature and top_k were reasonable
-    for (float temp : model->temperature_history) {
-        EXPECT_NEAR(temp, 0.9f, 0.1f); // Default temperature
+    // Test with custom parameters
+    GenerationOptions custom_options;
+    custom_options.temperature = 0.5f;
+    custom_options.top_k = 25;
+    auto result2 = generator_->generate_speech("Test text", 0, {}, custom_options);
+    
+    // Verify custom parameters were used
+    EXPECT_NEAR(model()->last_temperature(), 0.5f, 1e-6);
+    EXPECT_EQ(model()->last_top_k(), 25);
+    
+    // Verify different parameters produce different results
+    EXPECT_NE(result1.size(), 0);
+    EXPECT_NE(result2.size(), 0);
+    
+    // Different temperatures should lead to different tokens
+    bool results_differ = false;
+    if (result1.size() == result2.size()) {
+        for (size_t i = 0; i < result1.size(); i++) {
+            if (std::abs(result1[i] - result2[i]) > 1e-6) {
+                results_differ = true;
+                break;
+            }
+        }
+    } else {
+        results_differ = true;
     }
-    for (int tk : model->top_k_history) {
-        EXPECT_GE(tk, 1); // Should be positive
+    EXPECT_TRUE(results_differ) << "Different temperatures should produce different results";
+}
+
+// Test seed reproducibility
+TEST_F(GeneratorAdvancedTest, SeedReproducibility) {
+    // Setup
+    model()->reset_metrics();
+    
+    // Generate with specific seed
+    GenerationOptions options1;
+    options1.seed = 42;
+    auto result1 = generator_->generate_speech("Test reproducibility", 0, {}, options1);
+    
+    // Reset
+    model()->reset_metrics();
+    
+    // Generate again with the same seed
+    GenerationOptions options2;
+    options2.seed = 42;
+    auto result2 = generator_->generate_speech("Test reproducibility", 0, {}, options2);
+    
+    // Different seed should produce different results
+    GenerationOptions options3;
+    options3.seed = 43;
+    auto result3 = generator_->generate_speech("Test reproducibility", 0, {}, options3);
+    
+    // Random seed should give different results
+    GenerationOptions options_random;
+    options_random.seed = -1; // random seed
+    auto result_random1 = generator_->generate_speech("Test reproducibility", 0, {}, options_random);
+    
+    model()->reset_metrics();
+    auto result_random2 = generator_->generate_speech("Test reproducibility", 0, {}, options_random);
+    
+    // Verify results: same seed should have same length
+    EXPECT_EQ(result1.size(), result2.size());
+    
+    // Check seeds produce consistent output vs different seeds
+    bool same_seed_differs = false;
+    bool diff_seed_differs = false;
+    bool random_seed_differs = false;
+    
+    // Check if same seed results are identical (should be)
+    if (result1.size() == result2.size()) {
+        for (size_t i = 0; i < result1.size(); i++) {
+            if (std::abs(result1[i] - result2[i]) > 1e-6) {
+                same_seed_differs = true;
+                break;
+            }
+        }
     }
+    
+    // Check if different seed results differ (should differ)
+    if (result1.size() == result3.size()) {
+        for (size_t i = 0; i < result1.size(); i++) {
+            if (std::abs(result1[i] - result3[i]) > 1e-6) {
+                diff_seed_differs = true;
+                break;
+            }
+        }
+    } else {
+        diff_seed_differs = true;
+    }
+    
+    // Check if random seed results differ (should differ)
+    if (result_random1.size() == result_random2.size()) {
+        for (size_t i = 0; i < result_random1.size(); i++) {
+            if (std::abs(result_random1[i] - result_random2[i]) > 1e-6) {
+                random_seed_differs = true;
+                break;
+            }
+        }
+    } else {
+        random_seed_differs = true;
+    }
+    
+    // Verify seed behavior
+    EXPECT_FALSE(same_seed_differs) << "Same seed should produce identical results";
+    EXPECT_TRUE(diff_seed_differs) << "Different seeds should produce different results";
+    EXPECT_TRUE(random_seed_differs) << "Random seeds should produce different results";
 }
 
-// Test generation with custom options
-TEST_F(AdvancedGeneratorTest, CustomGenerationOptions) {
-    GenerationOptions options;
-    options.temperature = 0.5f;
-    options.top_k = 20;
-    options.seed = 123;
+// Test watermarking
+TEST_F(GeneratorAdvancedTest, Watermarking) {
+    // Reset
+    watermarker()->reset_applied();
     
-    // Generate with custom options
-    std::vector<float> audio = generator->generate_speech("Custom options test", 0, {}, options);
+    // Test with watermarking enabled (default)
+    GenerationOptions options_with_watermark;
+    options_with_watermark.enable_watermark = true;
     
-    // Just verify we get audio
-    EXPECT_FALSE(audio.empty());
+    auto result_with_watermark = generator_->generate_speech("Test watermarking", 0, {}, options_with_watermark);
+    EXPECT_TRUE(watermarker()->was_applied()) << "Watermark should be applied when enabled";
     
-    // Generate with different options
-    options.temperature = 0.1f;
-    options.top_k = 5;
-    options.seed = 456;
+    // Reset
+    watermarker()->reset_applied();
     
-    std::vector<float> audio2 = generator->generate_speech("Different options", 0, {}, options);
+    // Test with watermarking disabled
+    GenerationOptions options_without_watermark;
+    options_without_watermark.enable_watermark = false;
     
-    // Just verify we get audio
-    EXPECT_FALSE(audio2.empty());
+    auto result_without_watermark = generator_->generate_speech("Test watermarking", 0, {}, options_without_watermark);
+    EXPECT_FALSE(watermarker()->was_applied()) << "Watermark should not be applied when disabled";
 }
 
-// Test deterministic generation with seeds
-TEST_F(AdvancedGeneratorTest, DeterministicGeneration) {
-    // First generation with seed 42
-    GenerationOptions options;
-    options.seed = 42;
-    std::vector<float> audio1 = generator->generate_speech("Deterministic test", 0, {}, options);
+// Test context processing
+TEST_F(GeneratorAdvancedTest, ContextProcessing) {
+    // Setup
+    model()->reset_metrics();
     
-    // Reset tracking
-    model->reset_history();
-    text_tokenizer->reset_tracking();
-    audio_codec->reset_tracking();
+    // Create context segments
+    std::vector<Segment> context = {
+        Segment("First message", 1),
+        Segment("Second message", 2),
+        Segment("Third message", 1)
+    };
     
-    // Second generation with same seed
-    std::vector<float> audio2 = generator->generate_speech("Deterministic test", 0, {}, options);
+    // Generate with context
+    auto result = generator_->generate_speech("Test with context", 3, context);
     
-    // Audio sizes should be the same
-    EXPECT_EQ(audio1.size(), audio2.size());
+    // Verify model was reset
+    EXPECT_GE(model()->reset_called(), 1) << "Model caches should be reset before generation";
     
-    // Generate with different seed
-    options.seed = 43;
-    std::vector<float> audio3 = generator->generate_speech("Deterministic test", 0, {}, options);
+    // Generate without context
+    model()->reset_metrics();
+    auto result_no_context = generator_->generate_speech("Test without context", 3);
     
-    // Just verify we get audio
-    EXPECT_FALSE(audio3.empty());
-}
-
-// Test segmented generation
-TEST_F(AdvancedGeneratorTest, SegmentedGeneration) {
-    // Create segments
-    std::vector<Segment> segments;
-    segments.push_back(Segment("First segment", 0));
-    segments.push_back(Segment("Second segment", 1));
-    segments.push_back(Segment("Third segment", 0));
-    
-    // Generate with segments
-    std::vector<float> audio = generator->generate_speech("Main text", 2, segments);
-    
-    // Verify all segments were processed
-    EXPECT_GT(model->cache_resets, 0) << "Cache should be reset between segments";
-    
-    // Multiple speaker IDs should have been accessed (0, 1, 2)
-    EXPECT_GE(text_tokenizer->speaker_token_calls, 3);
-    
-    // Check that the final audio has a reasonable length
-    // (This is very implementation dependent, but should be non-empty)
-    EXPECT_FALSE(audio.empty());
+    // Different context should produce different length outputs
+    EXPECT_NE(result.size(), result_no_context.size()) << "Context should affect generation length";
 }
 
 // Test progress callback
-TEST_F(AdvancedGeneratorTest, ProgressCallback) {
-    // Since we can't yet use the progress callback, we'll just verify basic generation works
+TEST_F(GeneratorAdvancedTest, ProgressCallback) {
+    // Setup
+    int progress_calls = 0;
+    int last_current = 0;
+    int last_total = 0;
     
-    // Generate speech (without actual callback capability)
-    std::vector<float> audio = generator->generate_speech("Testing progress", 0);
+    // Create progress callback
+    auto progress_callback = [&](int current, int total) {
+        progress_calls++;
+        last_current = current;
+        last_total = total;
+    };
     
-    // Verify we got audio
-    EXPECT_FALSE(audio.empty());
-    
-    // In a real implementation, we would verify callback was called with increasing progress values
-    // EXPECT_FALSE(progress_updates.empty());
-}
-
-// Test cancellation via callback
-TEST_F(AdvancedGeneratorTest, CancellationCallback) {
-    // In a real implementation, we would use the progress_callback
-    // For this test, we'll just verify we can call the generation method
-    
-    // Generate speech (without actual callback capability)
-    std::vector<float> audio = generator->generate_speech("Cancellation test", 0);
-    
-    // Should return some audio
-    EXPECT_FALSE(audio.empty()) << "Should return audio";
-}
-
-// Test handling of very long text
-TEST_F(AdvancedGeneratorTest, LongTextHandling) {
-    // Generate a very long input text
-    std::string long_text(1000, 'a');
-    
-    // Generate with long text
-    std::vector<float> audio = generator->generate_speech(long_text, 0);
-    
-    // Verify we got some audio output
-    EXPECT_FALSE(audio.empty());
-}
-
-// Test watermarking functionality
-TEST_F(AdvancedGeneratorTest, WatermarkingIntegration) {
-    // Generate with watermarking enabled
+    // Generate with callback
     GenerationOptions options;
+    options.max_audio_length_ms = 1000; // Keep it short for test
+    
+    auto result = generator_->generate_speech("Test progress", 0, {}, options, progress_callback);
+    
+    // Verify callback was called at least once
+    EXPECT_GT(progress_calls, 0) << "Progress callback should be called";
+    
+    // Verify final values
+    EXPECT_GT(last_current, 0) << "Current progress should be positive";
+    EXPECT_EQ(last_current, last_total) << "Final progress should equal total";
+}
+
+// Test max audio length constraint
+TEST_F(GeneratorAdvancedTest, MaxAudioLength) {
+    // Setup
+    model()->reset_metrics();
+    
+    // Generate with short max length
+    GenerationOptions short_options;
+    short_options.max_audio_length_ms = 500; // Very short
+    
+    auto short_result = generator_->generate_speech("Test max length", 0, {}, short_options);
+    int short_frames = model()->frame_count();
+    
+    // Reset
+    model()->reset_metrics();
+    
+    // Generate with longer max length
+    GenerationOptions long_options;
+    long_options.max_audio_length_ms = 2000; // Longer
+    
+    auto long_result = generator_->generate_speech("Test max length", 0, {}, long_options);
+    int long_frames = model()->frame_count();
+    
+    // Verify frame counts
+    EXPECT_GT(long_frames, short_frames) << "Longer max length should generate more frames";
+    
+    // Verify audio lengths correspond to the requested constraint
+    float samples_per_ms = generator_->audio_codec()->sample_rate() / 1000.0f;
+    
+    // Allow some buffer in the comparison since frame boundaries won't exactly match ms boundaries
+    EXPECT_LE(short_result.size(), 1.2f * short_options.max_audio_length_ms * samples_per_ms)
+        << "Short audio should respect max length constraint";
+}
+
+// Test generation with pre-tokenized input
+TEST_F(GeneratorAdvancedTest, PreTokenizedInput) {
+    // Setup
+    model()->reset_metrics();
+    
+    // Create tokenized input
+    std::vector<int> tokens = {100, 200, 300, 400, 500};
+    
+    // Generate with tokenized input
+    auto result = generator_->generate_speech_from_tokens(tokens, 0);
+    
+    // Verify generation happened
+    EXPECT_GT(model()->frame_count(), 0) << "Generation should produce frames";
+    EXPECT_GT(result.size(), 0) << "Generated audio should not be empty";
+}
+
+// Comprehensive test combining multiple features
+TEST_F(GeneratorAdvancedTest, ComprehensiveGeneration) {
+    // Setup
+    model()->reset_metrics();
+    watermarker()->reset_applied();
+    
+    // Create complex context
+    std::vector<Segment> context = {
+        Segment("First message with some context", 1),
+        Segment("Second message with a response", 2)
+    };
+    
+    // Create complex options
+    GenerationOptions options;
+    options.temperature = 0.7f;
+    options.top_k = 30;
+    options.max_audio_length_ms = 1500;
+    options.seed = 123;
     options.enable_watermark = true;
     
-    std::vector<float> audio = generator->generate_speech("Watermark test", 0, {}, options);
-    
-    // Verify watermark was applied
-    EXPECT_GT(watermarker->apply_watermark_calls, 0);
-    EXPECT_FALSE(watermarker->last_watermarked_audio.empty());
-    
-    // Generate with watermarking disabled
-    options.enable_watermark = false;
-    model->reset_history();
-    watermarker->reset_tracking();
-    
-    std::vector<float> audio2 = generator->generate_speech("No watermark test", 0, {}, options);
-    
-    // Verify watermark was not applied
-    EXPECT_EQ(watermarker->apply_watermark_calls, 0);
-}
-
-// Test early stopping when EOS tokens are generated
-TEST_F(AdvancedGeneratorTest, EarlyStoppingWithEOS) {
-    // Configure model to return EOS tokens after 5 frames
-    model->set_eos_behavior(true, 5);
-    
-    // Generate speech
-    std::vector<float> audio = generator->generate_speech("Early stopping test", 0);
-    
-    // Verify that we didn't generate more than the expected number of frames
-    EXPECT_LE(model->frames_generated, 6) << "Generation should stop at EOS";
-    
-    // Verify the audio codec's EOS detection was called
-    EXPECT_GT(audio_codec->is_eos_token_calls, 0);
-}
-
-// Test handling of special cases
-TEST_F(AdvancedGeneratorTest, SpecialCases) {
-    // Test with empty input text
-    std::vector<float> empty_result = generator->generate_speech("", 0);
-    
-    // Should return some audio (likely just silence or very short)
-    EXPECT_FALSE(empty_result.empty());
-    
-    // Test with only spaces
-    std::vector<float> spaces_result = generator->generate_speech("   ", 0);
-    EXPECT_FALSE(spaces_result.empty());
-    
-    // Test with special characters
-    std::vector<float> special_result = generator->generate_speech("!@#$%^&*()", 0);
-    EXPECT_FALSE(special_result.empty());
-}
-
-// Test error handling and robustness
-TEST_F(AdvancedGeneratorTest, ErrorHandling) {
-    // Test with invalid speaker ID (should still work, just use default)
-    std::vector<float> result = generator->generate_speech("Error test", -999);
-    EXPECT_FALSE(result.empty());
-    
-    // Test with unusual temperature values
-    GenerationOptions options;
-    options.temperature = 0.1f;
-    std::vector<float> temp_result = generator->generate_speech("Temperature test", 0, {}, options);
-    EXPECT_FALSE(temp_result.empty());
-    
-    // Test with high temperature
-    options.temperature = 2.0f;
-    std::vector<float> high_temp_result = generator->generate_speech("High temperature", 0, {}, options);
-    EXPECT_FALSE(high_temp_result.empty());
-}
-
-// Benchmark different generation settings
-// Commented out due to build issues
-/*
-TEST_F(AdvancedGeneratorTest, DISABLED_GenerationBenchmark) {
-    // Create benchmark options
-    struct BenchmarkConfig {
-        std::string name;
-        float temperature;
-        int top_k;
-        bool enable_watermark;
+    // Track progress
+    int progress_calls = 0;
+    auto progress_callback = [&](int current, int total) {
+        progress_calls++;
     };
     
-    std::vector<BenchmarkConfig> configs = {
-        {"Default", 1.0f, 50, false},
-        {"Low Temperature", 0.1f, 50, false},
-        {"High Temperature", 2.0f, 50, false},
-        {"Low Top-K", 1.0f, 5, false},
-        {"High Top-K", 1.0f, 100, false},
-        {"With Watermark", 1.0f, 50, true}
-    };
+    // Perform generation
+    auto result = generator_->generate_speech(
+        "This is a test of comprehensive generation with multiple features",
+        3,
+        context,
+        options,
+        progress_callback
+    );
     
-    std::cout << "Generation Benchmark Results:" << std::endl;
-    std::cout << "--------------------------------------------------------------" << std::endl;
-    std::cout << std::setw(20) << "Configuration" << std::setw(15) << "Time (ms)" 
-              << std::setw(15) << "Frames" << std::setw(20) << "Audio Length" << std::endl;
-    std::cout << "--------------------------------------------------------------" << std::endl;
+    // Verify all aspects
+    EXPECT_GT(model()->frame_count(), 0) << "Generation should produce frames";
+    EXPECT_NEAR(model()->last_temperature(), options.temperature, 1e-6) << "Temperature should be applied";
+    EXPECT_EQ(model()->last_top_k(), options.top_k) << "Top-k should be applied";
+    EXPECT_TRUE(watermarker()->was_applied()) << "Watermark should be applied";
+    EXPECT_GT(progress_calls, 0) << "Progress should be reported";
+    EXPECT_GT(result.size(), 0) << "Generated audio should not be empty";
     
-    for (const auto& config : configs) {
-        // Reset tracking
-        model->reset_history();
-        text_tokenizer->reset_tracking();
-        audio_codec->reset_tracking();
-        watermarker->reset_tracking();
-        
-        GenerationOptions options;
-        options.temperature = config.temperature;
-        options.top_k = config.top_k;
-        options.enable_watermark = config.enable_watermark;
-        
-        // Measure generation time
-        auto start = std::chrono::high_resolution_clock::now();
-        std::vector<float> audio = generator->generate_speech("Benchmark test", 0, {}, options);
-        auto end = std::chrono::high_resolution_clock::now();
-        
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-        
-        // Print results
-        std::cout << std::setw(20) << config.name 
-                  << std::setw(15) << duration.count()
-                  << std::setw(15) << model->frames_generated
-                  << std::setw(20) << audio.size() / audio_codec->sample_rate() << " sec" << std::endl;
-    }
+    // Verify audio length constraint
+    float samples_per_ms = generator_->audio_codec()->sample_rate() / 1000.0f;
+    EXPECT_LE(result.size(), 1.2f * options.max_audio_length_ms * samples_per_ms)
+        << "Audio should respect max length constraint";
 }
-*/
 
-// Main function is provided in main_test.cpp
-// int main(int argc, char** argv) {
-//     ::testing::InitGoogleTest(&argc, argv);
-//     return RUN_ALL_TESTS();
-// }
+} // namespace
+} // namespace ccsm

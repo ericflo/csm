@@ -259,7 +259,7 @@ private:
         
         for (size_t i = 0; i < audio.size(); i++) {
             // Which bit to use
-            size_t bit_idx = (i / (sample_rate_ / 8)) % bits.size();
+            size_t bit_idx = (i / static_cast<size_t>(sample_rate_ / 8)) % bits.size();
             
             // Apply modulation only if bit is 1
             if (bits[bit_idx]) {
