@@ -7,6 +7,8 @@
 #include <ccsm/generator.h>
 #include <ccsm/cli_args.h>
 #include <ccsm/utils.h>
+#include <ccsm/mlx/mlx_weight_converter.h>
+#include <ccsm/mlx/mlx_model.h>
 
 // Allow compilation without MLX for testing purposes
 #ifndef CCSM_WITH_MLX
@@ -54,6 +56,60 @@ int main(int argc, char** argv) {
             return 0;
         }
         
+        // Check MLX availability
+        if (!MLXWeightConverter::is_mlx_available()) {
+            CCSM_WARNING("MLX is not available on this system, falling back to CPU implementation");
+            CCSM_INFO("Suggestion: Use ccsm-generate instead for CPU-only inference");
+            
+            // Fall back to CPU implementation
+            try {
+                std::shared_ptr<Generator> generator = load_csm_1b("cpu");
+                // Continue with CPU generator...
+                
+                // Prepare generation options
+                GenerationOptions options;
+                options.temperature = args.temperature;
+                options.top_k = args.top_k;
+                options.max_audio_length_ms = args.max_audio_length_ms;
+                options.seed = args.seed;
+                options.enable_watermark = args.enable_watermark;
+                options.debug = args.debug;
+                
+                // Generate speech with CPU implementation
+                CCSM_INFO("Generating speech (CPU fallback) for: ", args.text.substr(0, 60),
+                         (args.text.length() > 60 ? "..." : ""));
+                
+                Timer timer;
+                std::vector<float> audio = generator->generate_speech(args.text, args.speaker_id);
+                
+                double generation_time = timer.elapsed_s();
+                double audio_length = static_cast<double>(audio.size()) / generator->sample_rate();
+                double rtf = audio_length / generation_time;
+                
+                CCSM_INFO("Generated ", audio_length, " seconds of audio in ",
+                         generation_time, " seconds (", rtf, "x real-time)");
+                
+                // Save audio to output file
+                CCSM_INFO("Saving audio to ", args.output_path);
+                
+                if (!FileUtils::save_wav(args.output_path, audio, generator->sample_rate())) {
+                    CCSM_ERROR("Failed to save audio file");
+                    return 1;
+                }
+                
+                CCSM_INFO("Successfully saved audio to ", args.output_path);
+                std::cout << "Done! Output saved to: " << args.output_path << std::endl;
+                
+                // Report performance
+                std::cout << "Performance: " << rtf << "x real-time" << std::endl;
+                
+                return 0;
+            } catch (const std::exception& e) {
+                CCSM_ERROR("Failed to initialize CPU fallback: ", e.what());
+                return 1;
+            }
+        }
+        
         // Initialize timer
         Timer timer;
         
@@ -61,17 +117,74 @@ int main(int argc, char** argv) {
         CCSM_INFO("Loading model from ", args.model_path);
         std::shared_ptr<Generator> generator;
         
+        // Convert PyTorch weights to MLX if needed
         try {
 #ifndef CCSM_MLX_TESTING_ONLY
-            // Use the MLX factory function to create generator
-            if (args.model_path.empty()) {
-                // Use default model
-                generator = load_csm_1b_mlx();
+            std::string model_path = args.model_path;
+            
+            // If a custom model path is provided, check if it needs conversion
+            if (!model_path.empty()) {
+                // Setup weight converter with default configuration
+                MLXWeightConversionConfig config;
+                config.use_bfloat16 = true;  // Use BF16 for better performance
+                config.cache_converted_weights = true;  // Cache the converted weights
+                
+                // Progress callback
+                config.progress_callback = [](float progress) {
+                    static int last_percent = -1;
+                    int percent = static_cast<int>(progress * 100.0f);
+                    if (percent > last_percent) {
+                        CCSM_INFO("Converting weights: ", percent, "%");
+                        last_percent = percent;
+                    }
+                };
+                
+                // Create converter
+                MLXWeightConverter converter(config);
+                
+                // Check if the model needs conversion (PyTorch format)
+                if (model_path.ends_with(".pt") || model_path.ends_with(".pth")) {
+                    CCSM_INFO("Converting PyTorch weights to MLX format...");
+                    
+                    // Generate output path for MLX weights
+                    std::string mlx_output_path = model_path + ".mlx";
+                    
+                    // If cached weights already exist, we'll use those
+                    if (has_cached_mlx_weights(model_path)) {
+                        CCSM_INFO("Using cached MLX weights");
+                        mlx_output_path = get_cached_mlx_weights_path(model_path);
+                    } else {
+                        // Convert weights
+                        CCSM_INFO("Converting weights from ", model_path, " to ", mlx_output_path);
+                        bool success = converter.convert_checkpoint(model_path, mlx_output_path);
+                        
+                        if (!success) {
+                            CCSM_ERROR("Failed to convert weights to MLX format");
+                            throw std::runtime_error("Weight conversion failed");
+                        }
+                    }
+                    
+                    // Update model path to use converted weights
+                    model_path = mlx_output_path;
+                    CCSM_INFO("Using MLX weights from ", model_path);
+                }
+                
+                // Create MLX model
+                ModelConfig config;
+                config.model_path = model_path;
+                config.backend = "mlx";
+                std::shared_ptr<Model> model = std::make_shared<MLXModel>(config);
+                
+                if (!model->load_weights(model_path)) {
+                    CCSM_ERROR("Failed to load MLX weights from ", model_path);
+                    throw std::runtime_error("Failed to load MLX weights");
+                }
+                
+                // Create generator with MLX model
+                generator = std::make_shared<Generator>(model);
             } else {
-                // TODO: Implement custom model loading
-                // For now, we'll just use the factory function
+                // Use default model - this should use pre-converted MLX weights
                 generator = load_csm_1b_mlx();
-                CCSM_WARNING("Custom model paths not fully implemented yet, using default model");
             }
 #else
             // In testing mode, just use CPU implementation directly

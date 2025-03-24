@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <algorithm>
 #include <stdexcept>
+#include <cstring>
 
 namespace ccsm {
 
@@ -53,10 +54,8 @@ mlx_array convert_tensor_to_mlx_array(const Tensor& tensor, bool use_bfloat16) {
         if (use_bfloat16 && tensor.dtype() != DataType::BF16) {
             CCSM_INFO("Converting to BFloat16");
             mlx_array converted;
-            // In a real implementation, we would call mlx_array_astype
-            // For now, just return the original array since this is a stub
-            // mlx_array_astype(result, MLX_BFLOAT16, &converted);
-            return result;
+            mlx_array_astype(result, MLX_BFLOAT16, &converted);
+            return converted;
         }
         
         return result;
@@ -88,27 +87,22 @@ mlx_array convert_tensor_to_mlx_array(const Tensor& tensor, bool use_bfloat16) {
     mlx_array result;
     if (tensor.data() == nullptr) {
         CCSM_INFO("Tensor data is null, creating empty array");
-        // In a real implementation, we would call mlx_array_zeros
-        // For now, return an empty array since this is a stub
-        // mlx_array_zeros(mlx_shape.data(), mlx_shape.size(), mlx_type, &result);
+        mlx_array_zeros(mlx_shape.data(), mlx_shape.size(), mlx_type, &result);
         return result;
     }
     
     // Create array from data
-    // In a real implementation, we would call mlx_array_from_data
-    // For now, return an empty array since this is a stub
-    // mlx_array_from_data(tensor.data(), mlx_shape.data(), mlx_shape.size(), 
-    //                    MLXTensorImpl::to_mlx_dtype(tensor.dtype()), &result);
+    mlx_array_from_data(tensor.data(), mlx_shape.data(), mlx_shape.size(), 
+                        MLXTensorImpl::to_mlx_dtype(tensor.dtype()), &result);
     
     // Convert to bfloat16 if needed
     if (use_bfloat16 && tensor.dtype() != DataType::BF16) {
         CCSM_INFO("Converting to BFloat16");
-        // In a real implementation, we would call mlx_array_astype
-        // mlx_array converted;
-        // mlx_array_astype(result, MLX_BFLOAT16, &converted);
+        mlx_array converted;
+        mlx_array_astype(result, MLX_BFLOAT16, &converted);
         // Free the original array
-        // mlx_array_free(result);
-        // return converted;
+        mlx_array_free(result);
+        return converted;
     }
     
     return result;
@@ -227,12 +221,27 @@ bool save_mlx_weights_to_cache(
         file.write(reinterpret_cast<const char*>(&name_length), sizeof(name_length));
         file.write(name.c_str(), name_length);
         
-        // In a real implementation, we would get array information
-        // and write that information to the cache file
-        
-        // Stub implementation
-        size_t ndim = 0;
+        // Get array information
+        uint32_t ndim;
+        mlx_array_ndim(array, &ndim);
         file.write(reinterpret_cast<const char*>(&ndim), sizeof(ndim));
+        
+        // Write shape
+        std::vector<int64_t> shape(ndim);
+        mlx_array_shape(array, shape.data());
+        file.write(reinterpret_cast<const char*>(shape.data()), ndim * sizeof(int64_t));
+        
+        // Write dtype
+        mlx_dtype dtype;
+        mlx_array_dtype(array, &dtype);
+        file.write(reinterpret_cast<const char*>(&dtype), sizeof(dtype));
+        
+        // Write data
+        void* data_ptr;
+        size_t data_size;
+        mlx_array_data(array, &data_ptr, &data_size);
+        file.write(reinterpret_cast<const char*>(&data_size), sizeof(data_size));
+        file.write(static_cast<const char*>(data_ptr), data_size);
     }
     
     return true;
@@ -258,7 +267,7 @@ std::unordered_map<std::string, mlx_array> load_mlx_weights_from_cache(
     uint64_t num_weights;
     file.read(reinterpret_cast<char*>(&num_weights), sizeof(num_weights));
     
-    // Read each weight - stub implementation
+    // Read each weight
     for (uint64_t i = 0; i < num_weights && file.good(); i++) {
         // Read name
         uint64_t name_length;
@@ -266,15 +275,30 @@ std::unordered_map<std::string, mlx_array> load_mlx_weights_from_cache(
         std::string name(name_length, '\0');
         file.read(&name[0], name_length);
         
-        // Read ndim
-        size_t ndim;
+        // Read shape information
+        uint32_t ndim;
         file.read(reinterpret_cast<char*>(&ndim), sizeof(ndim));
         
-        // In a real implementation, we would read shape, dtype, and data
-        // and create a real MLX array
+        std::vector<int64_t> shape(ndim);
+        file.read(reinterpret_cast<char*>(shape.data()), ndim * sizeof(int64_t));
         
-        // For the stub implementation, we just add an empty array to the map
-        weights[name] = mlx_array{};
+        // Read dtype
+        mlx_dtype dtype;
+        file.read(reinterpret_cast<char*>(&dtype), sizeof(dtype));
+        
+        // Read data
+        size_t data_size;
+        file.read(reinterpret_cast<char*>(&data_size), sizeof(data_size));
+        
+        std::vector<char> data(data_size);
+        file.read(data.data(), data_size);
+        
+        // Create MLX array from data
+        mlx_array array;
+        mlx_array_from_data(data.data(), shape.data(), ndim, dtype, &array);
+        
+        // Add to map
+        weights[name] = array;
     }
     
     CCSM_INFO("Loaded weights from cache: ");
