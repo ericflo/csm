@@ -37,7 +37,7 @@ This approach ensures robust, well-tested code with high test coverage.
 | SIMD Optimizations | 🟢 Complete | Matrix multiplication, normalization, activation functions, kernel fusion, mixed precision, edge case handling, and in-place operations implemented |
 | MLX Acceleration | 🟠 Planning | Basic infrastructure only |
 | Generator | 🟡 In Progress | Basic functionality and tests implemented |
-| Watermarking | 🟡 In Progress | Initial interface implemented, needs full implementation |
+| Watermarking | 🟢 Complete | Full implementation of SilentCipher watermarking with frequency-domain techniques, robust detection and verification |
 | Thread Pool | 🟢 Complete | Basic functionality and comprehensive stress tests implemented |
 | CLI Arguments | 🟢 Complete | Argument parsing and validation |
 | Utilities | 🟡 In Progress | Basic utilities implemented |
@@ -225,7 +225,7 @@ CCSM follows a comprehensive testing strategy with multiple test types:
 | Tokenizer | 90%+ | ~80% | 🟢 Good |
 | Generator | 90%+ | ~60% | 🟡 Partial |
 | MLX Acceleration | 80%+ | <5% | 🔴 Not Started |
-| Watermarking | 85%+ | <5% | 🔴 Not Started |
+| Watermarking | 85%+ | ~85% | 🟢 Complete |
 | Thread Pool | 80%+ | ~80% | 🟢 Good |
 | Command-line Arguments | 90%+ | ~70% | 🟢 Good |
 | Utility Functions | 85%+ | ~30% | 🟡 Partial |
@@ -318,7 +318,8 @@ cd build && ctest
 6. ✅ Begin implementing Generator tests
 7. ✅ Create tests for Thread Pool implementation
 8. ✅ Implement and test memory management optimizations
-9. Complete watermarking implementation
+9. ✅ Complete watermarking implementation
+10. Implement MLX acceleration for Apple Silicon
 
 ## Release Criteria
 
