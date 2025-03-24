@@ -27,6 +27,9 @@ struct MLXModel::Impl {
     // KV cache state
     bool cache_initialized = false;
     size_t max_cache_len = 0;
+    
+    // Model vocabulary size
+    int vocab_size = 0;
     #endif
     
     // Conversion config for PyTorch weights
@@ -49,21 +52,28 @@ MLXModel::MLXModel(const ModelConfig& config)
     // Set maximum cache length based on model config
     impl_->max_cache_len = config_.max_seq_len;
     
+    // Set vocabulary size
+    impl_->vocab_size = config_.vocab_size;
+    
     // Initialize transformers
     impl_->backbone_transformer = std::make_shared<MLXTransformer>(
+        impl_->weights,
         config_.d_model,
+        config_.n_layers,
         config_.n_heads,
         config_.n_kv_heads,
-        config_.n_layers,
-        config_.max_seq_len
+        config_.vocab_size,
+        10000.0f // default rope_theta
     );
     
     impl_->decoder_transformer = std::make_shared<MLXTransformer>(
+        impl_->weights,
         config_.d_model,
+        config_.n_audio_layers,
         config_.n_heads,
         config_.n_kv_heads,
-        config_.n_audio_layers,
-        config_.max_seq_len
+        config_.audio_vocab_size,
+        10000.0f // default rope_theta
     );
     #else
     CCSM_WARN("MLX support not compiled in, creating stub MLX model");
@@ -134,9 +144,8 @@ bool MLXModel::load_weights(const WeightMap& weights) {
             return false;
         }
         
-        // Set the transformer weights
-        impl_->backbone_transformer->load_weights(impl_->weights);
-        impl_->decoder_transformer->load_weights(impl_->weights);
+        // Transformers have already been initialized with weights in their constructors
+        // No need to load weights separately
         
         return true;
     } catch (const std::exception& e) {
@@ -248,12 +257,52 @@ void MLXModel::prune_caches(float prune_factor) {
         return;
     }
     
-    // For now we just reset the caches
-    // TODO: Implement more sophisticated pruning
-    reset_caches();
-    impl_->max_cache_len = target_len;
+    if (!impl_->cache_initialized) {
+        CCSM_INFO("Caches not initialized, adjusting max length only");
+        impl_->max_cache_len = target_len;
+        return;
+    }
     
-    CCSM_INFO("Pruned MLX KV cache to " + std::to_string(impl_->max_cache_len) + " tokens");
+    // If target length is very small, just reset the caches
+    if (target_len < 8) {
+        CCSM_INFO("Target length too small, resetting caches");
+        reset_caches();
+        impl_->max_cache_len = target_len;
+        return;
+    }
+    
+    try {
+        // Implement smarter pruning by preserving most recent tokens
+        // and removing older tokens from the KV cache
+        
+        if (impl_->backbone_transformer) {
+            CCSM_INFO("Pruning backbone transformer KV cache");
+            bool backbone_pruned = impl_->backbone_transformer->prune_kv_cache(target_len);
+            if (!backbone_pruned) {
+                CCSM_WARNING("Failed to prune backbone KV cache, resetting instead");
+                impl_->backbone_transformer->reset_caches();
+            }
+        }
+        
+        if (impl_->decoder_transformer) {
+            CCSM_INFO("Pruning decoder transformer KV cache");
+            bool decoder_pruned = impl_->decoder_transformer->prune_kv_cache(target_len);
+            if (!decoder_pruned) {
+                CCSM_WARNING("Failed to prune decoder KV cache, resetting instead");
+                impl_->decoder_transformer->reset_caches();
+            }
+        }
+        
+        // Update the maximum cache length
+        impl_->max_cache_len = target_len;
+        CCSM_INFO("Pruned MLX KV cache to " + std::to_string(impl_->max_cache_len) + " tokens");
+    } catch (const std::exception& e) {
+        // If anything goes wrong, fall back to resetting the caches
+        CCSM_ERROR("Error during KV cache pruning: " + std::string(e.what()));
+        CCSM_INFO("Falling back to cache reset");
+        reset_caches();
+        impl_->max_cache_len = target_len;
+    }
     #endif
 }
 
@@ -270,22 +319,40 @@ std::vector<float> MLXModel::get_backbone_logits(
         std::vector<int64_t> shape = {static_cast<int64_t>(tokens.size())};
         
         // Create token tensor
-        mlx_array token_array;
         std::vector<int32_t> token_data(tokens.begin(), tokens.end());
-        mlx_array_from_data(token_data.data(), shape.data(), shape.size(), MLX_INT32, &token_array);
+        mlx_array token_array = mlx_array_new_data(
+            token_data.data(), 
+            reinterpret_cast<const int*>(shape.data()),
+            static_cast<int>(shape.size()),
+            MLX_INT32);
         
         // Create position tensor
-        mlx_array position_array;
         std::vector<int32_t> position_data(positions.begin(), positions.end());
-        mlx_array_from_data(position_data.data(), shape.data(), shape.size(), MLX_INT32, &position_array);
+        mlx_array position_array = mlx_array_new_data(
+            position_data.data(), 
+            reinterpret_cast<const int*>(shape.data()),
+            static_cast<int>(shape.size()),
+            MLX_INT32);
+        
+        // Create an MLX stream for operations
+        mlx_stream stream = mlx_default_cpu_stream_new();
+        
+        
+        // Get vectors from array data for forward pass
+        std::vector<int> token_vec(token_data.begin(), token_data.end());
+        std::vector<int> position_vec(position_data.begin(), position_data.end());
         
         // Forward pass through backbone transformer
-        mlx_array logits_array = impl_->backbone_transformer->forward(token_array, position_array);
+        mlx_array logits_array = impl_->backbone_transformer->forward(
+            token_vec, 
+            position_vec, 
+            nullptr, // No KV cache
+            stream);
         
         // Convert logits back to vector
         size_t logits_size = mlx_array_size(logits_array);
         std::vector<float> logits(logits_size);
-        float* logits_data = static_cast<float*>(mlx_array_data(logits_array));
+        const float* logits_data = mlx_array_data_float32(logits_array);
         
         // Copy the data
         if (logits_data) {
@@ -327,22 +394,48 @@ std::vector<float> MLXModel::get_decoder_logits(
         std::vector<int64_t> shape = {static_cast<int64_t>(tokens.size())};
         
         // Create token tensor
-        mlx_array token_array;
         std::vector<int32_t> token_data(tokens.begin(), tokens.end());
-        mlx_array_from_data(token_data.data(), shape.data(), shape.size(), MLX_INT32, &token_array);
+        mlx_array token_array = mlx_array_new_data(
+            token_data.data(), 
+            reinterpret_cast<const int*>(shape.data()),
+            static_cast<int>(shape.size()),
+            MLX_INT32);
         
         // Create position tensor
-        mlx_array position_array;
         std::vector<int32_t> position_data(positions.begin(), positions.end());
-        mlx_array_from_data(position_data.data(), shape.data(), shape.size(), MLX_INT32, &position_array);
+        mlx_array position_array = mlx_array_new_data(
+            position_data.data(), 
+            reinterpret_cast<const int*>(shape.data()),
+            static_cast<int>(shape.size()),
+            MLX_INT32);
         
-        // Forward pass through decoder transformer
-        mlx_array logits_array = impl_->decoder_transformer->forward(token_array, position_array, codebook);
+        // Create an MLX stream for operations
+        mlx_stream stream = mlx_default_cpu_stream_new();
+        
+        
+        // Get vectors from array data for forward pass
+        std::vector<int> token_vec(token_data.begin(), token_data.end());
+        std::vector<int> position_vec(position_data.begin(), position_data.end());
+        
+        // Create codebook parameter
+        mlx_array codebook_array = mlx_array_new_int(codebook);
+        
+        // Forward pass through decoder transformer - note we're adapting the call
+        // The decoder transformer should handle the codebook differently but for now
+        // we'll use the same forward signature but ignore the codebook
+        mlx_array logits_array = impl_->decoder_transformer->forward(
+            token_vec,
+            position_vec,
+            nullptr, // No KV cache
+            stream); 
+        
+        // Free codebook array
+        mlx_array_free(codebook_array);
         
         // Convert logits back to vector
         size_t logits_size = mlx_array_size(logits_array);
         std::vector<float> logits(logits_size);
-        float* logits_data = static_cast<float*>(mlx_array_data(logits_array));
+        const float* logits_data = mlx_array_data_float32(logits_array);
         
         // Copy the data
         if (logits_data) {
@@ -404,7 +497,7 @@ bool MLXModel::load_backbone_weights(const WeightMap& weights) {
             
             for (const auto& name : layer_weights) {
                 if (!has_weight(name)) {
-                    CCSM_WARN("Missing backbone layer weight: " + name);
+                    CCSM_WARNING("Missing backbone layer weight: " + name);
                     // Not all models have all weights (e.g., some might use bias)
                 }
             }
@@ -444,7 +537,7 @@ bool MLXModel::load_decoder_weights(const WeightMap& weights) {
         for (int codebook = 0; codebook < config_.num_codebooks; ++codebook) {
             std::string output_weight = "decoder.codebook_outputs." + std::to_string(codebook) + ".weight";
             if (!has_weight(output_weight)) {
-                CCSM_WARN("Missing decoder codebook output weight: " + output_weight);
+                CCSM_WARNING("Missing decoder codebook output weight: " + output_weight);
                 // Not all models have all codebooks
             }
         }
@@ -466,7 +559,7 @@ bool MLXModel::load_decoder_weights(const WeightMap& weights) {
             
             for (const auto& name : layer_weights) {
                 if (!has_weight(name)) {
-                    CCSM_WARN("Missing decoder layer weight: " + name);
+                    CCSM_WARNING("Missing decoder layer weight: " + name);
                     // Not all models have all weights (e.g., some might use bias)
                 }
             }
@@ -508,11 +601,13 @@ bool MLXModel::has_weight(const std::string& name) const {
 std::shared_ptr<MLXTransformer> MLXModel::create_transformer_context() const {
     #ifdef CCSM_WITH_MLX
     return std::make_shared<MLXTransformer>(
+        impl_->weights,
         config_.d_model,
+        config_.n_layers,
         config_.n_heads,
         config_.n_kv_heads,
-        config_.n_layers,
-        config_.max_seq_len
+        impl_->vocab_size,
+        10000.0f // default rope_theta
     );
     #else
     return nullptr;

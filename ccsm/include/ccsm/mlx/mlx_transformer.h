@@ -116,6 +116,9 @@ public:
     // Update KV cache with new key and value tensors
     void update(int layer, mlx_array k, mlx_array v, const std::vector<int>& positions, mlx_stream stream);
     
+    // Prune KV cache to a specific length, preserving the most recent tokens
+    bool prune(size_t target_len, mlx_stream stream);
+    
 private:
     size_t n_layers_;
     size_t n_heads_;
@@ -155,6 +158,9 @@ public:
     
     // Reset KV caches
     void reset_caches();
+    
+    // Prune KV cache to a specific length, preserving the most recent tokens
+    bool prune_kv_cache(size_t target_len);
     
     // Getters for parameters
     int d_model() const { return d_model_; }
