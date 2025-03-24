@@ -5,6 +5,9 @@
 #include <string>
 #include <stdexcept>
 #include <cmath>
+#include <random>
+#include <algorithm>
+#include <iostream>
 
 using namespace ccsm;
 
@@ -264,6 +267,210 @@ TEST_F(WatermarkingTest, DifferentSampleRates) {
     std::vector<float> watermarked2 = watermarker->embed(audio_samples, high_rate, payload);
     EXPECT_EQ(watermarked2.size(), audio_samples.size());
     EXPECT_EQ(watermarker->get_last_sample_rate(), high_rate);
+}
+
+// Helper function to generate random audio
+std::vector<float> generate_random_audio(size_t length, float amplitude = 0.5f, unsigned int seed = 42) {
+    std::mt19937 gen(seed);
+    std::uniform_real_distribution<float> dist(-amplitude, amplitude);
+    
+    std::vector<float> audio(length);
+    for (size_t i = 0; i < length; i++) {
+        audio[i] = dist(gen);
+    }
+    
+    return audio;
+}
+
+// Helper function to generate sine wave
+std::vector<float> generate_sine_wave(size_t length, float frequency, float sample_rate, float amplitude = 0.5f) {
+    std::vector<float> audio(length);
+    for (size_t i = 0; i < length; i++) {
+        float t = static_cast<float>(i) / sample_rate;
+        audio[i] = amplitude * std::sin(2.0f * M_PI * frequency * t);
+    }
+    
+    return audio;
+}
+
+// Helper function to measure SNR (Signal-to-Noise Ratio) in dB
+float calculate_snr_db(const std::vector<float>& original, const std::vector<float>& watermarked) {
+    if (original.size() != watermarked.size() || original.empty()) {
+        return -std::numeric_limits<float>::infinity();
+    }
+    
+    float signal_power = 0.0f;
+    float noise_power = 0.0f;
+    
+    for (size_t i = 0; i < original.size(); i++) {
+        float signal = original[i];
+        float noise = original[i] - watermarked[i];
+        
+        signal_power += signal * signal;
+        noise_power += noise * noise;
+    }
+    
+    if (noise_power <= 1e-10f) {
+        return std::numeric_limits<float>::infinity(); // No noise
+    }
+    
+    return 10.0f * std::log10(signal_power / noise_power);
+}
+
+// Test fixture for SilentCipher watermarking
+class SilentCipherWatermarkingTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        // Create a SilentCipher watermarker
+        silent_cipher = SilentCipherWatermarker::create("test_key");
+        
+        // Generate test audio
+        sample_rate = 16000.0f;
+        audio_length = static_cast<size_t>(3.0f * sample_rate); // 3 seconds
+        test_audio = generate_random_audio(audio_length);
+        
+        // Generate a sine wave
+        sine_wave = generate_sine_wave(audio_length, 440.0f, sample_rate);
+    }
+    
+    std::shared_ptr<SilentCipherWatermarker> silent_cipher;
+    std::vector<float> test_audio;
+    std::vector<float> sine_wave;
+    size_t audio_length;
+    float sample_rate;
+};
+
+// Test SilentCipher watermarker creation
+TEST_F(SilentCipherWatermarkingTest, Creation) {
+    ASSERT_NE(silent_cipher, nullptr);
+    EXPECT_EQ(silent_cipher->get_key(), "test_key");
+    
+    // Test with custom key
+    auto custom_key_watermarker = SilentCipherWatermarker::create("custom_key");
+    EXPECT_EQ(custom_key_watermarker->get_key(), "custom_key");
+}
+
+// Test SilentCipher configurations
+TEST_F(SilentCipherWatermarkingTest, Configuration) {
+    // Test frame size configuration
+    silent_cipher->set_frame_size(1024);
+    silent_cipher->set_frame_size(2048);
+    
+    // Test hop size configuration
+    silent_cipher->set_hop_size(256);
+    silent_cipher->set_hop_size(512);
+    
+    // Test watermark strength
+    float default_strength = silent_cipher->get_strength();
+    EXPECT_GE(default_strength, 0.0f);
+    EXPECT_LE(default_strength, 1.0f);
+    
+    // Set custom strength
+    silent_cipher->set_strength(0.4f);
+    EXPECT_FLOAT_EQ(silent_cipher->get_strength(), 0.4f);
+    
+    // Invalid configurations should throw exceptions
+    EXPECT_THROW(silent_cipher->set_frame_size(-1), std::invalid_argument);
+    EXPECT_THROW(silent_cipher->set_frame_size(0), std::invalid_argument);
+    EXPECT_THROW(silent_cipher->set_frame_size(100), std::invalid_argument);  // Not power of 2
+    
+    EXPECT_THROW(silent_cipher->set_hop_size(-1), std::invalid_argument);
+    EXPECT_THROW(silent_cipher->set_hop_size(0), std::invalid_argument);
+}
+
+// Test SilentCipher watermarking
+TEST_F(SilentCipherWatermarkingTest, Watermarking) {
+    // Set watermark strength
+    silent_cipher->set_strength(0.1f);
+    
+    // Apply watermark with custom payload
+    std::string payload = "test_payload";
+    std::vector<float> watermarked = silent_cipher->embed(test_audio, sample_rate, payload);
+    
+    // Check watermarked audio properties
+    EXPECT_EQ(watermarked.size(), test_audio.size());
+    
+    // Should be different from original
+    bool is_different = false;
+    for (size_t i = 0; i < test_audio.size(); i++) {
+        if (test_audio[i] != watermarked[i]) {
+            is_different = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(is_different);
+    
+    // Detect the watermark
+    bool detected = silent_cipher->detect_watermark(watermarked);
+    EXPECT_TRUE(detected);
+    
+    // Verify with correct key
+    bool verified = silent_cipher->verify_watermark(watermarked, "test_key");
+    EXPECT_TRUE(verified);
+    
+    // Verify with wrong key should fail
+    bool wrong_key_verified = silent_cipher->verify_watermark(watermarked, "wrong_key");
+    EXPECT_FALSE(wrong_key_verified);
+    
+    // SNR should be reasonable for audio quality
+    float snr = calculate_snr_db(test_audio, watermarked);
+    std::cout << "SilentCipher watermarking SNR: " << snr << " dB" << std::endl;
+    EXPECT_GT(snr, 20.0f); // At least 20dB SNR for good quality
+}
+
+// Test SilentCipher advanced detection
+TEST_F(SilentCipherWatermarkingTest, AdvancedDetection) {
+    // Apply watermark
+    std::vector<float> watermarked = silent_cipher->apply_watermark(sine_wave);
+    
+    // Advanced detection with full result
+    WatermarkResult result = silent_cipher->detect(watermarked, sample_rate);
+    
+    // Check result
+    EXPECT_TRUE(result.detected);
+    EXPECT_FALSE(result.payload.empty());
+    EXPECT_GT(result.confidence, 0.5f);
+}
+
+// Test SilentCipher with different audio types
+TEST_F(SilentCipherWatermarkingTest, DifferentAudioTypes) {
+    // Test with silence
+    std::vector<float> silence(audio_length, 0.0f);
+    std::vector<float> watermarked_silence = silent_cipher->apply_watermark(silence);
+    bool detected_silence = silent_cipher->detect_watermark(watermarked_silence);
+    
+    // Test with different sine waves
+    for (float freq : {100.0f, 1000.0f, 5000.0f}) {
+        std::vector<float> sine = generate_sine_wave(audio_length, freq, sample_rate);
+        std::vector<float> watermarked_sine = silent_cipher->apply_watermark(sine);
+        bool detected_sine = silent_cipher->detect_watermark(watermarked_sine);
+        EXPECT_TRUE(detected_sine);
+    }
+}
+
+// Test SilentCipher robustness
+TEST_F(SilentCipherWatermarkingTest, Robustness) {
+    // Apply watermark with higher strength for robustness tests
+    silent_cipher->set_strength(0.3f);
+    std::vector<float> watermarked = silent_cipher->apply_watermark(sine_wave);
+    
+    // Volume change
+    std::vector<float> volume_changed = watermarked;
+    float volume_scale = 1.5f;
+    for (float& sample : volume_changed) {
+        sample *= volume_scale;
+    }
+    bool detected_volume = silent_cipher->detect_watermark(volume_changed);
+    EXPECT_TRUE(detected_volume);
+    
+    // Noise addition
+    std::vector<float> noisy = watermarked;
+    std::vector<float> noise = generate_random_audio(audio_length, 0.05f);
+    for (size_t i = 0; i < noisy.size(); i++) {
+        noisy[i] += noise[i];
+    }
+    bool detected_noisy = silent_cipher->detect_watermark(noisy);
+    EXPECT_TRUE(detected_noisy);
 }
 
 // Main function is provided by Google Test

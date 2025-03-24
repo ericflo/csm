@@ -35,6 +35,7 @@ set(ADDITIONAL_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_model_memory_optimization.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator_memory_optimization.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_kv_cache_pruning.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_watermarking.cpp"
 )
 
 # Append any missing files
@@ -179,6 +180,14 @@ add_executable(test_quantized_matrix_mul
 target_link_libraries(test_quantized_matrix_mul PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_quantized_matrix_mul PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# Add a separate target for watermarking tests
+add_executable(test_watermarking
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_watermarking.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_watermarking PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_watermarking PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # We'll add integration tests after defining coverage targets
 
 # Add MLX tests conditionally
@@ -210,6 +219,7 @@ add_test(NAME ModelQuantizationMemoryTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/te
 add_test(NAME QuantizedMatrixMulTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_quantized_matrix_mul)
 add_test(NAME KVCachePruningTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_kv_cache_pruning)
 add_test(NAME GeneratorMemoryOptimizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator_memory_optimization)
+add_test(NAME WatermarkingTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_watermarking)
 
 if(WITH_MLX AND MLX_TEST_SOURCES)
     add_test(NAME MLXTests COMMAND ccsm_mlx_tests)
@@ -346,9 +356,18 @@ if(WITH_COVERAGE)
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
     
+    # Setup the watermarking test coverage target
+    setup_target_for_coverage(
+        NAME coverage_watermarking
+        EXECUTABLE test_watermarking
+        DEPENDENCIES test_watermarking
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_ggml_kv_cache coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_ggml_kv_cache coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_watermarking
         COMMENT "Generating combined code coverage report"
     )
     
