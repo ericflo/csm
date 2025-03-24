@@ -75,6 +75,11 @@ public:
         }
         return unk_id_;
     }
+    
+    std::vector<int> get_audio_token_ids() const override {
+        // Return a simple range of token IDs for audio tokens
+        return {6, 7, 8}; // [0], [1], [2] are our audio token IDs
+    }
 };
 
 // Test fixture for tokenizer tests

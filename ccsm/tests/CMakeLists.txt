@@ -40,6 +40,7 @@ set(ADDITIONAL_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_model_factory.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_mlx_weight_converter.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_unified_model.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_thread_pool_stress.cpp"
 )
 
 # Append any missing files
@@ -110,6 +111,14 @@ add_executable(test_thread_pool_advanced
 )
 target_link_libraries(test_thread_pool_advanced PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_thread_pool_advanced PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+# Add a separate target for thread pool stress tests
+add_executable(test_thread_pool_stress
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_thread_pool_stress.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_thread_pool_stress PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_thread_pool_stress PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
 # Add a separate target for GGML KV cache quantization tests
 add_executable(test_ggml_kv_cache_quantization
@@ -235,6 +244,7 @@ add_test(NAME SIMDTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_simd)
 add_test(NAME TensorTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_tensor_only)
 add_test(NAME ThreadPoolTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_thread_pool)
 add_test(NAME ThreadPoolAdvancedTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_thread_pool_advanced --gtest_filter="ThreadPoolAdvancedTest.*")
+add_test(NAME ThreadPoolStressTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_thread_pool_stress --gtest_filter="ThreadPoolStressTest.*")
 add_test(NAME GGMLKVCacheQuantizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_ggml_kv_cache_quantization)
 add_test(NAME GeneratorTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator)
 add_test(NAME GGMLModelQuantizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_ggml_model_quantization)
@@ -298,6 +308,15 @@ if(WITH_COVERAGE)
         NAME coverage_thread_pool_advanced
         EXECUTABLE test_thread_pool_advanced
         DEPENDENCIES test_thread_pool_advanced
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
+    # Setup the thread pool stress test coverage target
+    setup_target_for_coverage(
+        NAME coverage_thread_pool_stress
+        EXECUTABLE test_thread_pool_stress
+        DEPENDENCIES test_thread_pool_stress
         LCOV_ARGS --no-external
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
@@ -412,7 +431,7 @@ if(WITH_COVERAGE)
     
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_generator_stress coverage_watermarking coverage_mlx_weight_converter
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_thread_pool_stress coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_generator_stress coverage_watermarking coverage_mlx_weight_converter
         COMMENT "Generating combined code coverage report"
     )
     
