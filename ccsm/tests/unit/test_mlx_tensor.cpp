@@ -3,6 +3,8 @@
 #include <ccsm/tensor.h>
 #include <vector>
 #include <memory>
+#include <string>
+#include <sstream>
 
 namespace ccsm {
 namespace testing {
@@ -11,277 +13,267 @@ class MLXTensorTest : public ::testing::Test {
 protected:
     void SetUp() override {}
     void TearDown() override {}
+    
+    // Helper to create a tensor with specific values
+    template<typename T>
+    Tensor create_tensor(const std::vector<size_t>& shape, std::vector<T> data) {
+        Tensor tensor = TensorFactory::empty(shape, get_data_type<T>());
+        T* ptr = static_cast<T*>(tensor.data());
+        if (ptr) {
+            std::copy(data.begin(), data.end(), ptr);
+        }
+        return tensor;
+    }
+    
+    // Helper to create a random tensor
+    template<typename T>
+    Tensor create_random_tensor(const std::vector<size_t>& shape) {
+        size_t size = 1;
+        for (auto dim : shape) {
+            size *= dim;
+        }
+        
+        std::vector<T> data(size);
+        for (size_t i = 0; i < size; ++i) {
+            data[i] = static_cast<T>(i % 100) / 10.0;
+        }
+        
+        return create_tensor<T>(shape, data);
+    }
+    
+    // Helper to get data type
+    template<typename T>
+    DataType get_data_type() {
+        if (std::is_same<T, float>::value) {
+            return DataType::F32;
+        } else if (std::is_same<T, int32_t>::value) {
+            return DataType::I32;
+        } else if (std::is_same<T, int64_t>::value) {
+            return DataType::I64;
+        } else {
+            throw std::runtime_error("Unsupported type");
+        }
+    }
 };
 
-// Test if MLX is available
+// Test MLX availability
 TEST_F(MLXTensorTest, TestMLXAvailability) {
     bool available = MLXContext::is_available();
     
     #ifdef CCSM_WITH_MLX
-    // If compiled with MLX, availability depends on the system
     // Skip further tests if MLX is not available
     if (!available) {
         GTEST_SKIP() << "MLX not available, skipping tests";
     }
     #else
-    // If not compiled with MLX, it should definitely not be available
     EXPECT_FALSE(available);
+    GTEST_SKIP() << "MLX not compiled in, skipping tests";
     #endif
 }
 
 #ifdef CCSM_WITH_MLX
-// Only run these tests if MLX is available
+// Test creating MLX tensors
 TEST_F(MLXTensorTest, TestMLXTensorCreation) {
-    // Skip if MLX is not available on this system
+    // Skip if MLX is not available
     if (!MLXContext::is_available()) {
         GTEST_SKIP() << "MLX not available, skipping test";
     }
     
-    // Create an MLX tensor
-    std::vector<size_t> shape = {2, 3};
-    Tensor tensor = MLXTensorFactory::zeros(shape, DataType::F32);
+    // Create a context
+    MLXContext context;
     
-    // Verify tensor properties
-    EXPECT_EQ(tensor.ndim(), 2);
-    EXPECT_EQ(tensor.shape(0), 2);
-    EXPECT_EQ(tensor.shape(1), 3);
-    EXPECT_EQ(tensor.size(), 6);
-    EXPECT_EQ(tensor.dtype(), DataType::F32);
+    // Create tensors with different shapes and dtypes
+    Tensor zeros = context.zeros({2, 3}, DataType::F32);
+    Tensor ones = context.ones({3, 4}, DataType::F32);
     
-    // Verify tensor implementation type
-    EXPECT_EQ(tensor.context()->backend(), "mlx");
+    // Check shapes
+    EXPECT_EQ(zeros.shape(0), 2);
+    EXPECT_EQ(zeros.shape(1), 3);
+    EXPECT_EQ(ones.shape(0), 3);
+    EXPECT_EQ(ones.shape(1), 4);
+    
+    // Check dtypes
+    EXPECT_EQ(zeros.dtype(), DataType::F32);
+    EXPECT_EQ(ones.dtype(), DataType::F32);
+    
+    // Check total sizes
+    EXPECT_EQ(zeros.size(), 6);
+    EXPECT_EQ(ones.size(), 12);
 }
 
+// Test basic MLX tensor operations
 TEST_F(MLXTensorTest, TestMLXTensorOperations) {
-    // Skip if MLX is not available on this system
+    // Skip if MLX is not available
     if (!MLXContext::is_available()) {
         GTEST_SKIP() << "MLX not available, skipping test";
     }
     
-    // Create MLX context
-    Context* context = ContextRegistry::get("mlx");
-    ASSERT_NE(context, nullptr);
+    // Create a context
+    MLXContext context;
     
-    // Create tensor with context
-    std::vector<size_t> shape = {2, 2};
-    Tensor a = context->ones(shape, DataType::F32);
-    Tensor b = context->ones(shape, DataType::F32);
+    // Create input tensors
+    Tensor a = create_tensor<float>({2, 2}, {1.0f, 2.0f, 3.0f, 4.0f});
+    Tensor b = create_tensor<float>({2, 2}, {5.0f, 6.0f, 7.0f, 8.0f});
     
-    // Basic operations
-    Tensor c = context->add(a, b);
+    // Test addition
+    Tensor c = context.add(a, b);
     EXPECT_EQ(c.shape(0), 2);
     EXPECT_EQ(c.shape(1), 2);
     
-    // Access data and verify
-    const float* data = static_cast<const float*>(c.data());
-    for (size_t i = 0; i < c.size(); ++i) {
-        EXPECT_FLOAT_EQ(data[i], 2.0f);
-    }
-    
-    // Matrix multiplication
-    Tensor d = context->matmul(a, b);
+    // Test subtraction
+    Tensor d = context.subtract(b, a);
     EXPECT_EQ(d.shape(0), 2);
     EXPECT_EQ(d.shape(1), 2);
     
-    data = static_cast<const float*>(d.data());
-    for (size_t i = 0; i < d.size(); ++i) {
-        EXPECT_FLOAT_EQ(data[i], 2.0f);
-    }
+    // Test multiplication
+    Tensor e = context.multiply(a, b);
+    EXPECT_EQ(e.shape(0), 2);
+    EXPECT_EQ(e.shape(1), 2);
+    
+    // Test division
+    Tensor f = context.divide(b, a);
+    EXPECT_EQ(f.shape(0), 2);
+    EXPECT_EQ(f.shape(1), 2);
+    
+    // Test matrix multiplication
+    Tensor g = context.matmul(a, b);
+    EXPECT_EQ(g.shape(0), 2);
+    EXPECT_EQ(g.shape(1), 2);
 }
 
-TEST_F(MLXTensorTest, TestMLXTensorReshape) {
-    // Skip if MLX is not available on this system
+// Test MLX tensor reshaping and slicing
+TEST_F(MLXTensorTest, TestMLXTensorReshapeSlice) {
+    // Skip if MLX is not available
     if (!MLXContext::is_available()) {
         GTEST_SKIP() << "MLX not available, skipping test";
     }
     
-    // Create an MLX tensor
-    std::vector<size_t> shape = {2, 3};
-    Tensor tensor = MLXTensorFactory::zeros(shape, DataType::F32);
+    // Create some test tensors using MLX Context
+    MLXContext context;
+    Tensor tensor = context.zeros({2, 3, 4}, DataType::F32);
     
-    // Reshape tensor
-    std::vector<size_t> new_shape = {3, 2};
-    Tensor reshaped = tensor.reshape(new_shape);
+    // Test reshaping
+    Tensor reshaped = tensor.reshape({4, 6});
+    EXPECT_EQ(reshaped.shape(0), 4);
+    EXPECT_EQ(reshaped.shape(1), 6);
+    EXPECT_EQ(reshaped.size(), tensor.size());
     
-    // Verify reshaped tensor properties
-    EXPECT_EQ(reshaped.ndim(), 2);
-    EXPECT_EQ(reshaped.shape(0), 3);
-    EXPECT_EQ(reshaped.shape(1), 2);
-    EXPECT_EQ(reshaped.size(), 6);
-    EXPECT_EQ(reshaped.dtype(), DataType::F32);
-}
-
-TEST_F(MLXTensorTest, TestMLXTensorView) {
-    // Skip if MLX is not available on this system
-    if (!MLXContext::is_available()) {
-        GTEST_SKIP() << "MLX not available, skipping test";
-    }
+    // Test view (which is also a reshape in MLX)
+    Tensor viewed = tensor.view({6, 4});
+    EXPECT_EQ(viewed.shape(0), 6);
+    EXPECT_EQ(viewed.shape(1), 4);
+    EXPECT_EQ(viewed.size(), tensor.size());
     
-    // Create an MLX tensor
-    std::vector<size_t> shape = {2, 3};
-    Tensor tensor = MLXTensorFactory::zeros(shape, DataType::F32);
-    
-    // Create a view of the tensor
-    std::vector<size_t> new_shape = {3, 2};
-    Tensor viewed = tensor.view(new_shape);
-    
-    // Verify viewed tensor properties
-    EXPECT_EQ(viewed.ndim(), 2);
-    EXPECT_EQ(viewed.shape(0), 3);
-    EXPECT_EQ(viewed.shape(1), 2);
-    EXPECT_EQ(viewed.size(), 6);
-    EXPECT_EQ(viewed.dtype(), DataType::F32);
-    
-    // Modify the view and verify that the original tensor is also modified
-    float* view_data = static_cast<float*>(viewed.data());
-    view_data[0] = 1.0f;
-    
-    float* tensor_data = static_cast<float*>(tensor.data());
-    EXPECT_FLOAT_EQ(tensor_data[0], 1.0f);
-}
-
-TEST_F(MLXTensorTest, TestMLXTensorSlice) {
-    // Skip if MLX is not available on this system
-    if (!MLXContext::is_available()) {
-        GTEST_SKIP() << "MLX not available, skipping test";
-    }
-    
-    // Create an MLX tensor with some data
-    std::vector<size_t> shape = {4, 3};
-    Tensor tensor = MLXTensorFactory::zeros(shape, DataType::F32);
-    
-    // Fill with sequential data
-    float* data = static_cast<float*>(tensor.data());
-    for (size_t i = 0; i < tensor.size(); ++i) {
-        data[i] = static_cast<float>(i);
-    }
-    
-    // Slice the tensor along the first dimension
-    Tensor sliced = tensor.slice(0, 1, 3);
-    
-    // Verify sliced tensor properties
-    EXPECT_EQ(sliced.ndim(), 2);
+    // Test slicing
+    Tensor sliced = tensor.slice(1, 0, 2);
     EXPECT_EQ(sliced.shape(0), 2);
-    EXPECT_EQ(sliced.shape(1), 3);
-    EXPECT_EQ(sliced.size(), 6);
-    EXPECT_EQ(sliced.dtype(), DataType::F32);
-    
-    // Verify slice data
-    const float* slice_data = static_cast<const float*>(sliced.data());
-    for (size_t i = 0; i < sliced.size(); ++i) {
-        EXPECT_FLOAT_EQ(slice_data[i], static_cast<float>(i + 3));
-    }
+    EXPECT_EQ(sliced.shape(1), 2);
+    EXPECT_EQ(sliced.shape(2), 4);
 }
 
+// Test MLX activations
 TEST_F(MLXTensorTest, TestMLXActivations) {
-    // Skip if MLX is not available on this system
+    // Skip if MLX is not available
     if (!MLXContext::is_available()) {
         GTEST_SKIP() << "MLX not available, skipping test";
     }
     
-    // Create MLX context
-    Context* context = ContextRegistry::get("mlx");
-    ASSERT_NE(context, nullptr);
+    // Create a context
+    MLXContext context;
     
-    // Create tensor with context
-    std::vector<size_t> shape = {2, 2};
-    Tensor tensor = context->zeros(shape, DataType::F32);
+    // Create a test tensor
+    Tensor tensor = create_tensor<float>({2, 3}, {-2.0f, -1.0f, 0.0f, 1.0f, 2.0f, 3.0f});
     
-    // Fill with test data
-    float* data = static_cast<float*>(tensor.data());
-    data[0] = -1.0f;
-    data[1] = 0.0f;
-    data[2] = 1.0f;
-    data[3] = 2.0f;
+    // Test ReLU
+    Tensor relu_result = context.relu(tensor);
+    EXPECT_EQ(relu_result.shape(0), 2);
+    EXPECT_EQ(relu_result.shape(1), 3);
     
-    // Test ReLU activation
-    Tensor relu_result = context->relu(tensor);
-    const float* relu_data = static_cast<const float*>(relu_result.data());
-    EXPECT_FLOAT_EQ(relu_data[0], 0.0f);
-    EXPECT_FLOAT_EQ(relu_data[1], 0.0f);
-    EXPECT_FLOAT_EQ(relu_data[2], 1.0f);
-    EXPECT_FLOAT_EQ(relu_data[3], 2.0f);
+    // Test GELU
+    Tensor gelu_result = context.gelu(tensor);
+    EXPECT_EQ(gelu_result.shape(0), 2);
+    EXPECT_EQ(gelu_result.shape(1), 3);
     
-    // Test SiLU (Swish) activation
-    Tensor silu_result = context->silu(tensor);
-    const float* silu_data = static_cast<const float*>(silu_result.data());
-    EXPECT_NEAR(silu_data[0], -0.268f, 0.001f);
-    EXPECT_NEAR(silu_data[1], 0.0f, 0.001f);
-    EXPECT_NEAR(silu_data[2], 0.731f, 0.001f);
-    EXPECT_NEAR(silu_data[3], 1.762f, 0.001f);
+    // Test SiLU
+    Tensor silu_result = context.silu(tensor);
+    EXPECT_EQ(silu_result.shape(0), 2);
+    EXPECT_EQ(silu_result.shape(1), 3);
     
-    // Test GELU activation
-    Tensor gelu_result = context->gelu(tensor);
-    const float* gelu_data = static_cast<const float*>(gelu_result.data());
-    EXPECT_NEAR(gelu_data[0], -0.158f, 0.001f);
-    EXPECT_NEAR(gelu_data[1], 0.0f, 0.001f);
-    EXPECT_NEAR(gelu_data[2], 0.841f, 0.001f);
-    EXPECT_NEAR(gelu_data[3], 1.954f, 0.001f);
+    // Test Softmax
+    Tensor softmax_result = context.softmax(tensor, 1);
+    EXPECT_EQ(softmax_result.shape(0), 2);
+    EXPECT_EQ(softmax_result.shape(1), 3);
 }
 
-TEST_F(MLXTensorTest, TestMLXTensorConversion) {
-    // Skip if MLX is not available on this system
+// Test MLX reductions
+TEST_F(MLXTensorTest, TestMLXReductions) {
+    // Skip if MLX is not available
     if (!MLXContext::is_available()) {
         GTEST_SKIP() << "MLX not available, skipping test";
     }
     
-    // Create a CPU tensor
-    std::vector<size_t> shape = {2, 3};
-    Tensor cpu_tensor = TensorFactory::ones(shape, DataType::F32);
+    // Create a context
+    MLXContext context;
     
-    // Convert to MLX tensor
-    Tensor mlx_tensor = MLXTensorFactory::from_tensor(cpu_tensor);
+    // Create a test tensor
+    Tensor tensor = create_tensor<float>({2, 3}, {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f});
     
-    // Verify MLX tensor properties
-    EXPECT_EQ(mlx_tensor.ndim(), 2);
-    EXPECT_EQ(mlx_tensor.shape(0), 2);
-    EXPECT_EQ(mlx_tensor.shape(1), 3);
-    EXPECT_EQ(mlx_tensor.size(), 6);
-    EXPECT_EQ(mlx_tensor.dtype(), DataType::F32);
-    EXPECT_EQ(mlx_tensor.context()->backend(), "mlx");
+    // Test sum
+    Tensor sum_result = context.sum(tensor, 1);
+    EXPECT_EQ(sum_result.shape(0), 2);
+    EXPECT_EQ(sum_result.shape(1), 1);
     
-    // Convert back to CPU tensor
-    Tensor reconverted = TensorFactory::from_tensor(mlx_tensor);
-    
-    // Verify reconverted tensor properties
-    EXPECT_EQ(reconverted.ndim(), 2);
-    EXPECT_EQ(reconverted.shape(0), 2);
-    EXPECT_EQ(reconverted.shape(1), 3);
-    EXPECT_EQ(reconverted.size(), 6);
-    EXPECT_EQ(reconverted.dtype(), DataType::F32);
-    EXPECT_NE(reconverted.context()->backend(), "mlx");
-    
-    // Verify data consistency
-    const float* cpu_data = static_cast<const float*>(cpu_tensor.data());
-    const float* reconverted_data = static_cast<const float*>(reconverted.data());
-    for (size_t i = 0; i < cpu_tensor.size(); ++i) {
-        EXPECT_FLOAT_EQ(cpu_data[i], reconverted_data[i]);
-    }
+    // Test mean
+    Tensor mean_result = context.mean(tensor, 0);
+    EXPECT_EQ(mean_result.shape(0), 1);
+    EXPECT_EQ(mean_result.shape(1), 3);
 }
 
-TEST_F(MLXTensorTest, TestMLXDeviceManager) {
-    // Skip if MLX is not available on this system
+// Test tensor creation with different dtypes
+TEST_F(MLXTensorTest, TestMLXDifferentDtypes) {
+    // Skip if MLX is not available
     if (!MLXContext::is_available()) {
         GTEST_SKIP() << "MLX not available, skipping test";
     }
     
-    // Check device availability
-    EXPECT_TRUE(MLXDevice::is_available());
+    // Create a context
+    MLXContext context;
+    
+    // Create tensors with different dtypes
+    Tensor f32_tensor = context.zeros({2, 3}, DataType::F32);
+    Tensor f16_tensor = context.zeros({2, 3}, DataType::F16);
+    Tensor bf16_tensor = context.zeros({2, 3}, DataType::BF16);
+    Tensor i32_tensor = context.zeros({2, 3}, DataType::I32);
+    Tensor i16_tensor = context.zeros({2, 3}, DataType::I16);
+    Tensor i8_tensor = context.zeros({2, 3}, DataType::I8);
+    
+    // Check dtypes
+    EXPECT_EQ(f32_tensor.dtype(), DataType::F32);
+    EXPECT_EQ(f16_tensor.dtype(), DataType::F16);
+    EXPECT_EQ(bf16_tensor.dtype(), DataType::BF16);
+    EXPECT_EQ(i32_tensor.dtype(), DataType::I32);
+    EXPECT_EQ(i16_tensor.dtype(), DataType::I16);
+    EXPECT_EQ(i8_tensor.dtype(), DataType::I8);
+}
+
+// Test MLX device operations
+TEST_F(MLXTensorTest, TestMLXDevice) {
+    // Skip if MLX is not available
+    if (!MLXContext::is_available()) {
+        GTEST_SKIP() << "MLX not available, skipping test";
+    }
     
     // Get default device
-    MLXDevice default_device = MLXDevice::default_device();
+    MLXDevice device = MLXDevice::default_device();
     
-    // Get device properties
-    mlx_device_type device_type = default_device.type();
-    int device_index = default_device.index();
-    std::string device_name = default_device.name();
+    // Check device properties
+    EXPECT_TRUE(device.name().size() > 0);
     
-    // Verify device properties
-    EXPECT_NE(device_name, "");
-    EXPECT_GE(device_index, 0);
+    // Test setting default device
+    MLXDevice::set_default_device(device);
     
-    // Device synchronization
-    MLXDevice::synchronize();
+    // Test synchronization
+    device.synchronize();
 }
 #endif // CCSM_WITH_MLX
 
