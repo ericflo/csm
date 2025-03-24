@@ -41,6 +41,7 @@ set(ADDITIONAL_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_mlx_weight_converter.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_unified_model.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_thread_pool_stress.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_memory_optimization_edge_cases.cpp"
 )
 
 # Append any missing files
@@ -237,6 +238,14 @@ else()
 endif()
 target_include_directories(test_mlx_weight_converter PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# Add a separate target for memory optimization edge cases tests
+add_executable(test_memory_optimization_edge_cases
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_memory_optimization_edge_cases.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_memory_optimization_edge_cases PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_memory_optimization_edge_cases PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # Add the tests to CTest - specify full paths for test binaries
 add_test(NAME UnitTests COMMAND ${CMAKE_CURRENT_BINARY_DIR}/ccsm_unit_tests)
 add_test(NAME TokenizerTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_tokenizer)
@@ -257,6 +266,7 @@ add_test(NAME GeneratorMemoryOptimizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR
 add_test(NAME GeneratorStressTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator_stress)
 add_test(NAME WatermarkingTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_watermarking)
 add_test(NAME MLXWeightConverterTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_weight_converter)
+add_test(NAME MemoryOptimizationEdgeCasesTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_memory_optimization_edge_cases)
 
 if(WITH_MLX AND MLX_TEST_SOURCES)
     add_test(NAME MLXTests COMMAND ccsm_mlx_tests)
@@ -429,9 +439,18 @@ if(WITH_COVERAGE)
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
     
+    # Setup the memory optimization edge cases test coverage target
+    setup_target_for_coverage(
+        NAME coverage_memory_optimization_edge_cases
+        EXECUTABLE test_memory_optimization_edge_cases
+        DEPENDENCIES test_memory_optimization_edge_cases
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_thread_pool_stress coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_generator_stress coverage_watermarking coverage_mlx_weight_converter
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_thread_pool_stress coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_generator_stress coverage_watermarking coverage_mlx_weight_converter coverage_memory_optimization_edge_cases
         COMMENT "Generating combined code coverage report"
     )
     
