@@ -28,9 +28,11 @@ set(ADDITIONAL_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_kv_cache_quantization.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_quantized_matrix_mul.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_model_quantization.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_model_quantization_memory.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_thread_pool.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_thread_pool_advanced.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_kv_cache_memory_optimization.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_model_memory_optimization.cpp"
 )
 
 # Append any missing files
@@ -135,6 +137,30 @@ add_executable(test_kv_cache_memory
 target_link_libraries(test_kv_cache_memory PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_kv_cache_memory PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# Add a separate target for GGMLModel memory optimization tests
+add_executable(test_model_memory_optimization
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_model_memory_optimization.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_model_memory_optimization PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_model_memory_optimization PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+# Add a separate target for GGML model quantization and memory optimization tests
+add_executable(test_model_quantization_memory
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_ggml_model_quantization_memory.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_model_quantization_memory PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_model_quantization_memory PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+# Add a separate target for quantized matrix multiplication tests
+add_executable(test_quantized_matrix_mul
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_quantized_matrix_mul.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_quantized_matrix_mul PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_quantized_matrix_mul PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # We'll add integration tests after defining coverage targets
 
 # Add MLX tests conditionally
@@ -161,6 +187,9 @@ add_test(NAME GGMLKVCacheTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_ggml_kv_c
 add_test(NAME GeneratorTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator)
 add_test(NAME GGMLModelQuantizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_ggml_model_quantization)
 add_test(NAME KVCacheMemoryTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_kv_cache_memory)
+add_test(NAME ModelMemoryOptimizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_model_memory_optimization)
+add_test(NAME ModelQuantizationMemoryTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_model_quantization_memory)
+add_test(NAME QuantizedMatrixMulTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_quantized_matrix_mul)
 
 if(WITH_MLX AND MLX_TEST_SOURCES)
     add_test(NAME MLXTests COMMAND ccsm_mlx_tests)
@@ -252,9 +281,36 @@ if(WITH_COVERAGE)
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
     
+    # Setup the model memory optimization test coverage target
+    setup_target_for_coverage(
+        NAME coverage_model_memory_optimization
+        EXECUTABLE test_model_memory_optimization
+        DEPENDENCIES test_model_memory_optimization
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
+    # Setup the model quantization with memory optimization test coverage target
+    setup_target_for_coverage(
+        NAME coverage_model_quantization_memory
+        EXECUTABLE test_model_quantization_memory
+        DEPENDENCIES test_model_quantization_memory
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
+    # Setup the quantized matrix multiplication test coverage target
+    setup_target_for_coverage(
+        NAME coverage_quantized_matrix_mul
+        EXECUTABLE test_quantized_matrix_mul
+        DEPENDENCIES test_quantized_matrix_mul
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_ggml_kv_cache coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_ggml_kv_cache coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul
         COMMENT "Generating combined code coverage report"
     )
     
