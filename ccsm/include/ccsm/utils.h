@@ -155,6 +155,9 @@ public:
     
     // Write text file
     static bool write_text_file(const std::string& filename, const std::string& content);
+    
+    // Get temporary directory path
+    static std::string get_temp_directory();
 };
 
 } // namespace ccsm

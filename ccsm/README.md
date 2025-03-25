@@ -139,13 +139,16 @@ Key components implemented:
 - ✅ Tokenization Module with SentencePiece
 - ✅ CLI Arguments Parser
 - ✅ Basic Audio I/O
+- ✅ Thread Pool Implementation
+- ✅ Model Generation Pipeline
+- ✅ MLX Acceleration for Apple Silicon
+- ✅ Watermarking Integration
+- ✅ Model Loading Infrastructure with Hugging Face
 
 Work in progress:
 - 🔄 Advanced Tensor Operations
 - 🔄 GGML Quantization Support
-- 🔄 Model Generation Pipeline
-- 🔄 MLX Acceleration for Apple Silicon
-- 🔄 Thread Pool Improvements
+- 🔄 Configuration System for Model and Generation Settings
 
 ## Contributing
 

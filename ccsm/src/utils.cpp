@@ -182,4 +182,58 @@ std::vector<float> FileUtils::load_wav(const std::string& path, int* sample_rate
 // Progress bar implementation is defined inline in the header
 // No need for implementation here
 
+std::string FileUtils::get_temp_directory() {
+    // Get standard temporary directory path
+    std::filesystem::path temp_dir;
+    
+    // Try environment variables first
+    const char* tmp_env = nullptr;
+    
+#ifdef _WIN32
+    tmp_env = std::getenv("TEMP");
+    if (!tmp_env) tmp_env = std::getenv("TMP");
+#else
+    tmp_env = std::getenv("TMPDIR");
+#endif
+    
+    if (tmp_env && std::filesystem::exists(tmp_env)) {
+        temp_dir = tmp_env;
+    } else {
+        // Fallback to default temp directories
+#ifdef _WIN32
+        temp_dir = "C:\\Temp";
+#else
+        temp_dir = "/tmp";
+#endif
+        
+        // Ensure the directory exists
+        if (!std::filesystem::exists(temp_dir)) {
+            // If all else fails, use current directory
+            temp_dir = std::filesystem::current_path() / "temp";
+            std::filesystem::create_directories(temp_dir);
+        }
+    }
+    
+    // Create CCSM-specific subdirectory
+    std::filesystem::path ccsm_temp = temp_dir / "ccsm";
+    std::filesystem::create_directories(ccsm_temp);
+    
+    // Add a unique identifier (timestamp + random number)
+    auto now = std::chrono::system_clock::now();
+    auto now_ms = std::chrono::time_point_cast<std::chrono::milliseconds>(now);
+    auto value = now_ms.time_since_epoch().count();
+    
+    // Add some randomness to handle multiple processes
+    std::srand(static_cast<unsigned int>(value));
+    int random_value = std::rand() % 10000;
+    
+    std::ostringstream unique_id;
+    unique_id << value << "_" << random_value;
+    
+    std::filesystem::path unique_temp = ccsm_temp / unique_id.str();
+    std::filesystem::create_directories(unique_temp);
+    
+    return unique_temp.string();
+}
+
 } // namespace ccsm
