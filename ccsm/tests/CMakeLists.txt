@@ -49,6 +49,7 @@ set(ADDITIONAL_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_memory_optimization_edge_cases.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_context_management.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_mimi_codec.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_watermarking_edge_cases.cpp"
 )
 
 # Append any missing files
@@ -228,6 +229,14 @@ add_executable(test_watermarking
 target_link_libraries(test_watermarking PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_watermarking PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# Add a separate target for watermarking edge cases tests
+add_executable(test_watermarking_edge_cases
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_watermarking_edge_cases.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_watermarking_edge_cases PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_watermarking_edge_cases PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # We'll add integration tests after defining coverage targets
 
 # Add MLX tests conditionally
@@ -387,6 +396,7 @@ add_test(NAME GeneratorMemoryOptimizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR
 add_test(NAME GeneratorStressTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator_stress)
 add_test(NAME GeneratorSamplingTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator_sampling)
 add_test(NAME WatermarkingTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_watermarking)
+add_test(NAME WatermarkingEdgeCasesTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_watermarking_edge_cases)
 add_test(NAME MLXWeightConverterTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_weight_converter)
 add_test(NAME MLXTensorTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_tensor)
 add_test(NAME MLXTensorOpsTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_tensor_ops)
@@ -579,6 +589,15 @@ if(WITH_COVERAGE)
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
     
+    # Setup the watermarking edge cases test coverage target
+    setup_target_for_coverage(
+        NAME coverage_watermarking_edge_cases
+        EXECUTABLE test_watermarking_edge_cases
+        DEPENDENCIES test_watermarking_edge_cases
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
     # Setup the MLX weight converter test coverage target
     setup_target_for_coverage(
         NAME coverage_mlx_weight_converter
@@ -680,7 +699,7 @@ if(WITH_COVERAGE)
     
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_thread_pool_stress coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_generator_stress coverage_generator_sampling coverage_generator_basic coverage_watermarking coverage_mlx_weight_converter coverage_mlx_tensor coverage_mlx_tensor_ops coverage_mlx_memory_management coverage_mlx_transformer coverage_mlx_model coverage_mlx_generator coverage_mlx_optimizations coverage_memory_optimization_edge_cases coverage_context_management coverage_mimi_codec
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_thread_pool_stress coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_generator_stress coverage_generator_sampling coverage_generator_basic coverage_watermarking coverage_watermarking_edge_cases coverage_mlx_weight_converter coverage_mlx_tensor coverage_mlx_tensor_ops coverage_mlx_memory_management coverage_mlx_transformer coverage_mlx_model coverage_mlx_generator coverage_mlx_optimizations coverage_memory_optimization_edge_cases coverage_context_management coverage_mimi_codec
         COMMENT "Generating combined code coverage report"
     )
     
