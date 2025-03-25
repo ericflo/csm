@@ -14,6 +14,7 @@ class Model;
 class TextTokenizer;
 class AudioCodec;
 class Watermarker;
+class ContextManager;
 
 // Segment representing a chunk of conversation
 struct Segment {
@@ -177,6 +178,22 @@ public:
     void set_memory_optimization(bool enable, size_t max_memory_mb = 0, 
                                 int trigger_mb = 0, float prune_factor = 0.5f);
     
+    // Advanced context management methods
+    
+    // Enable or disable advanced context management
+    void set_enable_advanced_context(bool enable);
+    bool is_advanced_context_enabled() const;
+    
+    // Get the context manager (creates one if not exists)
+    std::shared_ptr<ContextManager> context_manager();
+    
+    // Generate speech using the advanced context manager
+    virtual std::vector<float> generate_speech_with_context_manager(
+        const std::string& text,
+        int speaker_id = -1,
+        const GenerationOptions& options = {},
+        std::function<void(int, int)> progress_callback = nullptr);
+    
     // Getters
     int sample_rate() const;
     std::shared_ptr<Model> model() const;
@@ -198,6 +215,10 @@ protected:
     std::shared_ptr<TextTokenizer> text_tokenizer_;
     std::shared_ptr<AudioCodec> audio_codec_;
     std::shared_ptr<Watermarker> watermarker_;
+    
+    // Advanced context management
+    std::shared_ptr<ContextManager> context_manager_;
+    bool enable_advanced_context_ = false;
     
     // Default parameters
     float default_temperature_ = 0.9f;

@@ -47,6 +47,7 @@ set(ADDITIONAL_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_unified_model.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_thread_pool_stress.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_memory_optimization_edge_cases.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/unit/test_context_management.cpp"
 )
 
 # Append any missing files
@@ -322,6 +323,14 @@ add_executable(test_memory_optimization_edge_cases
 target_link_libraries(test_memory_optimization_edge_cases PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_memory_optimization_edge_cases PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# Add a separate target for context management tests
+add_executable(test_context_management
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_context_management.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_context_management PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_context_management PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # Add a separate target for MLX tensor operations tests
 add_executable(test_mlx_tensor_ops
     ${CMAKE_CURRENT_SOURCE_DIR}/unit/mlx/test_mlx_tensor_ops.cpp
@@ -375,6 +384,7 @@ add_test(NAME MLXModelTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_model)
 add_test(NAME MLXGeneratorTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_generator)
 add_test(NAME MLXOptimizationsTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_optimizations)
 add_test(NAME MemoryOptimizationEdgeCasesTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_memory_optimization_edge_cases)
+add_test(NAME ContextManagementTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_context_management)
 
 if(WITH_MLX AND MLX_TEST_SOURCES)
     add_test(NAME MLXTests COMMAND ccsm_mlx_tests)
@@ -619,6 +629,15 @@ if(WITH_COVERAGE)
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
     
+    # Setup the context management test coverage target
+    setup_target_for_coverage(
+        NAME coverage_context_management
+        EXECUTABLE test_context_management
+        DEPENDENCIES test_context_management
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
     # Setup the MLX tensor operations test coverage target
     setup_target_for_coverage(
         NAME coverage_mlx_tensor_ops
@@ -639,7 +658,7 @@ if(WITH_COVERAGE)
     
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_thread_pool_stress coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_generator_stress coverage_generator_sampling coverage_generator_basic coverage_watermarking coverage_mlx_weight_converter coverage_mlx_tensor coverage_mlx_tensor_ops coverage_mlx_memory_management coverage_mlx_transformer coverage_mlx_model coverage_mlx_generator coverage_mlx_optimizations coverage_memory_optimization_edge_cases
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_thread_pool_stress coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_generator_stress coverage_generator_sampling coverage_generator_basic coverage_watermarking coverage_mlx_weight_converter coverage_mlx_tensor coverage_mlx_tensor_ops coverage_mlx_memory_management coverage_mlx_transformer coverage_mlx_model coverage_mlx_generator coverage_mlx_optimizations coverage_memory_optimization_edge_cases coverage_context_management
         COMMENT "Generating combined code coverage report"
     )
     
