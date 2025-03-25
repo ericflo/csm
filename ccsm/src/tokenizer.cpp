@@ -1,5 +1,6 @@
 #include "ccsm/tokenizer.h"
 #include "ccsm/utils.h"
+#include "ccsm/mimi_codec.h"
 
 #include <sentencepiece_processor.h>
 #include <fstream>
@@ -125,7 +126,7 @@ public:
 };
 
 // Audio tokenizer implementation (simplified)
-class MimiAudioTokenizer : public AudioTokenizer {
+class SimpleMimiAudioTokenizer : public AudioTokenizer {
 private:
     int num_codebooks_;
     int vocab_size_;
@@ -137,10 +138,14 @@ private:
     int audio_eos_id_;
     int audio_pad_id_;
     
+    // Reference to a MimiCodec (optional)
+    std::shared_ptr<AudioCodec> codec_;
+    
     // Add any state needed for the Mimi codec
 
 public:
-    MimiAudioTokenizer(const std::string& model_path) 
+    // Constructor with path
+    SimpleMimiAudioTokenizer(const std::string& model_path) 
         : num_codebooks_(32),
           vocab_size_(2051), // Based on CSM docs
           sample_rate_(24000),
@@ -154,6 +159,25 @@ public:
         // Load model from file
         // For now, this is a stub implementation
         // We'll need to implement proper Mimi codec integration later
+    }
+    
+    // Constructor with codec
+    SimpleMimiAudioTokenizer(std::shared_ptr<AudioCodec> codec)
+        : codec_(codec),
+          audio_bos_id_(0),
+          audio_eos_id_(0),
+          audio_pad_id_(0) {
+        if (codec_) {
+            num_codebooks_ = codec_->num_codebooks();
+            vocab_size_ = codec_->vocab_size();
+            sample_rate_ = codec_->sample_rate();
+            hop_length_ = codec_->hop_length();
+        } else {
+            num_codebooks_ = 32;
+            vocab_size_ = 2051;
+            sample_rate_ = 24000;
+            hop_length_ = 1920;
+        }
     }
 
     std::vector<int> encode(const std::string& text) const override {
@@ -171,9 +195,12 @@ public:
     }
 
     std::vector<std::vector<int>> encode_audio(const std::vector<float>& audio) const override {
-        // Placeholder implementation
-        // In a real implementation, this would use the Mimi codec to encode audio to tokens
+        // If we have a codec, use it
+        if (codec_) {
+            return codec_->encode(audio);
+        }
         
+        // Otherwise, return a placeholder implementation
         // For now, return empty result
         return std::vector<std::vector<int>>();
     }
@@ -192,7 +219,7 @@ public:
 };
 
 // AudioCodec implementation (simplified - this would be the full Mimi codec implementation)
-class MimiAudioCodec : public AudioCodec {
+class SimpleMimiAudioCodec : public AudioCodec {
 private:
     int num_codebooks_;
     int vocab_size_;
@@ -200,7 +227,7 @@ private:
     int hop_length_;
 
 public:
-    MimiAudioCodec(const std::string& model_path)
+    SimpleMimiAudioCodec(const std::string& model_path)
         : num_codebooks_(32),  // Based on CSM docs
           vocab_size_(2051),   // Based on CSM docs
           sample_rate_(24000), // Based on CSM docs
@@ -260,6 +287,7 @@ std::shared_ptr<AudioTokenizer> AudioTokenizer::from_file(const std::string& pat
     // Try to create a Mimi codec first
     try {
         auto codec = MimiCodec::from_file(path);
+        // Create tokenizer from codec
         return std::make_shared<MimiAudioTokenizer>(codec);
     } catch (const std::exception& e) {
         CCSM_WARNING("Failed to create Mimi codec, falling back to placeholder: " + std::string(e.what()));
@@ -267,7 +295,7 @@ std::shared_ptr<AudioTokenizer> AudioTokenizer::from_file(const std::string& pat
     #endif
     
     // Fall back to the placeholder implementation
-    return std::make_shared<MimiAudioTokenizer>(path);
+    return std::make_shared<SimpleMimiAudioTokenizer>(path);
 }
 
 std::shared_ptr<AudioCodec> AudioCodec::from_file(const std::string& path) {
@@ -281,7 +309,7 @@ std::shared_ptr<AudioCodec> AudioCodec::from_file(const std::string& path) {
     #endif
     
     // Fall back to the placeholder implementation
-    return std::make_shared<MimiAudioCodec>(path);
+    return std::make_shared<SimpleMimiAudioCodec>(path);
 }
 
 } // namespace ccsm

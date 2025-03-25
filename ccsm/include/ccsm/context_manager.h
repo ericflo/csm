@@ -3,6 +3,7 @@
 
 #include <ccsm/tensor.h>
 #include <ccsm/tokenizer.h>
+#include <ccsm/generator.h>  // For Segment struct
 #include <vector>
 #include <string>
 #include <memory>
@@ -67,6 +68,17 @@ struct EnhancedSegment : public Segment {
     
     // Token indices that map to this segment
     std::vector<size_t> token_indices;
+    
+    // Constructors
+    EnhancedSegment() : Segment("", -1, {}) {}
+    
+    EnhancedSegment(const std::string& text, int speaker_id, const std::vector<float>& audio = {})
+        : Segment(text, speaker_id, audio), timestamp(0), importance_score(1.0f),
+          is_compressed(false) {}
+          
+    EnhancedSegment(const Segment& segment)
+        : Segment(segment), timestamp(0), importance_score(1.0f),
+          is_compressed(false) {}
 };
 
 /**

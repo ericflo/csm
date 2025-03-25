@@ -3,6 +3,9 @@
 #include <ccsm/mlx/mlx_optimizations.h>
 #include <ccsm/mlx/mlx_weight_converter.h>
 #include <ccsm/model_loader.h>
+#include <ccsm/tokenizer.h>
+#include <ccsm/mimi_codec.h>
+#include <ccsm/watermarking.h>
 #include <ccsm/utils.h>
 #include <algorithm>
 #include <chrono>
@@ -377,16 +380,30 @@ std::shared_ptr<Generator> create_mlx_generator(
         return nullptr;
     }
     
-    // Load tokenizer
-    auto tokenizer = std::make_shared<TextTokenizer>();
-    if (!tokenizer->load(tokenizer_path)) {
+    // Load tokenizer (from_file is a static factory method that creates concrete implementation)
+    auto tokenizer = TextTokenizer::from_file(tokenizer_path);
+    if (!tokenizer) {
         CCSM_ERROR("Failed to load tokenizer");
         return nullptr;
     }
     
-    // Load audio codec
-    auto codec = std::make_shared<AudioCodec>();
-    if (!codec->load(audio_codec_path)) {
+    // Load audio codec - if MIMI is enabled, use that
+    std::shared_ptr<AudioCodec> codec = nullptr;
+    #ifdef CCSM_WITH_MIMI
+    // Use MimiCodec implementation
+    try {
+        codec = MimiCodec::from_file(audio_codec_path);
+    } catch (const std::exception& e) {
+        CCSM_ERROR("Failed to create MimiCodec: ", e.what());
+    }
+    #endif
+    
+    // If MIMI not available or failed, try generic audio codec
+    if (!codec) {
+        codec = AudioCodec::from_file(audio_codec_path);
+    }
+    
+    if (!codec) {
         CCSM_ERROR("Failed to load audio codec");
         return nullptr;
     }
@@ -394,10 +411,10 @@ std::shared_ptr<Generator> create_mlx_generator(
     // Load watermarker if provided
     std::shared_ptr<Watermarker> watermarker = nullptr;
     if (!watermarker_path.empty()) {
-        watermarker = std::make_shared<Watermarker>();
-        if (!watermarker->load(watermarker_path)) {
-            CCSM_WARNING("Failed to load watermarker, continuing without watermarking");
-            watermarker = nullptr;
+        try {
+            watermarker = Watermarker::create(watermarker_path);
+        } catch (const std::exception& e) {
+            CCSM_WARNING("Failed to create watermarker: ", e.what(), ", continuing without watermarking");
         }
     }
     

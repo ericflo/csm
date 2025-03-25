@@ -27,9 +27,8 @@ ContextManager::ContextManager(std::shared_ptr<TextTokenizer> tokenizer, const C
 
 // Add a segment to the context
 void ContextManager::add_segment(const Segment& segment) {
-    EnhancedSegment enhanced;
-    enhanced.text = segment.text;
-    enhanced.speaker_id = segment.speaker_id;
+    // Create enhanced segment with base constructor first
+    EnhancedSegment enhanced(segment.text, segment.speaker_id, segment.audio);
     enhanced.timestamp = next_timestamp_++;
     enhanced.importance_score = 1.0f; // Default importance
     enhanced.is_compressed = false;
@@ -132,9 +131,8 @@ std::vector<Segment> ContextManager::get_context_segments() const {
     segments.reserve(segments_.size());
     
     for (const auto& enhanced_segment : segments_) {
-        Segment segment;
-        segment.text = enhanced_segment.text;
-        segment.speaker_id = enhanced_segment.speaker_id;
+        // Create segment with proper constructor
+        Segment segment(enhanced_segment.text, enhanced_segment.speaker_id, enhanced_segment.audio);
         segments.push_back(segment);
     }
     
@@ -513,11 +511,11 @@ std::vector<std::pair<size_t, size_t>> ContextManager::find_compression_candidat
 
 // Compress two segments
 EnhancedSegment ContextManager::compress_segments(const EnhancedSegment& a, const EnhancedSegment& b) const {
-    // Create a new merged segment
-    EnhancedSegment merged;
+    // Create a temporary merged text for the base constructor
+    std::string merged_text = a.text + " " + b.text;
     
-    // Use the speaker ID from either segment (they should be the same)
-    merged.speaker_id = a.speaker_id;
+    // Create with base constructor first
+    EnhancedSegment merged(merged_text, a.speaker_id, {}); // Empty audio for now
     
     // Use the later timestamp
     merged.timestamp = std::max(a.timestamp, b.timestamp);

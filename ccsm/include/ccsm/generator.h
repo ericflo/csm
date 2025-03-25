@@ -6,6 +6,8 @@
 #include <memory>
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
+#include <random>
 
 namespace ccsm {
 
@@ -22,6 +24,10 @@ struct Segment {
     int speaker_id;
     std::vector<float> audio;
     
+    // Default constructor
+    Segment() : text(""), speaker_id(-1), audio() {}
+    
+    // Constructor with parameters
     Segment(const std::string& text, int speaker_id, const std::vector<float>& audio = {})
         : text(text), speaker_id(speaker_id), audio(audio) {}
 };

@@ -10,6 +10,41 @@
 #include <chrono>
 #include <cmath>
 
+#ifdef CCSM_WITH_MLX
+namespace ccsm {
+// MLX optimization configuration
+struct MLXOptimizationConfig {
+    bool use_fp16 = true;
+    bool use_cache = true;
+    int max_batch_size = 1;
+    
+    static MLXOptimizationConfig from_env() {
+        MLXOptimizationConfig config;
+        // In a real implementation, this would read from environment variables
+        return config;
+    }
+};
+
+// Function to check if MLX is available on this system
+inline bool is_mlx_available() {
+    #ifdef CCSM_MLX_STUB
+    return false;
+    #else
+    // In a real implementation, this would check if MLX is available
+    return true;
+    #endif
+}
+
+// Forward declaration for create_mlx_generator
+std::shared_ptr<Generator> create_mlx_generator(
+    const std::string& model_path,
+    const std::string& tokenizer_path,
+    const std::string& audio_codec_path,
+    const std::string& watermarker_path,
+    const MLXOptimizationConfig& config = MLXOptimizationConfig());
+} // namespace ccsm
+#endif
+
 // Mock implementations for testing and building
 namespace ccsm {
 
