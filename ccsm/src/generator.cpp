@@ -272,11 +272,38 @@ std::vector<float> Generator::generate_speech_from_tokens(
     // Create a copy of the options for potential modifications
     GenerationOptions working_options = options;
     
+    // Update sampling options to match main options for backward compatibility
+    working_options.update_sampling();
+    
     // Clamp temperature to reasonable range
     working_options.temperature = std::max(0.05f, std::min(working_options.temperature, 1.5f));
+    working_options.sampling.temperature = working_options.temperature;
     
     // Ensure top_k is at least 1
     working_options.top_k = std::max(1, working_options.top_k);
+    working_options.sampling.top_k = working_options.top_k;
+    
+    // Apply default advanced sampling parameters if they're at default values
+    if (working_options.sampling.repetition_penalty == 1.0f && repetition_penalty_ != 1.0f) {
+        working_options.sampling.repetition_penalty = repetition_penalty_;
+    }
+    
+    if (working_options.sampling.frequency_penalty == 0.0f && frequency_penalty_ != 0.0f) {
+        working_options.sampling.frequency_penalty = frequency_penalty_;
+    }
+    
+    if (working_options.sampling.presence_penalty == 0.0f && presence_penalty_ != 0.0f) {
+        working_options.sampling.presence_penalty = presence_penalty_;
+    }
+    
+    if (working_options.sampling.top_p == 1.0f && top_p_ != 1.0f) {
+        working_options.sampling.top_p = top_p_;
+    }
+    
+    // Merge global and per-call logit biases
+    if (!logit_bias_.empty() && working_options.sampling.logit_bias.empty()) {
+        working_options.sampling.logit_bias = logit_bias_;
+    }
     
     // Set random seed if provided
     std::mt19937 rng;
@@ -329,7 +356,7 @@ std::vector<float> Generator::generate_speech_from_tokens(
     }
     
     // Limit token sequence length if necessary
-    const int max_tokens = 2048; // Reasonable default
+    const int max_tokens = max_text_tokens_;
     if (context_tokens.size() > max_tokens) {
         CCSM_WARNING("Limiting token sequence from ", context_tokens.size(), " to ", max_tokens, " tokens");
         context_tokens.resize(max_tokens);
@@ -339,18 +366,44 @@ std::vector<float> Generator::generate_speech_from_tokens(
     // Calculate max frames based on audio length
     int frames_per_second = 1000 / 80; // 80ms per frame = 12.5 frames per second
     int max_frames = working_options.max_audio_length_ms * frames_per_second / 1000;
+    int min_frames = working_options.min_audio_length_ms * frames_per_second / 1000;
     
     // Ensure we have at least one frame
     max_frames = std::max(1, max_frames);
-    CCSM_INFO("Generating speech with up to ", max_frames, " frames");
+    min_frames = std::max(0, min_frames);
+    CCSM_INFO("Generating speech with ", min_frames, " to ", max_frames, " frames");
     
     // Generate frames
     std::vector<std::vector<int>> frames;
     
     for (int frame_idx = 0; frame_idx < max_frames; frame_idx++) {
         // Generate next frame of tokens
-        std::vector<int> frame = model_->generate_frame(
-            context_tokens, positions, working_options.temperature, working_options.top_k);
+        // If advanced sampling parameters are all at default values, use the basic generate_frame method
+        // This provides backward compatibility
+        std::vector<int> frame;
+        bool use_basic_sampling = 
+            working_options.sampling.repetition_penalty == 1.0f &&
+            working_options.sampling.frequency_penalty == 0.0f &&
+            working_options.sampling.presence_penalty == 0.0f &&
+            working_options.sampling.top_p == 1.0f &&
+            working_options.sampling.logit_bias.empty();
+        
+        if (use_basic_sampling) {
+            frame = model_->generate_frame(
+                context_tokens, positions, working_options.temperature, working_options.top_k);
+        } else {
+            // Advanced sampling - use specialized method in the future when model interface is updated
+            // For now, we'll continue to use the basic generate_frame
+            // This will be replaced with a more advanced implementation in the future
+            if (working_options.sampling.greedy || working_options.sampling.temperature <= 0.05f) {
+                // Greedy sampling - use very low temperature
+                frame = model_->generate_frame(
+                    context_tokens, positions, 0.01f, 1);
+            } else {
+                frame = model_->generate_frame(
+                    context_tokens, positions, working_options.sampling.temperature, working_options.sampling.top_k);
+            }
+        }
         
         // Check if the frame is valid
         if (frame.empty()) {
@@ -368,12 +421,17 @@ std::vector<float> Generator::generate_speech_from_tokens(
             }
         }
         
-        if (eos_detected) {
-            break;
-        }
-        
-        // Add frame to results
+        // Add the frame to our results
         frames.push_back(frame);
+        
+        // Check if we've generated enough frames and EOS was detected
+        if (eos_detected && frame_idx >= min_frames) {
+            CCSM_DEBUG("Stopping generation after EOS and minimum frames reached");
+            break;
+        } else if (eos_detected) {
+            // EOS detected but we haven't reached minimum frames
+            CCSM_DEBUG("EOS token detected but continuing to minimum frame count");
+        }
         
         // Update context with the new frame for the next iteration
         for (auto token : frame) {
@@ -464,6 +522,200 @@ std::shared_ptr<Watermarker> Generator::watermarker() const {
     return watermarker_;
 }
 
+// Advanced sampling implementation
+std::vector<float> Generator::generate_speech_with_sampling(
+    const std::string& text,
+    int speaker_id,
+    const std::vector<Segment>& context,
+    const SamplingOptions& sampling_options,
+    int max_audio_length_ms,
+    bool enable_watermark,
+    int seed,
+    std::function<void(int, int)> progress_callback) {
+    
+    // Create generation options with the sampling parameters
+    GenerationOptions options;
+    options.sampling = sampling_options;
+    options.temperature = sampling_options.temperature;
+    options.top_k = sampling_options.top_k;
+    options.max_audio_length_ms = max_audio_length_ms;
+    options.enable_watermark = enable_watermark;
+    options.seed = seed;
+    
+    // Call the main generation function
+    return generate_speech(text, speaker_id, context, options, progress_callback);
+}
+
+// Apply sampling parameters to logits
+std::vector<float> Generator::apply_sampling(
+    const std::vector<float>& logits,
+    const std::vector<int>& tokens,
+    const SamplingOptions& options) {
+    
+    std::vector<float> processed_logits = logits;
+    
+    // Apply logit bias if specified
+    if (!options.logit_bias.empty()) {
+        for (const auto& [token, bias] : options.logit_bias) {
+            if (token >= 0 && token < static_cast<int>(processed_logits.size())) {
+                processed_logits[token] += bias;
+            }
+        }
+    }
+    
+    // Apply repetition penalty if enabled
+    if (options.repetition_penalty != 1.0f) {
+        // Count token frequencies
+        std::unordered_map<int, int> token_counts;
+        for (int token : tokens) {
+            token_counts[token]++;
+        }
+        
+        // Apply penalty to repeated tokens
+        for (const auto& [token, count] : token_counts) {
+            if (token < static_cast<int>(processed_logits.size())) {
+                // Apply penalty based on token's current logit value
+                if (processed_logits[token] > 0) {
+                    processed_logits[token] /= options.repetition_penalty;
+                } else {
+                    processed_logits[token] *= options.repetition_penalty;
+                }
+            }
+        }
+    }
+    
+    // Apply frequency penalty if enabled
+    if (options.frequency_penalty != 0.0f) {
+        // Count token frequencies
+        std::unordered_map<int, int> token_counts;
+        for (int token : tokens) {
+            token_counts[token]++;
+        }
+        
+        // Apply frequency penalty based on counts
+        for (const auto& [token, count] : token_counts) {
+            if (token < static_cast<int>(processed_logits.size())) {
+                processed_logits[token] -= options.frequency_penalty * count;
+            }
+        }
+    }
+    
+    // Apply presence penalty if enabled
+    if (options.presence_penalty != 0.0f) {
+        // Track unique tokens
+        std::unordered_set<int> unique_tokens;
+        for (int token : tokens) {
+            unique_tokens.insert(token);
+        }
+        
+        // Apply presence penalty
+        for (int token : unique_tokens) {
+            if (token < static_cast<int>(processed_logits.size())) {
+                processed_logits[token] -= options.presence_penalty;
+            }
+        }
+    }
+    
+    return processed_logits;
+}
+
+// Sample token from logits
+int Generator::sample_token(
+    const std::vector<float>& logits,
+    float temperature,
+    int top_k,
+    float top_p,
+    std::mt19937& rng) {
+    
+    // For greedy sampling (temperature = 0)
+    if (temperature <= 0.01f) {
+        // Find the max logit and return its index
+        auto max_it = std::max_element(logits.begin(), logits.end());
+        return max_it != logits.end() ? static_cast<int>(std::distance(logits.begin(), max_it)) : 0;
+    }
+    
+    // Make a copy of logits that we'll modify
+    std::vector<float> working_logits = logits;
+    
+    // Apply temperature to sharpen/soften the distribution
+    for (auto& logit : working_logits) {
+        logit /= temperature;
+    }
+    
+    // Apply top-k filtering if k > 0 and k < vocabulary size
+    if (top_k > 0 && top_k < static_cast<int>(working_logits.size())) {
+        // Create a copy of logits for sorting
+        std::vector<float> sorted_logits = working_logits;
+        std::nth_element(sorted_logits.begin(), sorted_logits.begin() + top_k - 1, sorted_logits.end(), 
+                        std::greater<float>());
+        float threshold = sorted_logits[top_k - 1];
+        
+        // Zero out logits below threshold
+        for (auto& logit : working_logits) {
+            if (logit < threshold) {
+                logit = -std::numeric_limits<float>::infinity();
+            }
+        }
+    }
+    
+    // Apply nucleus (top-p) sampling if p < 1.0
+    if (top_p < 1.0f) {
+        // Sort by probability (after applying softmax)
+        std::vector<std::pair<float, int>> sorted_probs;
+        float max_logit = *std::max_element(working_logits.begin(), working_logits.end());
+        float sum = 0.0f;
+        
+        // Apply softmax
+        for (size_t i = 0; i < working_logits.size(); i++) {
+            float prob = std::exp(working_logits[i] - max_logit);
+            sum += prob;
+            sorted_probs.push_back({prob, static_cast<int>(i)});
+        }
+        
+        // Normalize
+        for (auto& pair : sorted_probs) {
+            pair.first /= sum;
+        }
+        
+        // Sort by probability in descending order
+        std::sort(sorted_probs.begin(), sorted_probs.end(), 
+                 [](const auto& a, const auto& b) { return a.first > b.first; });
+        
+        // Zero out tokens outside the nucleus
+        float cumulative_prob = 0.0f;
+        for (const auto& [prob, index] : sorted_probs) {
+            cumulative_prob += prob;
+            if (cumulative_prob > top_p) {
+                working_logits[index] = -std::numeric_limits<float>::infinity();
+            }
+        }
+    }
+    
+    // Apply softmax to get probabilities
+    float max_logit = *std::max_element(working_logits.begin(), working_logits.end());
+    float sum = 0.0f;
+    
+    for (auto& logit : working_logits) {
+        logit = std::exp(logit - max_logit);
+        sum += logit;
+    }
+    
+    // Normalize
+    if (sum > 0.0f) {
+        for (auto& logit : working_logits) {
+            logit /= sum;
+        }
+    } else {
+        // Fallback to uniform if sum is 0
+        float uniform_prob = 1.0f / working_logits.size();
+        std::fill(working_logits.begin(), working_logits.end(), uniform_prob);
+    }
+    
+    // Sample from the distribution
+    std::discrete_distribution<int> dist(working_logits.begin(), working_logits.end());
+    return dist(rng);
+}
+
 // Configuration methods
 void Generator::set_default_temperature(float temperature) {
     default_temperature_ = std::max(0.05f, std::min(temperature, 1.5f));
@@ -479,6 +731,55 @@ void Generator::set_default_top_k(int top_k) {
 
 int Generator::default_top_k() const {
     return default_top_k_;
+}
+
+// Advanced sampling configuration methods
+void Generator::set_repetition_penalty(float penalty) {
+    repetition_penalty_ = std::max(1.0f, penalty);
+}
+
+float Generator::repetition_penalty() const {
+    return repetition_penalty_;
+}
+
+void Generator::set_frequency_penalty(float penalty) {
+    frequency_penalty_ = std::max(0.0f, std::min(penalty, 2.0f));
+}
+
+float Generator::frequency_penalty() const {
+    return frequency_penalty_;
+}
+
+void Generator::set_presence_penalty(float penalty) {
+    presence_penalty_ = std::max(0.0f, std::min(penalty, 2.0f));
+}
+
+float Generator::presence_penalty() const {
+    return presence_penalty_;
+}
+
+void Generator::set_top_p(float p) {
+    top_p_ = std::max(0.0f, std::min(p, 1.0f));
+}
+
+float Generator::top_p() const {
+    return top_p_;
+}
+
+void Generator::set_logit_bias(std::unordered_map<int, float> bias) {
+    logit_bias_ = std::move(bias);
+}
+
+const std::unordered_map<int, float>& Generator::logit_bias() const {
+    return logit_bias_;
+}
+
+void Generator::add_logit_bias(int token_id, float bias) {
+    logit_bias_[token_id] = bias;
+}
+
+void Generator::clear_logit_biases() {
+    logit_bias_.clear();
 }
 
 void Generator::set_enable_watermarking(bool enable) {

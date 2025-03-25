@@ -140,6 +140,7 @@ add_executable(test_generator
     ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator_advanced.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator_stress.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator_basic.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator_sampling.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
 )
 target_link_libraries(test_generator PRIVATE ccsm_core GTest::gtest)
@@ -184,6 +185,14 @@ add_executable(test_generator_stress
 )
 target_link_libraries(test_generator_stress PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_generator_stress PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+# Add a separate target for Generator sampling tests
+add_executable(test_generator_sampling
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_generator_sampling.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+target_link_libraries(test_generator_sampling PRIVATE ccsm_core GTest::gtest)
+target_include_directories(test_generator_sampling PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
 # Add a separate target for GGMLModel memory optimization tests
 add_executable(test_model_memory_optimization
@@ -355,6 +364,7 @@ add_test(NAME QuantizedMatrixMulTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_qu
 add_test(NAME KVCachePruningTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_kv_cache_pruning)
 add_test(NAME GeneratorMemoryOptimizationTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator_memory_optimization)
 add_test(NAME GeneratorStressTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator_stress)
+add_test(NAME GeneratorSamplingTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_generator_sampling)
 add_test(NAME WatermarkingTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_watermarking)
 add_test(NAME MLXWeightConverterTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_weight_converter)
 add_test(NAME MLXTensorTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_tensor)
@@ -519,6 +529,15 @@ if(WITH_COVERAGE)
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
     
+    # Setup the generator sampling test coverage target
+    setup_target_for_coverage(
+        NAME coverage_generator_sampling
+        EXECUTABLE test_generator_sampling
+        DEPENDENCIES test_generator_sampling
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
     # Setup the generator basic test coverage target
     setup_target_for_coverage(
         NAME coverage_generator_basic
@@ -620,7 +639,7 @@ if(WITH_COVERAGE)
     
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_thread_pool_stress coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_generator_stress coverage_generator_basic coverage_watermarking coverage_mlx_weight_converter coverage_mlx_tensor coverage_mlx_tensor_ops coverage_mlx_memory_management coverage_mlx_transformer coverage_mlx_model coverage_mlx_generator coverage_mlx_optimizations coverage_memory_optimization_edge_cases
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_thread_pool_stress coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_generator_stress coverage_generator_sampling coverage_generator_basic coverage_watermarking coverage_mlx_weight_converter coverage_mlx_tensor coverage_mlx_tensor_ops coverage_mlx_memory_management coverage_mlx_transformer coverage_mlx_model coverage_mlx_generator coverage_mlx_optimizations coverage_memory_optimization_edge_cases
         COMMENT "Generating combined code coverage report"
     )
     

@@ -36,7 +36,7 @@ This approach ensures robust, well-tested code with high test coverage.
 | Tokenizer | 🟢 Complete | Text tokenization with SentencePiece |
 | SIMD Optimizations | 🟢 Complete | Matrix multiplication, normalization, activation functions, kernel fusion, mixed precision, edge case handling, and in-place operations implemented |
 | MLX Acceleration | 🟡 In Progress | Weight converter, tensor operations, memory management, transformer, and generator integration implemented |
-| Generator | 🟡 In Progress | Basic functionality and tests implemented |
+| Generator | 🟡 In Progress | Basic functionality, advanced sampling, and comprehensive tests implemented |
 | Watermarking | 🟢 Complete | Full implementation of SilentCipher watermarking with frequency-domain techniques, robust detection and verification |
 | Thread Pool | 🟢 Complete | Basic functionality and comprehensive stress tests implemented |
 | CLI Arguments | 🟢 Complete | Argument parsing and validation |
@@ -182,11 +182,19 @@ CCSM follows a comprehensive testing strategy with multiple test types:
 
 ### 6. Generator (Target: 90%+)
 
-#### Phase 1: Basic Generation 🔴
+#### Phase 1: Basic Generation ✅
 - Text-to-audio generation tests
 - Sampling parameter tests
 - Generation configuration tests
 - Basic error handling tests
+
+#### Phase 2: Advanced Sampling ✅
+- Temperature and top-k sampling tests
+- Nucleus (top-p) sampling tests 
+- Repetition penalty implementation tests
+- Frequency and presence penalty tests
+- Logit bias tests
+- Greedy sampling tests
 
 ### 7. Thread Pool (Target: 80%+)
 
