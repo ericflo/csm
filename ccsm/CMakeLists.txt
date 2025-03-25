@@ -26,6 +26,7 @@ endif()
 option(WITH_MLX "Build with MLX support for Apple Silicon" ON)
 option(WITH_CUDA "Build with CUDA support" OFF)
 option(WITH_VULKAN "Build with Vulkan support" OFF)
+option(WITH_MIMI "Build with Mimi codec support" ON)
 
 # Find required packages
 find_package(SentencePiece QUIET)
@@ -56,6 +57,11 @@ endif()
 if(WITH_VULKAN)
     message(STATUS "Configuring with Vulkan support")
     add_definitions(-DCCSM_WITH_VULKAN)
+endif()
+
+if(WITH_MIMI)
+    message(STATUS "Configuring with Mimi codec support")
+    add_definitions(-DCCSM_WITH_MIMI)
 endif()
 
 # Include directories

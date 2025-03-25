@@ -5,6 +5,7 @@ file(GLOB CORE_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/cpu/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/context_manager.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/mimi_codec.cpp"
 )
 
 add_library(ccsm_core STATIC ${CORE_SOURCES})

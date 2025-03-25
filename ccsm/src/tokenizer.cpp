@@ -243,6 +243,8 @@ public:
     }
 };
 
+#include <ccsm/mimi_codec.h>
+
 // Factory methods implementation
 
 std::shared_ptr<TextTokenizer> TextTokenizer::from_file(const std::string& path) {
@@ -254,10 +256,31 @@ std::shared_ptr<TextTokenizer> TextTokenizer::from_binary(const std::vector<uint
 }
 
 std::shared_ptr<AudioTokenizer> AudioTokenizer::from_file(const std::string& path) {
+    #ifdef CCSM_WITH_MIMI
+    // Try to create a Mimi codec first
+    try {
+        auto codec = MimiCodec::from_file(path);
+        return std::make_shared<MimiAudioTokenizer>(codec);
+    } catch (const std::exception& e) {
+        CCSM_WARNING("Failed to create Mimi codec, falling back to placeholder: " + std::string(e.what()));
+    }
+    #endif
+    
+    // Fall back to the placeholder implementation
     return std::make_shared<MimiAudioTokenizer>(path);
 }
 
 std::shared_ptr<AudioCodec> AudioCodec::from_file(const std::string& path) {
+    #ifdef CCSM_WITH_MIMI
+    // Try to create a Mimi codec first
+    try {
+        return MimiCodec::from_file(path);
+    } catch (const std::exception& e) {
+        CCSM_WARNING("Failed to create Mimi codec, falling back to placeholder: " + std::string(e.what()));
+    }
+    #endif
+    
+    // Fall back to the placeholder implementation
     return std::make_shared<MimiAudioCodec>(path);
 }
 
