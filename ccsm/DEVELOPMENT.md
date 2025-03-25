@@ -28,20 +28,20 @@ This approach ensures robust, well-tested code with high test coverage.
 
 ## Implementation Status
 
-| Component | Status | Description |
-|-----------|--------|-------------|
-| Core Tensor System | 🟡 In Progress | Basic operations, broadcasting implemented |
-| GGML Backend | 🟡 In Progress | Basic integration with pending fixes |
-| Model System | 🟢 Basic Working | Model interface and factory implemented |
-| Tokenizer | 🟢 Complete | Text tokenization with SentencePiece |
-| SIMD Optimizations | 🟢 Complete | Matrix multiplication, normalization, activation functions, kernel fusion, mixed precision, edge case handling, and in-place operations implemented |
-| MLX Acceleration | 🟢 Complete | Weight converter, tensor operations, memory management, transformer, and generator integration implemented |
-| Generator | 🟢 Complete | Basic functionality, advanced sampling, memory optimization, and comprehensive tests implemented |
-| Context Management | 🟢 Complete | Advanced context manager with configurable pruning strategies, importance scoring, and segment compression |
-| Watermarking | 🟢 Complete | Full implementation of SilentCipher watermarking with frequency-domain techniques, robust detection and verification |
-| Thread Pool | 🟢 Complete | Basic functionality and comprehensive stress tests implemented |
-| CLI Arguments | 🟢 Complete | Argument parsing and validation |
-| Utilities | 🟡 In Progress | Basic utilities implemented |
+| Component          | Status           | Description                                                                                                                                         |
+| ------------------ | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core Tensor System | 🟡 In Progress   | Basic operations, broadcasting implemented                                                                                                          |
+| GGML Backend       | 🟡 In Progress   | Basic integration with pending fixes                                                                                                                |
+| Model System       | 🟢 Basic Working | Model interface and factory implemented                                                                                                             |
+| Tokenizer          | 🟢 Complete      | Text tokenization with SentencePiece                                                                                                                |
+| SIMD Optimizations | 🟢 Complete      | Matrix multiplication, normalization, activation functions, kernel fusion, mixed precision, edge case handling, and in-place operations implemented |
+| MLX Acceleration   | 🟢 Complete      | Weight converter, tensor operations, memory management, transformer, and generator integration implemented                                          |
+| Generator          | 🟢 Complete      | Basic functionality, advanced sampling, memory optimization, and comprehensive tests implemented                                                    |
+| Context Management | 🟢 Complete      | Advanced context manager with configurable pruning strategies, importance scoring, and segment compression                                          |
+| Watermarking       | 🟢 Complete      | Full implementation of SilentCipher watermarking with frequency-domain techniques, robust detection and verification                                |
+| Thread Pool        | 🟢 Complete      | Basic functionality and comprehensive stress tests implemented                                                                                      |
+| CLI Arguments      | 🟢 Complete      | Argument parsing and validation                                                                                                                     |
+| Utilities          | 🟡 In Progress   | Basic utilities implemented                                                                                                                         |
 
 ## Implementation Plan
 
@@ -95,12 +95,14 @@ CCSM follows a comprehensive testing strategy with multiple test types:
 ### 1. Core Tensor System (Target: 90%+)
 
 #### Phase 1: Tensor Creation and Basic Operations ✅
+
 - Basic tensor creation tests
 - Shape manipulation tests
 - Memory management tests
 - Tensor conversion tests
 
 #### Phase 2: Tensor Broadcasting and Advanced Operations ✅
+
 - Broadcasting implementation tests ✅
 - Tensor view/slice tests ✅
 - Type conversion and promotion tests ✅
@@ -108,6 +110,7 @@ CCSM follows a comprehensive testing strategy with multiple test types:
 - Memory efficiency tests (views vs. copies) ✅
 
 #### Phase 3: Performance Tests 🔴
+
 - Basic operation benchmarks
 - Memory allocation efficiency
 - Broadcasting performance
@@ -116,11 +119,13 @@ CCSM follows a comprehensive testing strategy with multiple test types:
 ### 2. SIMD Optimizations (Target: 85%+)
 
 #### Phase 1: Basic SIMD Operations ✅
+
 - Vector operation tests (add, multiply, etc.)
 - Platform detection tests
 - Basic activation function tests (ReLU, SiLU)
 
 #### Phase 2: Advanced SIMD Operations ✅
+
 - Matrix multiplication tests (basic) ✅
 - Cache-aware matrix multiplication ✅
 - Comprehensive activation function tests ✅
@@ -134,6 +139,7 @@ CCSM follows a comprehensive testing strategy with multiple test types:
   - Fused Layer Norm + ReLU activation ✅
 
 #### Phase 3: Performance and Stability ✅
+
 - Performance comparison benchmarks ✅
 - Numerical stability tests ✅
 - Mixed precision tests ✅
@@ -142,12 +148,14 @@ CCSM follows a comprehensive testing strategy with multiple test types:
 ### 3. Model System (Target: 90%+)
 
 #### Phase 1: Model Interface ✅
+
 - Model creation tests
 - Configuration handling tests
 - Parameter access tests
 - Model state tests
 
 #### Phase 2: Model Operations 🔴
+
 - Forward pass tests
 - Attention mechanism tests
 - Transformer layer tests
@@ -156,12 +164,14 @@ CCSM follows a comprehensive testing strategy with multiple test types:
 ### 4. GGML Backend (Target: 85%+)
 
 #### Phase 1: Basic GGML Integration ✅
+
 - GGML tensor creation tests
 - GGML memory management tests
 - GGML basic operation tests
 - GGML computation graph tests
 
 #### Phase 2: GGML Advanced Features 🔴
+
 - GGML quantization tests
 - GGML optimized operation tests
 - Custom kernel tests
@@ -170,12 +180,14 @@ CCSM follows a comprehensive testing strategy with multiple test types:
 ### 5. Tokenizer (Target: 90%+)
 
 #### Phase 1: Basic Tokenization ✅
+
 - Text tokenization tests
 - Token decoding tests
 - Special token handling tests
 - Error handling tests
 
 #### Phase 2: Advanced Tokenization 🔴
+
 - Vocabulary loading tests
 - Token combination tests
 - Unicode support tests
@@ -184,14 +196,16 @@ CCSM follows a comprehensive testing strategy with multiple test types:
 ### 6. Generator (Target: 90%+)
 
 #### Phase 1: Basic Generation ✅
+
 - Text-to-audio generation tests
 - Sampling parameter tests
 - Generation configuration tests
 - Basic error handling tests
 
 #### Phase 2: Advanced Sampling ✅
+
 - Temperature and top-k sampling tests
-- Nucleus (top-p) sampling tests 
+- Nucleus (top-p) sampling tests
 - Repetition penalty implementation tests
 - Frequency and presence penalty tests
 - Logit bias tests
@@ -200,18 +214,21 @@ CCSM follows a comprehensive testing strategy with multiple test types:
 ### 7. Thread Pool (Target: 80%+)
 
 #### Phase 1: Basic Threading ✅
+
 - Thread creation tests
 - Task scheduling tests
 - Basic load balancing tests
 - Error handling tests
 
 #### Phase 2: Advanced Threading ✅
+
 - Work stealing tests
 - Task prioritization tests
 - Nested task execution tests
 - Thread safety and concurrency tests
 
 #### Phase 3: Stress Testing ✅
+
 - Extreme task count tests
 - Variable task duration tests
 - Exception handling tests
@@ -225,40 +242,44 @@ CCSM follows a comprehensive testing strategy with multiple test types:
 
 ## Test Coverage Goals
 
-| Component | Target Coverage | Current Coverage | Status |
-|-----------|----------------|------------------|--------|
-| Core Tensor System | 90%+ | ~75% | 🟢 Good |
-| Model System | 90%+ | ~50% | 🟡 Partial |
-| GGML Subsystem | 85%+ | ~60% | 🟢 Good |
-| SIMD Optimizations | 85%+ | ~60% | 🟢 Good |
-| Tokenizer | 90%+ | ~80% | 🟢 Good |
-| Generator | 90%+ | ~60% | 🟡 Partial |
-| MLX Acceleration | 80%+ | ~80% | 🟢 Complete |
-| Watermarking | 85%+ | ~85% | 🟢 Complete |
-| Thread Pool | 80%+ | ~80% | 🟢 Good |
-| Command-line Arguments | 90%+ | ~70% | 🟢 Good |
-| Utility Functions | 85%+ | ~30% | 🟡 Partial |
+| Component              | Target Coverage | Current Coverage | Status      |
+| ---------------------- | --------------- | ---------------- | ----------- |
+| Core Tensor System     | 90%+            | ~75%             | 🟢 Good     |
+| Model System           | 90%+            | ~50%             | 🟡 Partial  |
+| GGML Subsystem         | 85%+            | ~60%             | 🟢 Good     |
+| SIMD Optimizations     | 85%+            | ~60%             | 🟢 Good     |
+| Tokenizer              | 90%+            | ~80%             | 🟢 Good     |
+| Generator              | 90%+            | ~60%             | 🟡 Partial  |
+| MLX Acceleration       | 80%+            | ~80%             | 🟢 Complete |
+| Watermarking           | 85%+            | ~85%             | 🟢 Complete |
+| Thread Pool            | 80%+            | ~80%             | 🟢 Good     |
+| Command-line Arguments | 90%+            | ~70%             | 🟢 Good     |
+| Utility Functions      | 85%+            | ~30%             | 🟡 Partial  |
 
 ## Performance Optimization
 
 Once basic functionality is working, focus on these performance optimizations:
 
 ### 1. Memory Management
+
 - Optimize tensor allocation and reuse
 - Minimize copies between operations
 - Add memory-efficient KV cache implementation
 
 ### 2. SIMD Optimizations
+
 - Implement SIMD-accelerated operations for different architectures
 - Add platform-specific optimizations
 - Focus on matrix multiplication and activation functions
 
 ### 3. Thread Pool Improvements
+
 - Improve work distribution
 - Add dynamic thread management
 - Implement task prioritization
 
 ### 4. Model Optimizations
+
 - Optimize attention implementations ✅
 - Add kernel fusion where possible ✅
 - Additional kernel fusion opportunities:
@@ -306,14 +327,17 @@ cd build && ctest
 ## Current Implementation Issues
 
 ### Watermarking Tests ✅
+
 - ✅ The `WatermarkResult` struct is referenced in tests but not defined in the header
 - ✅ Solution: Define the struct in watermarking.h (implemented)
 
 ### GGML Functions
+
 - Missing `ggml_graph_compute_with_ctx` function used in `ggml_model.cpp`
 - Solution: Update the GGML backend to include this function
 
 ### Integration Tests
+
 - Issues with the end-to-end workflow tests
 - Solution: Focus on unit tests first, then fix integration tests
 
@@ -350,7 +374,6 @@ cd build && ctest
     - ✅ Integrate context management with Generator pipeline
 12. 🟡 Enhance audio processing
     - 🔴 Complete Mimi codec integration
-    - 🔴 Enhance audio watermarking with more robust algorithms
 13. 🟡 Complete application framework
     - 🔴 Implement model loading infrastructure with Hugging Face integration
     - 🔴 Develop configuration system for model and generation settings
