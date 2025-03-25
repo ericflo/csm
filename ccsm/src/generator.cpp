@@ -532,20 +532,39 @@ std::shared_ptr<Generator> load_csm_1b(const std::string& device) {
 
 // Factory function for MLX-accelerated generator
 std::shared_ptr<Generator> load_csm_1b_mlx() {
-#ifdef CCSM_WITH_MLX
-    // This is a placeholder implementation until we have PyTorch → MLX weight conversion
     CCSM_INFO("Creating MLX-accelerated CSM-1B generator");
     
-    // For now, this is just a stub that calls the CPU implementation
-    // with a log message that we'll be enhancing this soon
-    CCSM_INFO("MLX acceleration implementation in progress - using CPU backend with MLX placeholders");
-    CCSM_INFO("Phase 3.4: PyTorch → MLX Weight Conversion coming soon");
+    #ifdef CCSM_WITH_MLX
+    // Check if MLX is available on this system
+    if (!is_mlx_available()) {
+        CCSM_WARNING("MLX is not available on this system, falling back to CPU generator");
+        return load_csm_1b("cpu");
+    }
     
-    // Create a CPU model that will be replaced with MLX in the future
+    // Create model paths (these would be actual paths in a real implementation)
+    std::string model_path = "models/csm-1b.pt";
+    std::string tokenizer_path = "models/csm-1b-tokenizer.model";
+    std::string audio_codec_path = "models/csm-1b-codec.bin";
+    std::string watermarker_path = "models/csm-1b-watermarker.bin";
+    
+    // Create MLX optimization config
+    MLXOptimizationConfig config = MLXOptimizationConfig::from_env();
+    
+    // Create MLX generator
+    auto generator = create_mlx_generator(
+        model_path, tokenizer_path, audio_codec_path, watermarker_path, config);
+    
+    // If MLX generator creation failed, fall back to CPU
+    if (!generator) {
+        CCSM_WARNING("Failed to create MLX generator, falling back to CPU generator");
+        return load_csm_1b("cpu");
+    }
+    
+    return generator;
+    #else
+    CCSM_WARNING("CCSM was not compiled with MLX support, falling back to CPU generator");
     return load_csm_1b("cpu");
-#else
-    throw std::runtime_error("MLX support not compiled into this build");
-#endif
+    #endif
 }
 
 } // namespace ccsm
