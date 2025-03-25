@@ -115,10 +115,13 @@ target_link_libraries(ccsm-generate PRIVATE ccsm_core)
 # MLX version (conditional)
 if(WITH_MLX)
     add_executable(ccsm-generate-mlx src/main_mlx.cpp)
-    target_link_libraries(ccsm-generate-mlx PRIVATE ccsm_core ccsm_mlx)
     
-    # Define MLX_STUB macro when we're using stub implementation
-    if(NOT MLX_LIBRARY)
+    # Check if real MLX is available
+    if(MLX_LIBRARY)
+        target_link_libraries(ccsm-generate-mlx PRIVATE ccsm_core ccsm_mlx)
+    else()
+        # Use stub implementation if MLX not available
+        target_link_libraries(ccsm-generate-mlx PRIVATE ccsm_core)
         target_compile_definitions(ccsm-generate-mlx PRIVATE CCSM_MLX_STUB)
     endif()
 endif()

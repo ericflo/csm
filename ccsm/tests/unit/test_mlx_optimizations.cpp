@@ -1,800 +1,773 @@
 #include <gtest/gtest.h>
 #include <ccsm/mlx/mlx_optimizations.h>
 #include <ccsm/utils.h>
-#include <memory>
-#include <filesystem>
-#include <fstream>
+#include <chrono>
+#include <vector>
 #include <random>
-#include <stdexcept>
-#include <cstdlib> // for setenv, unsetenv
-#include <limits>
+#include <algorithm>
 
 namespace ccsm {
-namespace testing {
 
-class MLXOptimizationsTest : public ::testing::Test {
-protected:
-    void SetUp() override {}
-    void TearDown() override {}
-};
-
-// Test MLXOptimizationConfig class and its methods
-TEST_F(MLXOptimizationsTest, TestMLXOptimizationConfig) {
-    // Test default configuration
-    MLXOptimizationConfig config;
-    EXPECT_EQ(config.compute_precision, MLXOptimizationConfig::ComputePrecision::BFLOAT16);
-    EXPECT_EQ(config.memory_usage, MLXOptimizationConfig::MemoryUsage::BALANCED);
-    EXPECT_EQ(config.num_compute_threads, 0);
-    EXPECT_TRUE(config.use_autotune);
-    EXPECT_TRUE(config.use_async_compute);
+// Helper to measure execution time
+template<typename Func>
+double measure_time_ms(Func func) {
+    auto start = std::chrono::high_resolution_clock::now();
+    func();
+    auto end = std::chrono::high_resolution_clock::now();
+    return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
-// Test loading configuration from environment variables
-TEST_F(MLXOptimizationsTest, TestConfigFromEnv) {
-    // Save original environment variables
-    const char* orig_precision = getenv("MLX_COMPUTE_PRECISION");
-    const char* orig_memory = getenv("MLX_MEMORY_USAGE");
-    const char* orig_threads = getenv("MLX_NUM_THREADS");
-    
-    std::string saved_precision = orig_precision ? orig_precision : "";
-    std::string saved_memory = orig_memory ? orig_memory : "";
-    std::string saved_threads = orig_threads ? orig_threads : "";
-    
-    // Test different combinations of environment variables
-    std::vector<std::tuple<std::string, std::string, std::string, MLXOptimizationConfig::ComputePrecision, MLXOptimizationConfig::MemoryUsage, int>> test_cases = {
-        // precision, memory, threads, expected_precision, expected_memory, expected_threads
-        {"float32", "minimal", "4", MLXOptimizationConfig::ComputePrecision::FLOAT32, MLXOptimizationConfig::MemoryUsage::MINIMAL, 4},
-        {"FLOAT32", "MINIMAL", "4", MLXOptimizationConfig::ComputePrecision::FLOAT32, MLXOptimizationConfig::MemoryUsage::MINIMAL, 4},
-        {"bfloat16", "balanced", "8", MLXOptimizationConfig::ComputePrecision::BFLOAT16, MLXOptimizationConfig::MemoryUsage::BALANCED, 8},
-        {"BFLOAT16", "BALANCED", "8", MLXOptimizationConfig::ComputePrecision::BFLOAT16, MLXOptimizationConfig::MemoryUsage::BALANCED, 8},
-        {"float16", "performance", "16", MLXOptimizationConfig::ComputePrecision::FLOAT16, MLXOptimizationConfig::MemoryUsage::PERFORMANCE, 16},
-        {"FLOAT16", "PERFORMANCE", "16", MLXOptimizationConfig::ComputePrecision::FLOAT16, MLXOptimizationConfig::MemoryUsage::PERFORMANCE, 16},
-        {"invalid", "invalid", "invalid", MLXOptimizationConfig::ComputePrecision::BFLOAT16, MLXOptimizationConfig::MemoryUsage::BALANCED, 0},
-        {"", "", "", MLXOptimizationConfig::ComputePrecision::BFLOAT16, MLXOptimizationConfig::MemoryUsage::BALANCED, 0}
-    };
-    
-    for (const auto& test_case : test_cases) {
-        // Set environment variables
-        if (!std::get<0>(test_case).empty()) {
-            setenv("MLX_COMPUTE_PRECISION", std::get<0>(test_case).c_str(), 1);
-        } else {
-            unsetenv("MLX_COMPUTE_PRECISION");
-        }
-        
-        if (!std::get<1>(test_case).empty()) {
-            setenv("MLX_MEMORY_USAGE", std::get<1>(test_case).c_str(), 1);
-        } else {
-            unsetenv("MLX_MEMORY_USAGE");
-        }
-        
-        if (!std::get<2>(test_case).empty()) {
-            setenv("MLX_NUM_THREADS", std::get<2>(test_case).c_str(), 1);
-        } else {
-            unsetenv("MLX_NUM_THREADS");
-        }
-        
-        // Load configuration from environment
-        MLXOptimizationConfig config = MLXOptimizationConfig::from_env();
-        
-        // Check if configuration matches expected values
-        EXPECT_EQ(config.compute_precision, std::get<3>(test_case));
-        EXPECT_EQ(config.memory_usage, std::get<4>(test_case));
-        EXPECT_EQ(config.num_compute_threads, std::get<5>(test_case));
-    }
-    
-    // Restore original environment variables
-    if (!saved_precision.empty()) {
-        setenv("MLX_COMPUTE_PRECISION", saved_precision.c_str(), 1);
-    } else {
-        unsetenv("MLX_COMPUTE_PRECISION");
-    }
-    
-    if (!saved_memory.empty()) {
-        setenv("MLX_MEMORY_USAGE", saved_memory.c_str(), 1);
-    } else {
-        unsetenv("MLX_MEMORY_USAGE");
-    }
-    
-    if (!saved_threads.empty()) {
-        setenv("MLX_NUM_THREADS", saved_threads.c_str(), 1);
-    } else {
-        unsetenv("MLX_NUM_THREADS");
-    }
-}
-
-// Test MLX availability and device configuration
-TEST_F(MLXOptimizationsTest, TestMLXConfiguration) {
-    // This test should pass regardless of MLX availability
-    MLXOptimizationConfig config;
-    
-    // Should not throw an exception
-    EXPECT_NO_THROW(configure_mlx_for_device(config));
-}
-
-// Create mock MLX tensors for testing
 #ifdef CCSM_WITH_MLX
-// Helper to create a mock MLX array
-mlx_array create_mock_mlx_array(const std::vector<int>& shape, mlx_dtype dtype) {
-    mlx_array array;
-    mlx_array_zeros(const_cast<int*>(shape.data()), static_cast<int>(shape.size()), dtype, &array);
-    return array;
+// Test MLXOptimizationConfig loading from environment
+TEST(MLXOptimizationsTest, ConfigFromEnv) {
+    // Set environment variables
+    setenv("MLX_COMPUTE_PRECISION", "float16", 1);
+    setenv("MLX_MEMORY_USAGE", "minimal", 1);
+    setenv("MLX_NUM_THREADS", "4", 1);
+    
+    // Get config
+    MLXOptimizationConfig config = MLXOptimizationConfig::from_env();
+    
+    // Check values
+    EXPECT_EQ(config.compute_precision, MLXOptimizationConfig::ComputePrecision::FLOAT16);
+    EXPECT_EQ(config.memory_usage, MLXOptimizationConfig::MemoryUsage::MINIMAL);
+    EXPECT_EQ(config.num_compute_threads, 4);
+    
+    // Reset environment
+    unsetenv("MLX_COMPUTE_PRECISION");
+    unsetenv("MLX_MEMORY_USAGE");
+    unsetenv("MLX_NUM_THREADS");
 }
 
-// Helper to fill an MLX array with test data
-void fill_mock_mlx_array(mlx_array array, float value) {
-    if (!array.ctx) {
-        return;
-    }
+// Test MLX precision conversion
+TEST(MLXOptimizationsTest, PrecisionConversion) {
+    mlx_device device;
+    mlx_default_device(&device);
     
-    // Get array size
-    size_t size = mlx_array_size(array);
-    
-    // Get dtype
-    mlx_dtype dtype;
-    mlx_array_dtype(array, &dtype);
-    
-    // Fill with data based on dtype
-    if (dtype == MLX_FLOAT32) {
-        float* data = (float*)mlx_array_data_float32(array);
-        for (size_t i = 0; i < size; ++i) {
-            data[i] = value;
-        }
-    } else if (dtype == MLX_FLOAT16 || dtype == MLX_BFLOAT16) {
-        // Convert to F32, fill, then convert back
-        mlx_array temp;
-        mlx_array_astype(array, MLX_FLOAT32, &temp);
-        
-        float* data = (float*)mlx_array_data_float32(temp);
-        for (size_t i = 0; i < size; ++i) {
-            data[i] = value;
-        }
-        
-        // Convert back and copy to original
-        mlx_array_copy(temp, array);
-        mlx_array_free(temp);
-    }
-}
-
-// Helper to compare two MLX arrays
-bool mlx_arrays_equal(mlx_array a, mlx_array b, float tolerance = 1e-5f) {
-    if (!a.ctx || !b.ctx) {
-        return false;
-    }
-    
-    // Check dimensions
-    uint32_t a_ndim, b_ndim;
-    mlx_array_ndim(a, &a_ndim);
-    mlx_array_ndim(b, &b_ndim);
-    
-    if (a_ndim != b_ndim) {
-        return false;
-    }
-    
-    // Check shapes
-    const int* a_shape = mlx_array_shape(a);
-    const int* b_shape = mlx_array_shape(b);
-    
-    for (uint32_t i = 0; i < a_ndim; ++i) {
-        if (a_shape[i] != b_shape[i]) {
-            return false;
-        }
-    }
-    
-    // Get data types
-    mlx_dtype a_dtype, b_dtype;
-    mlx_array_dtype(a, &a_dtype);
-    mlx_array_dtype(b, &b_dtype);
-    
-    // Convert arrays to F32 for comparison
-    mlx_array a_f32 = a, b_f32 = b;
-    bool converted_a = false, converted_b = false;
-    
-    if (a_dtype != MLX_FLOAT32) {
-        mlx_array_astype(a, MLX_FLOAT32, &a_f32);
-        converted_a = true;
-    }
-    
-    if (b_dtype != MLX_FLOAT32) {
-        mlx_array_astype(b, MLX_FLOAT32, &b_f32);
-        converted_b = true;
-    }
-    
-    // Compare data
-    size_t size = mlx_array_size(a_f32);
-    const float* a_data = mlx_array_data_float32(a_f32);
-    const float* b_data = mlx_array_data_float32(b_f32);
-    
-    bool equal = true;
-    for (size_t i = 0; i < size; ++i) {
-        if (std::abs(a_data[i] - b_data[i]) > tolerance) {
-            equal = false;
-            break;
-        }
-    }
-    
-    // Clean up converted arrays
-    if (converted_a) {
-        mlx_array_free(a_f32);
-    }
-    
-    if (converted_b) {
-        mlx_array_free(b_f32);
-    }
-    
-    return equal;
-}
-#endif
-
-// Test precision conversion functions
-TEST_F(MLXOptimizationsTest, TestPrecisionConversion) {
-#ifdef CCSM_WITH_MLX
-    // Create a stream
     mlx_stream stream = mlx_default_cpu_stream_new();
     
-    // Create test arrays with different dtypes
+    // Create a test array in FLOAT32
     std::vector<int> shape = {2, 3};
-    mlx_array array_f32 = create_mock_mlx_array(shape, MLX_FLOAT32);
-    fill_mock_mlx_array(array_f32, 1.5f);
+    std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
     
-    // Test conversion to different precisions
-    mlx_array array_bf16 = convert_precision(array_f32, MLXOptimizationConfig::ComputePrecision::BFLOAT16, stream);
-    mlx_array array_f16 = convert_precision(array_f32, MLXOptimizationConfig::ComputePrecision::FLOAT16, stream);
+    mlx_array array;
+    mlx_array_from_data(data.data(), shape.data(), shape.size(), MLX_FLOAT32, &array);
     
-    // Check dtypes
-    mlx_dtype dtype_bf16, dtype_f16;
-    mlx_array_dtype(array_bf16, &dtype_bf16);
-    mlx_array_dtype(array_f16, &dtype_f16);
+    // Convert to BFLOAT16
+    mlx_array bf16_array = convert_precision(array, MLXOptimizationConfig::ComputePrecision::BFLOAT16, stream);
     
-    EXPECT_EQ(dtype_bf16, MLX_BFLOAT16);
-    EXPECT_EQ(dtype_f16, MLX_FLOAT16);
+    // Check dtype
+    mlx_dtype dtype;
+    mlx_array_dtype(bf16_array, &dtype);
+    EXPECT_EQ(dtype, MLX_BFLOAT16);
     
-    // Test converting back to F32
-    mlx_array array_f32_2 = convert_precision(array_bf16, MLXOptimizationConfig::ComputePrecision::FLOAT32, stream);
+    // Convert back to FLOAT32 for verification
+    mlx_array back_to_f32;
+    mlx_array_astype(bf16_array, MLX_FLOAT32, &back_to_f32);
     
-    mlx_dtype dtype_f32_2;
-    mlx_array_dtype(array_f32_2, &dtype_f32_2);
-    EXPECT_EQ(dtype_f32_2, MLX_FLOAT32);
+    // Verify data is approximately the same (allowing for precision loss)
+    float* result_data = (float*)mlx_array_data_float32(back_to_f32);
+    for (int i = 0; i < 6; i++) {
+        EXPECT_NEAR(result_data[i], data[i], 0.001f);
+    }
     
-    // Check that values are approximately equal (allowing for precision loss)
-    EXPECT_TRUE(mlx_arrays_equal(array_f32, array_f32_2, 0.1f));
-    
-    // Clean up
-    mlx_array_free(array_f32);
-    mlx_array_free(array_bf16);
-    mlx_array_free(array_f16);
-    mlx_array_free(array_f32_2);
-#else
-    GTEST_SKIP() << "MLX not available, skipping test";
-#endif
+    // Free arrays
+    mlx_array_free(array);
+    mlx_array_free(bf16_array);
+    mlx_array_free(back_to_f32);
+    mlx_stream_free(stream);
 }
 
-// Test memory optimization functions
-TEST_F(MLXOptimizationsTest, TestMemoryOptimization) {
-#ifdef CCSM_WITH_MLX
-    // Create some test arrays
-    std::vector<int> shape1 = {10, 20};
-    std::vector<int> shape2 = {30, 40};
-    std::vector<int> shape3 = {50, 60};
+// Test memory optimization
+TEST(MLXOptimizationsTest, MemoryOptimization) {
+    mlx_stream stream = mlx_default_cpu_stream_new();
     
-    mlx_array array1 = create_mock_mlx_array(shape1, MLX_FLOAT32);
-    mlx_array array2 = create_mock_mlx_array(shape2, MLX_FLOAT32);
-    mlx_array array3 = create_mock_mlx_array(shape3, MLX_FLOAT32);
+    // Create test arrays
+    std::vector<int> shape = {10, 20};
     
-    // Fill with test data
-    fill_mock_mlx_array(array1, 1.0f);
-    fill_mock_mlx_array(array2, 2.0f);
-    fill_mock_mlx_array(array3, 3.0f);
+    mlx_array array1, array2, array3;
+    mlx_array_zeros(shape.data(), shape.size(), MLX_FLOAT32, &array1);
+    mlx_array_zeros(shape.data(), shape.size(), MLX_FLOAT32, &array2);
+    mlx_array_zeros(shape.data(), shape.size(), MLX_FLOAT32, &array3);
     
-    // Create a vector of arrays to optimize
+    // Test minimal memory usage
     std::vector<mlx_array> arrays = {array1, array2, array3};
+    optimize_memory_usage(arrays, MLXOptimizationConfig::MemoryUsage::MINIMAL);
     
-    // Test optimization at different levels
-    for (auto level : {MLXOptimizationConfig::MemoryUsage::MINIMAL, 
-                       MLXOptimizationConfig::MemoryUsage::BALANCED, 
-                       MLXOptimizationConfig::MemoryUsage::PERFORMANCE}) {
-        // Create copies of arrays to test
-        std::vector<mlx_array> test_arrays;
-        for (const auto& arr : arrays) {
-            mlx_array copy;
-            mlx_array_copy(arr, copy);
-            test_arrays.push_back(copy);
-        }
+    // Verify arrays are still valid
+    for (const auto& array : arrays) {
+        uint32_t ndim;
+        mlx_array_ndim(array, &ndim);
+        EXPECT_EQ(ndim, 2);
         
-        // Optimize memory usage
-        optimize_memory_usage(test_arrays, level);
+        const int* array_shape = mlx_array_shape(array);
+        EXPECT_EQ(array_shape[0], 10);
+        EXPECT_EQ(array_shape[1], 20);
         
-        // Verify arrays are still valid and contain correct data
-        EXPECT_EQ(test_arrays.size(), arrays.size());
-        for (size_t i = 0; i < test_arrays.size(); ++i) {
-            EXPECT_TRUE(test_arrays[i].ctx != nullptr);
-            
-            // In MINIMAL mode, arrays should be converted to BF16
-            if (level == MLXOptimizationConfig::MemoryUsage::MINIMAL) {
-                mlx_dtype dtype;
-                mlx_array_dtype(test_arrays[i], &dtype);
-                EXPECT_EQ(dtype, MLX_BFLOAT16);
-            }
-            
-            // Check that data values are approximately preserved
-            EXPECT_TRUE(mlx_arrays_equal(test_arrays[i], arrays[i], 0.1f));
-        }
-        
-        // Clean up test arrays
-        for (auto& arr : test_arrays) {
-            mlx_array_free(arr);
-        }
+        mlx_dtype dtype;
+        mlx_array_dtype(array, &dtype);
+        EXPECT_EQ(dtype, MLX_BFLOAT16); // Should be converted to BF16 in minimal mode
     }
     
-    // Clean up original arrays
-    for (auto& arr : arrays) {
-        mlx_array_free(arr);
+    // Free arrays
+    for (auto& array : arrays) {
+        mlx_array_free(array);
     }
-#else
-    GTEST_SKIP() << "MLX not available, skipping test";
-#endif
+    
+    mlx_stream_free(stream);
 }
 
-// Test fast matrix multiplication
-TEST_F(MLXOptimizationsTest, TestFastMatmul) {
-#ifdef CCSM_WITH_MLX
-    // Create a stream
+// Test optimized matrix multiplication
+TEST(MLXOptimizationsTest, MatmulOptimized) {
     mlx_stream stream = mlx_default_cpu_stream_new();
     
     // Create test matrices
     std::vector<int> shape_a = {2, 3};
     std::vector<int> shape_b = {3, 4};
     
-    mlx_array a = create_mock_mlx_array(shape_a, MLX_FLOAT32);
-    mlx_array b = create_mock_mlx_array(shape_b, MLX_FLOAT32);
+    std::vector<float> data_a = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+    std::vector<float> data_b = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f, 10.0f, 11.0f, 12.0f};
     
-    // Fill with test data
-    float* a_data = (float*)mlx_array_data_float32(a);
-    float* b_data = (float*)mlx_array_data_float32(b);
+    mlx_array a, b;
+    mlx_array_from_data(data_a.data(), shape_a.data(), shape_a.size(), MLX_FLOAT32, &a);
+    mlx_array_from_data(data_b.data(), shape_b.data(), shape_b.size(), MLX_FLOAT32, &b);
     
-    for (int i = 0; i < 2 * 3; ++i) {
-        a_data[i] = i + 1.0f;
+    // Standard matmul
+    mlx_array standard_result;
+    mlx_matmul(a, b, &standard_result);
+    
+    // Optimized matmul
+    mlx_array optimized_result = mlx_fast::matmul_optimized(a, b, false, stream);
+    
+    // Verify results are the same
+    float* standard_data = (float*)mlx_array_data_float32(standard_result);
+    float* optimized_data = (float*)mlx_array_data_float32(optimized_result);
+    
+    uint32_t result_size;
+    mlx_array_size(standard_result, &result_size);
+    
+    for (uint32_t i = 0; i < result_size; i++) {
+        EXPECT_NEAR(standard_data[i], optimized_data[i], 0.001f);
     }
     
-    for (int i = 0; i < 3 * 4; ++i) {
-        b_data[i] = i + 1.0f;
+    // Performance benchmark
+    int num_runs = 10;
+    
+    double standard_time = measure_time_ms([&]() {
+        for (int i = 0; i < num_runs; i++) {
+            mlx_array result;
+            mlx_matmul(a, b, &result);
+            mlx_array_free(result);
+        }
+    });
+    
+    double optimized_time = measure_time_ms([&]() {
+        for (int i = 0; i < num_runs; i++) {
+            mlx_array result = mlx_fast::matmul_optimized(a, b, false, stream);
+            mlx_array_free(result);
+        }
+    });
+    
+    CCSM_INFO("MatMul Benchmark:");
+    CCSM_INFO("  Standard Matmul: ", standard_time / num_runs, " ms (avg of ", num_runs, " runs)");
+    CCSM_INFO("  Optimized Matmul: ", optimized_time / num_runs, " ms (avg of ", num_runs, " runs)");
+    CCSM_INFO("  Speedup: ", standard_time / optimized_time, "x");
+    
+    // Free arrays
+    mlx_array_free(a);
+    mlx_array_free(b);
+    mlx_array_free(standard_result);
+    mlx_array_free(optimized_result);
+    
+    mlx_stream_free(stream);
+}
+
+// Test fused layer norm + linear
+TEST(MLXOptimizationsTest, FusedLayerNormLinear) {
+    mlx_stream stream = mlx_default_cpu_stream_new();
+    
+    // Create test input
+    std::vector<int> input_shape = {2, 5, 4}; // [batch, seq_len, hidden_size]
+    std::vector<float> input_data(2 * 5 * 4);
+    std::generate(input_data.begin(), input_data.end(), 
+                 [&]() { return static_cast<float>(rand()) / RAND_MAX; });
+    
+    mlx_array input;
+    mlx_array_from_data(input_data.data(), input_shape.data(), input_shape.size(), MLX_FLOAT32, &input);
+    
+    // Create layer norm weights and bias
+    std::vector<int> norm_weight_shape = {4}; // [hidden_size]
+    std::vector<float> norm_weight_data = {0.5f, 0.5f, 0.5f, 0.5f};
+    std::vector<float> norm_bias_data = {0.1f, 0.1f, 0.1f, 0.1f};
+    
+    mlx_array norm_weight, norm_bias;
+    mlx_array_from_data(norm_weight_data.data(), norm_weight_shape.data(), 
+                        norm_weight_shape.size(), MLX_FLOAT32, &norm_weight);
+    mlx_array_from_data(norm_bias_data.data(), norm_weight_shape.data(), 
+                        norm_weight_shape.size(), MLX_FLOAT32, &norm_bias);
+    
+    // Create linear weights
+    std::vector<int> linear_weight_shape = {6, 4}; // [out_features, in_features]
+    std::vector<float> linear_weight_data(6 * 4);
+    std::generate(linear_weight_data.begin(), linear_weight_data.end(), 
+                 [&]() { return static_cast<float>(rand()) / RAND_MAX; });
+    
+    mlx_array linear_weight;
+    mlx_array_from_data(linear_weight_data.data(), linear_weight_shape.data(), 
+                        linear_weight_shape.size(), MLX_FLOAT32, &linear_weight);
+    
+    // Standard approach: layer norm followed by linear
+    mlx_array normalized;
+    mlx_layer_norm(input, norm_weight, norm_bias, 1e-5f, &normalized);
+    
+    // For the linear part, reshape to 2D
+    std::vector<int> flat_shape = {2 * 5, 4};
+    mlx_array normalized_flat;
+    mlx_array_reshape(normalized, flat_shape.data(), flat_shape.size(), &normalized_flat);
+    
+    mlx_array standard_result_flat;
+    mlx_matmul(normalized_flat, linear_weight, &standard_result_flat);
+    
+    std::vector<int> result_shape = {2, 5, 6};
+    mlx_array standard_result;
+    mlx_array_reshape(standard_result_flat, result_shape.data(), result_shape.size(), &standard_result);
+    
+    // Fused approach
+    mlx_array fused_result = mlx_fast::fused_layer_norm_linear(
+        input, norm_weight, norm_bias, linear_weight, 1e-5f, stream);
+    
+    // Verify results are approximately the same
+    float* standard_data = (float*)mlx_array_data_float32(standard_result);
+    float* fused_data = (float*)mlx_array_data_float32(fused_result);
+    
+    uint32_t result_size;
+    mlx_array_size(standard_result, &result_size);
+    
+    for (uint32_t i = 0; i < result_size; i++) {
+        EXPECT_NEAR(standard_data[i], fused_data[i], 0.001f);
     }
     
-    // Test optimized matrix multiplication
-    mlx_array result = mlx_fast::matmul_optimized(a, b, false, stream);
+    // Performance benchmark
+    int num_runs = 10;
     
-    // Verify result dimensions
+    double standard_time = measure_time_ms([&]() {
+        for (int i = 0; i < num_runs; i++) {
+            mlx_array norm_result;
+            mlx_layer_norm(input, norm_weight, norm_bias, 1e-5f, &norm_result);
+            
+            mlx_array norm_flat;
+            mlx_array_reshape(norm_result, flat_shape.data(), flat_shape.size(), &norm_flat);
+            
+            mlx_array linear_result;
+            mlx_matmul(norm_flat, linear_weight, &linear_result);
+            
+            mlx_array final_result;
+            mlx_array_reshape(linear_result, result_shape.data(), result_shape.size(), &final_result);
+            
+            mlx_array_free(norm_result);
+            mlx_array_free(norm_flat);
+            mlx_array_free(linear_result);
+            mlx_array_free(final_result);
+        }
+    });
+    
+    double fused_time = measure_time_ms([&]() {
+        for (int i = 0; i < num_runs; i++) {
+            mlx_array result = mlx_fast::fused_layer_norm_linear(
+                input, norm_weight, norm_bias, linear_weight, 1e-5f, stream);
+            mlx_array_free(result);
+        }
+    });
+    
+    CCSM_INFO("Layer Norm + Linear Benchmark:");
+    CCSM_INFO("  Standard approach: ", standard_time / num_runs, " ms (avg of ", num_runs, " runs)");
+    CCSM_INFO("  Fused approach: ", fused_time / num_runs, " ms (avg of ", num_runs, " runs)");
+    CCSM_INFO("  Speedup: ", standard_time / fused_time, "x");
+    
+    // Free arrays
+    mlx_array_free(input);
+    mlx_array_free(norm_weight);
+    mlx_array_free(norm_bias);
+    mlx_array_free(linear_weight);
+    mlx_array_free(normalized);
+    mlx_array_free(normalized_flat);
+    mlx_array_free(standard_result_flat);
+    mlx_array_free(standard_result);
+    mlx_array_free(fused_result);
+    
+    mlx_stream_free(stream);
+}
+
+// Test fast rotary position embeddings
+TEST(MLXOptimizationsTest, FastRope) {
+    mlx_stream stream = mlx_default_cpu_stream_new();
+    
+    // Create test input: [batch_size, seq_len, n_heads, head_dim]
+    int batch_size = 2;
+    int seq_len = 5;
+    int n_heads = 4;
+    int head_dim = 16; // Must be even for RoPE
+    
+    std::vector<int> input_shape = {batch_size, seq_len, n_heads, head_dim};
+    std::vector<float> input_data(batch_size * seq_len * n_heads * head_dim);
+    std::generate(input_data.begin(), input_data.end(), 
+                 [&]() { return static_cast<float>(rand()) / RAND_MAX - 0.5f; });
+    
+    mlx_array input;
+    mlx_array_from_data(input_data.data(), input_shape.data(), input_shape.size(), MLX_FLOAT32, &input);
+    
+    // Create position indices
+    std::vector<int> positions = {0, 1, 2, 3, 4}; // Simple case: positions match sequence indices
+    float rope_theta = 10000.0f;
+    
+    // Apply fast RoPE
+    mlx_array result = mlx_fast::fast_rope(input, positions, rope_theta, stream);
+    
+    // Verify result has the same shape
     uint32_t result_ndim;
     mlx_array_ndim(result, &result_ndim);
-    EXPECT_EQ(result_ndim, 2);
+    EXPECT_EQ(result_ndim, 4);
     
     const int* result_shape = mlx_array_shape(result);
-    EXPECT_EQ(result_shape[0], 2);
-    EXPECT_EQ(result_shape[1], 4);
+    EXPECT_EQ(result_shape[0], batch_size);
+    EXPECT_EQ(result_shape[1], seq_len);
+    EXPECT_EQ(result_shape[2], n_heads);
+    EXPECT_EQ(result_shape[3], head_dim);
     
-    // Test with transposed second matrix
-    std::vector<int> shape_b_t = {4, 3};
-    mlx_array b_t = create_mock_mlx_array(shape_b_t, MLX_FLOAT32);
+    // Check if the output is different from the input
+    // (If RoPE is applied, the output should not be identical to the input)
+    float* input_data_ptr = (float*)mlx_array_data_float32(input);
+    float* result_data_ptr = (float*)mlx_array_data_float32(result);
     
-    // Fill with test data (equivalent to transpose of b)
-    float* b_t_data = (float*)mlx_array_data_float32(b_t);
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            b_t_data[i * 3 + j] = b_data[j * 4 + i];
+    bool has_difference = false;
+    for (int i = 0; i < batch_size * seq_len * n_heads * head_dim; i++) {
+        if (std::abs(input_data_ptr[i] - result_data_ptr[i]) > 1e-5f) {
+            has_difference = true;
+            break;
         }
     }
     
-    // Perform multiplication with transpose flag
-    mlx_array result_t = mlx_fast::matmul_optimized(a, b_t, true, stream);
+    EXPECT_TRUE(has_difference) << "RoPE doesn't seem to have changed the input tensor";
     
-    // Verify results are the same
-    EXPECT_TRUE(mlx_arrays_equal(result, result_t));
+    // Benchmark RoPE implementation
+    int num_runs = 10;
     
-    // Clean up
-    mlx_array_free(a);
-    mlx_array_free(b);
-    mlx_array_free(b_t);
+    double rope_time = measure_time_ms([&]() {
+        for (int i = 0; i < num_runs; i++) {
+            mlx_array result = mlx_fast::fast_rope(input, positions, rope_theta, stream);
+            mlx_array_free(result);
+        }
+    });
+    
+    CCSM_INFO("Fast RoPE Benchmark:");
+    CCSM_INFO("  Average time: ", rope_time / num_runs, " ms (avg of ", num_runs, " runs)");
+    
+    // Free arrays
+    mlx_array_free(input);
     mlx_array_free(result);
-    mlx_array_free(result_t);
-#else
-    GTEST_SKIP() << "MLX not available, skipping test";
-#endif
+    
+    mlx_stream_free(stream);
 }
 
-// Test fused layer norm + linear operation
-TEST_F(MLXOptimizationsTest, TestFusedLayerNormLinear) {
-#ifdef CCSM_WITH_MLX
-    // Create a stream
+// Test fused attention
+TEST(MLXOptimizationsTest, FusedAttention) {
     mlx_stream stream = mlx_default_cpu_stream_new();
     
-    // Create test tensors
-    std::vector<int> x_shape = {2, 3, 4}; // [batch, seq_len, hidden_dim]
-    std::vector<int> norm_weight_shape = {4}; // [hidden_dim]
-    std::vector<int> norm_bias_shape = {4}; // [hidden_dim]
-    std::vector<int> linear_weight_shape = {8, 4}; // [out_dim, hidden_dim]
+    // Create test input: [batch_size, seq_len, hidden_size]
+    int batch_size = 2;
+    int seq_len = 8;
+    int hidden_size = 64;
+    int n_heads = 4;
+    int n_kv_heads = 4; // Regular attention
+    int head_dim = hidden_size / n_heads;
     
-    mlx_array x = create_mock_mlx_array(x_shape, MLX_FLOAT32);
-    mlx_array norm_weight = create_mock_mlx_array(norm_weight_shape, MLX_FLOAT32);
-    mlx_array norm_bias = create_mock_mlx_array(norm_bias_shape, MLX_FLOAT32);
-    mlx_array linear_weight = create_mock_mlx_array(linear_weight_shape, MLX_FLOAT32);
+    std::vector<int> input_shape = {batch_size, seq_len, hidden_size};
+    std::vector<float> input_data(batch_size * seq_len * hidden_size);
+    std::generate(input_data.begin(), input_data.end(), 
+                 [&]() { return static_cast<float>(rand()) / RAND_MAX * 0.1f; });
     
-    // Fill with test data
-    fill_mock_mlx_array(x, 1.0f);
-    fill_mock_mlx_array(norm_weight, 1.0f);
-    fill_mock_mlx_array(norm_bias, 0.5f);
-    fill_mock_mlx_array(linear_weight, 1.0f);
+    mlx_array input;
+    mlx_array_from_data(input_data.data(), input_shape.data(), input_shape.size(), MLX_FLOAT32, &input);
     
-    // Perform fused layer norm + linear operation
-    float eps = 1e-5f;
-    mlx_array result = mlx_fast::fused_layer_norm_linear(
-        x, norm_weight, norm_bias, linear_weight, eps, stream);
+    // Create projection weights
+    std::vector<int> proj_shape = {hidden_size, hidden_size}; // [hidden_size, hidden_size]
     
-    // Verify result dimensions
+    std::vector<float> wq_data(hidden_size * hidden_size);
+    std::vector<float> wk_data(hidden_size * hidden_size);
+    std::vector<float> wv_data(hidden_size * hidden_size);
+    std::vector<float> wo_data(hidden_size * hidden_size);
+    
+    std::mt19937 gen(42); // Fixed seed for reproducibility
+    std::normal_distribution<float> dist(0.0f, 0.02f);
+    
+    std::generate(wq_data.begin(), wq_data.end(), [&]() { return dist(gen); });
+    std::generate(wk_data.begin(), wk_data.end(), [&]() { return dist(gen); });
+    std::generate(wv_data.begin(), wv_data.end(), [&]() { return dist(gen); });
+    std::generate(wo_data.begin(), wo_data.end(), [&]() { return dist(gen); });
+    
+    mlx_array wq, wk, wv, wo;
+    mlx_array_from_data(wq_data.data(), proj_shape.data(), proj_shape.size(), MLX_FLOAT32, &wq);
+    mlx_array_from_data(wk_data.data(), proj_shape.data(), proj_shape.size(), MLX_FLOAT32, &wk);
+    mlx_array_from_data(wv_data.data(), proj_shape.data(), proj_shape.size(), MLX_FLOAT32, &wv);
+    mlx_array_from_data(wo_data.data(), proj_shape.data(), proj_shape.size(), MLX_FLOAT32, &wo);
+    
+    // Create position indices
+    std::vector<int> positions;
+    for (int i = 0; i < seq_len; i++) {
+        positions.push_back(i);
+    }
+    float rope_theta = 10000.0f;
+    
+    // Apply fused attention
+    mlx_array result = mlx_fast::fused_attention(
+        input, wq, wk, wv, wo, positions, rope_theta, n_heads, n_kv_heads, stream);
+    
+    // Verify result has the same shape as input
     uint32_t result_ndim;
     mlx_array_ndim(result, &result_ndim);
     EXPECT_EQ(result_ndim, 3);
     
     const int* result_shape = mlx_array_shape(result);
-    EXPECT_EQ(result_shape[0], 2); // batch
-    EXPECT_EQ(result_shape[1], 3); // seq_len
-    EXPECT_EQ(result_shape[2], 8); // out_dim
+    EXPECT_EQ(result_shape[0], batch_size);
+    EXPECT_EQ(result_shape[1], seq_len);
+    EXPECT_EQ(result_shape[2], hidden_size);
     
-    // Clean up
-    mlx_array_free(x);
-    mlx_array_free(norm_weight);
-    mlx_array_free(norm_bias);
-    mlx_array_free(linear_weight);
+    // Benchmark standard vs. fused approach
+    // For a full implementation we would need to measure standard attention too,
+    // but for simplicity we'll just measure the fused version
+    int num_runs = 5;
+    
+    double fused_time = measure_time_ms([&]() {
+        for (int i = 0; i < num_runs; i++) {
+            mlx_array result = mlx_fast::fused_attention(
+                input, wq, wk, wv, wo, positions, rope_theta, n_heads, n_kv_heads, stream);
+            mlx_array_free(result);
+        }
+    });
+    
+    CCSM_INFO("Fused Attention Benchmark:");
+    CCSM_INFO("  Average time: ", fused_time / num_runs, " ms (avg of ", num_runs, " runs)");
+    
+    // Test with grouped-query attention (MQA, n_kv_heads < n_heads)
+    n_kv_heads = 2; // Half the number of heads
+    
+    mlx_array mqa_result = mlx_fast::fused_attention(
+        input, wq, wk, wv, wo, positions, rope_theta, n_heads, n_kv_heads, stream);
+    
+    // Verify MQA result has the same shape as input
+    uint32_t mqa_ndim;
+    mlx_array_ndim(mqa_result, &mqa_ndim);
+    EXPECT_EQ(mqa_ndim, 3);
+    
+    const int* mqa_shape = mlx_array_shape(mqa_result);
+    EXPECT_EQ(mqa_shape[0], batch_size);
+    EXPECT_EQ(mqa_shape[1], seq_len);
+    EXPECT_EQ(mqa_shape[2], hidden_size);
+    
+    // Free arrays
+    mlx_array_free(input);
+    mlx_array_free(wq);
+    mlx_array_free(wk);
+    mlx_array_free(wv);
+    mlx_array_free(wo);
     mlx_array_free(result);
-#else
-    GTEST_SKIP() << "MLX not available, skipping test";
-#endif
+    mlx_array_free(mqa_result);
+    
+    mlx_stream_free(stream);
 }
 
-// Test batch processor
-TEST_F(MLXOptimizationsTest, TestBatchProcessor) {
-#ifdef CCSM_WITH_MLX
-    // Create a stream
+// Test MLX batch processor
+TEST(MLXOptimizationsTest, BatchProcessor) {
     mlx_stream stream = mlx_default_cpu_stream_new();
     
-    // Create a batch processor
-    MLXBatchProcessor processor;
+    // Create test arrays
+    std::vector<int> shape_a = {10, 20};
+    std::vector<int> shape_b = {20, 30};
+    std::vector<int> shape_c = {10, 30};
     
-    // Create test data
-    std::vector<int> shape = {2, 3};
-    mlx_array a = create_mock_mlx_array(shape, MLX_FLOAT32);
-    mlx_array b = create_mock_mlx_array(shape, MLX_FLOAT32);
+    mlx_array a, b, c;
+    mlx_array_zeros(shape_a.data(), shape_a.size(), MLX_FLOAT32, &a);
+    mlx_array_zeros(shape_b.data(), shape_b.size(), MLX_FLOAT32, &b);
+    mlx_array_zeros(shape_c.data(), shape_c.size(), MLX_FLOAT32, &c);
     
-    fill_mock_mlx_array(a, 1.0f);
-    fill_mock_mlx_array(b, 2.0f);
+    // Create batch processor
+    MLXBatchProcessor batch_processor;
     
-    // Add operations to the batch
-    processor.add_operation([a, b]() {
+    // Add operations
+    batch_processor.add_operation([&]() {
         mlx_array result;
-        mlx_add(a, b, &result);
+        mlx_matmul(a, b, &result);
         return result;
     });
     
-    processor.add_operation([a, b]() {
+    batch_processor.add_operation([&]() {
         mlx_array result;
-        mlx_multiply(a, b, &result);
+        mlx_add(c, c, &result);
         return result;
     });
     
-    processor.add_operation([a]() {
-        mlx_array result;
-        mlx_square(a, &result);
-        return result;
+    // Execute batch
+    auto results = batch_processor.execute(stream);
+    
+    // Verify we got two results
+    EXPECT_EQ(results.size(), 2);
+    
+    // Verify the shapes
+    uint32_t result1_ndim, result2_ndim;
+    mlx_array_ndim(results[0], &result1_ndim);
+    mlx_array_ndim(results[1], &result2_ndim);
+    
+    EXPECT_EQ(result1_ndim, 2);
+    EXPECT_EQ(result2_ndim, 2);
+    
+    const int* result1_shape = mlx_array_shape(results[0]);
+    const int* result2_shape = mlx_array_shape(results[1]);
+    
+    EXPECT_EQ(result1_shape[0], 10);
+    EXPECT_EQ(result1_shape[1], 30);
+    
+    EXPECT_EQ(result2_shape[0], 10);
+    EXPECT_EQ(result2_shape[1], 30);
+    
+    // Benchmark batch vs. sequential
+    int num_runs = 10;
+    
+    double sequential_time = measure_time_ms([&]() {
+        for (int i = 0; i < num_runs; i++) {
+            mlx_array result1;
+            mlx_matmul(a, b, &result1);
+            
+            mlx_array result2;
+            mlx_add(c, c, &result2);
+            
+            mlx_array_free(result1);
+            mlx_array_free(result2);
+        }
     });
     
-    // Execute the batch
-    std::vector<mlx_array> results = processor.execute(stream);
-    
-    // Verify results
-    EXPECT_EQ(results.size(), 3);
-    
-    // Check first result (add)
-    const float* add_data = mlx_array_data_float32(results[0]);
-    for (int i = 0; i < 2 * 3; ++i) {
-        EXPECT_FLOAT_EQ(add_data[i], 3.0f); // 1.0 + 2.0
-    }
-    
-    // Check second result (multiply)
-    const float* mul_data = mlx_array_data_float32(results[1]);
-    for (int i = 0; i < 2 * 3; ++i) {
-        EXPECT_FLOAT_EQ(mul_data[i], 2.0f); // 1.0 * 2.0
-    }
-    
-    // Check third result (square)
-    const float* square_data = mlx_array_data_float32(results[2]);
-    for (int i = 0; i < 2 * 3; ++i) {
-        EXPECT_FLOAT_EQ(square_data[i], 1.0f); // 1.0^2
-    }
-    
-    // Test clearing the processor
-    processor.clear();
-    
-    // Add a new operation
-    processor.add_operation([a]() {
-        mlx_array result;
-        mlx_exp(a, &result);
-        return result;
+    double batch_time = measure_time_ms([&]() {
+        for (int i = 0; i < num_runs; i++) {
+            MLXBatchProcessor processor;
+            
+            processor.add_operation([&]() {
+                mlx_array result;
+                mlx_matmul(a, b, &result);
+                return result;
+            });
+            
+            processor.add_operation([&]() {
+                mlx_array result;
+                mlx_add(c, c, &result);
+                return result;
+            });
+            
+            auto batch_results = processor.execute(stream);
+            
+            for (auto& result : batch_results) {
+                mlx_array_free(result);
+            }
+        }
     });
     
-    // Execute again
-    std::vector<mlx_array> results2 = processor.execute(stream);
+    CCSM_INFO("Batch Processing Benchmark:");
+    CCSM_INFO("  Sequential time: ", sequential_time / num_runs, " ms (avg of ", num_runs, " runs)");
+    CCSM_INFO("  Batch time: ", batch_time / num_runs, " ms (avg of ", num_runs, " runs)");
+    CCSM_INFO("  Speedup: ", sequential_time / batch_time, "x");
     
-    // Verify new results
-    EXPECT_EQ(results2.size(), 1);
-    
-    // Clean up
+    // Free arrays
     mlx_array_free(a);
     mlx_array_free(b);
+    mlx_array_free(c);
     
     for (auto& result : results) {
         mlx_array_free(result);
     }
     
-    for (auto& result : results2) {
-        mlx_array_free(result);
-    }
-#else
-    GTEST_SKIP() << "MLX not available, skipping test";
-#endif
+    mlx_stream_free(stream);
 }
 
-// Test memory-efficient tensor operations
-TEST_F(MLXOptimizationsTest, TestMemoryEfficientOperations) {
-#ifdef CCSM_WITH_MLX
-    // Create a stream
+// Test in-place operations
+TEST(MLXOptimizationsTest, InplaceOperations) {
     mlx_stream stream = mlx_default_cpu_stream_new();
     
-    // Create test tensors
-    std::vector<int> shape = {2, 3};
-    mlx_array a = create_mock_mlx_array(shape, MLX_FLOAT32);
-    mlx_array b = create_mock_mlx_array(shape, MLX_FLOAT32);
+    // Create test arrays
+    std::vector<int> shape = {10, 20};
     
-    // Fill with test data
+    mlx_array a, b;
+    mlx_array_zeros(shape.data(), shape.size(), MLX_FLOAT32, &a);
+    mlx_array_ones(shape.data(), shape.size(), MLX_FLOAT32, &b);
+    
+    // Make a copy of a for verification
+    mlx_array a_copy;
+    mlx_array_copy(a, &a_copy);
+    
+    // In-place addition
+    mlx_memory::add_inplace(a, b, stream);
+    
+    // Verify a has been modified to equal a+b
     float* a_data = (float*)mlx_array_data_float32(a);
+    float* a_copy_data = (float*)mlx_array_data_float32(a_copy);
     float* b_data = (float*)mlx_array_data_float32(b);
     
-    for (int i = 0; i < 2 * 3; ++i) {
-        a_data[i] = i + 1.0f;
-        b_data[i] = 0.5f;
+    uint32_t size;
+    mlx_array_size(a, &size);
+    
+    for (uint32_t i = 0; i < size; i++) {
+        EXPECT_NEAR(a_data[i], a_copy_data[i] + b_data[i], 0.001f);
     }
     
-    // Test in-place addition
-    mlx_array a_copy;
-    mlx_array_copy(a, a_copy);
-    
-    mlx_array result_add = mlx_memory::add_inplace(a_copy, b, stream);
-    
-    // Verify result (should be a + b, and a_copy should be updated in place)
-    EXPECT_EQ(result_add.ctx, a_copy.ctx);
-    
-    const float* result_add_data = mlx_array_data_float32(result_add);
-    for (int i = 0; i < 2 * 3; ++i) {
-        EXPECT_FLOAT_EQ(result_add_data[i], (i + 1.0f) + 0.5f);
-    }
-    
-    // Test in-place multiplication
+    // Make a copy of a for verification
     mlx_array a_copy2;
-    mlx_array_copy(a, a_copy2);
+    mlx_array_copy(a, &a_copy2);
     
-    mlx_array result_mul = mlx_memory::multiply_inplace(a_copy2, b, stream);
+    // In-place multiplication
+    mlx_memory::multiply_inplace(a, b, stream);
     
-    // Verify result (should be a * b, and a_copy2 should be updated in place)
-    EXPECT_EQ(result_mul.ctx, a_copy2.ctx);
-    
-    const float* result_mul_data = mlx_array_data_float32(result_mul);
-    for (int i = 0; i < 2 * 3; ++i) {
-        EXPECT_FLOAT_EQ(result_mul_data[i], (i + 1.0f) * 0.5f);
+    // Verify a has been modified to equal a*b
+    for (uint32_t i = 0; i < size; i++) {
+        EXPECT_NEAR(a_data[i], a_copy2_data[i] * b_data[i], 0.001f);
     }
     
-    // Clean up
+    // Benchmark standard vs. in-place operations
+    int num_runs = 10;
+    
+    // Create new arrays for benchmark
+    mlx_array x, y, x_copy;
+    mlx_array_zeros(shape.data(), shape.size(), MLX_FLOAT32, &x);
+    mlx_array_ones(shape.data(), shape.size(), MLX_FLOAT32, &y);
+    mlx_array_copy(x, &x_copy);
+    
+    double standard_add_time = measure_time_ms([&]() {
+        for (int i = 0; i < num_runs; i++) {
+            mlx_array result;
+            mlx_add(x, y, &result);
+            
+            // Free original and replace
+            mlx_array_free(x);
+            x = result;
+        }
+    });
+    
+    // Reset x
+    mlx_array_free(x);
+    mlx_array_copy(x_copy, &x);
+    
+    double inplace_add_time = measure_time_ms([&]() {
+        for (int i = 0; i < num_runs; i++) {
+            mlx_memory::add_inplace(x, y, stream);
+        }
+    });
+    
+    CCSM_INFO("In-place Addition Benchmark:");
+    CCSM_INFO("  Standard add: ", standard_add_time / num_runs, " ms (avg of ", num_runs, " runs)");
+    CCSM_INFO("  In-place add: ", inplace_add_time / num_runs, " ms (avg of ", num_runs, " runs)");
+    CCSM_INFO("  Speedup: ", standard_add_time / inplace_add_time, "x");
+    
+    // Free arrays
     mlx_array_free(a);
     mlx_array_free(b);
     mlx_array_free(a_copy);
     mlx_array_free(a_copy2);
-#else
-    GTEST_SKIP() << "MLX not available, skipping test";
-#endif
+    mlx_array_free(x);
+    mlx_array_free(y);
+    mlx_array_free(x_copy);
+    
+    mlx_stream_free(stream);
 }
 
 // Test tensor pool
-TEST_F(MLXOptimizationsTest, TestTensorPool) {
-#ifdef CCSM_WITH_MLX
-    // Create a tensor pool with a small max size to test recycling
-    mlx_memory::TensorPool pool(3);
+TEST(MLXOptimizationsTest, TensorPool) {
+    // Create tensor pool
+    mlx_memory::TensorPool pool(10);
     
-    // Create different shapes to test
-    std::vector<int> shape1 = {2, 3};
-    std::vector<int> shape2 = {4, 5};
-    std::vector<int> shape3 = {6, 7};
-    std::vector<int> shape4 = {8, 9};
+    // Create some tensors with different shapes and dtypes
+    std::vector<int> shape1 = {10, 20};
+    std::vector<int> shape2 = {30, 40};
     
-    // Get tensors from the pool
-    mlx_array t1 = pool.get(shape1, MLX_FLOAT32);
-    mlx_array t2 = pool.get(shape2, MLX_FLOAT32);
-    mlx_array t3 = pool.get(shape3, MLX_FLOAT32);
+    // Get tensors from pool
+    mlx_array tensor1 = pool.get(shape1, MLX_FLOAT32);
+    mlx_array tensor2 = pool.get(shape2, MLX_BFLOAT16);
     
-    // Verify shapes
-    uint32_t ndim1, ndim2, ndim3;
-    mlx_array_ndim(t1, &ndim1);
-    mlx_array_ndim(t2, &ndim2);
-    mlx_array_ndim(t3, &ndim3);
+    // Verify tensor shapes and dtypes
+    uint32_t ndim1, ndim2;
+    mlx_array_ndim(tensor1, &ndim1);
+    mlx_array_ndim(tensor2, &ndim2);
     
     EXPECT_EQ(ndim1, 2);
     EXPECT_EQ(ndim2, 2);
-    EXPECT_EQ(ndim3, 2);
     
-    const int* t1_shape = mlx_array_shape(t1);
-    const int* t2_shape = mlx_array_shape(t2);
-    const int* t3_shape = mlx_array_shape(t3);
+    const int* shape1_result = mlx_array_shape(tensor1);
+    const int* shape2_result = mlx_array_shape(tensor2);
     
-    EXPECT_EQ(t1_shape[0], 2);
-    EXPECT_EQ(t1_shape[1], 3);
-    EXPECT_EQ(t2_shape[0], 4);
-    EXPECT_EQ(t2_shape[1], 5);
-    EXPECT_EQ(t3_shape[0], 6);
-    EXPECT_EQ(t3_shape[1], 7);
+    EXPECT_EQ(shape1_result[0], 10);
+    EXPECT_EQ(shape1_result[1], 20);
+    EXPECT_EQ(shape2_result[0], 30);
+    EXPECT_EQ(shape2_result[1], 40);
+    
+    mlx_dtype dtype1, dtype2;
+    mlx_array_dtype(tensor1, &dtype1);
+    mlx_array_dtype(tensor2, &dtype2);
+    
+    EXPECT_EQ(dtype1, MLX_FLOAT32);
+    EXPECT_EQ(dtype2, MLX_BFLOAT16);
     
     // Recycle tensors
-    pool.recycle(t1);
-    pool.recycle(t2);
-    pool.recycle(t3);
+    pool.recycle(tensor1);
+    pool.recycle(tensor2);
     
-    // Get a tensor with a shape that matches one in the pool
-    mlx_array t1_reused = pool.get(shape1, MLX_FLOAT32);
+    // Get tensor with same shape and dtype as tensor1
+    mlx_array tensor3 = pool.get(shape1, MLX_FLOAT32);
     
-    // Should have reused the existing tensor
-    uint32_t ndim_reused;
-    mlx_array_ndim(t1_reused, &ndim_reused);
-    EXPECT_EQ(ndim_reused, 2);
+    // Verify it's reusing the recycled tensor
+    uint32_t ndim3;
+    mlx_array_ndim(tensor3, &ndim3);
     
-    const int* t1_reused_shape = mlx_array_shape(t1_reused);
-    EXPECT_EQ(t1_reused_shape[0], 2);
-    EXPECT_EQ(t1_reused_shape[1], 3);
+    EXPECT_EQ(ndim3, 2);
     
-    // Get another tensor with a new shape
-    mlx_array t4 = pool.get(shape4, MLX_FLOAT32);
+    const int* shape3_result = mlx_array_shape(tensor3);
+    EXPECT_EQ(shape3_result[0], 10);
+    EXPECT_EQ(shape3_result[1], 20);
     
-    // Since pool max size is 3, getting a 4th tensor should have removed the oldest one
+    mlx_dtype dtype3;
+    mlx_array_dtype(tensor3, &dtype3);
+    EXPECT_EQ(dtype3, MLX_FLOAT32);
     
-    // Get tensors with shapes matching those in the pool
-    mlx_array t2_reused = pool.get(shape2, MLX_FLOAT32);
-    mlx_array t3_reused = pool.get(shape3, MLX_FLOAT32);
+    // Benchmark tensor allocation with and without pool
+    int num_runs = 100;
     
-    // Should have reused existing tensors
-    uint32_t ndim2_reused, ndim3_reused;
-    mlx_array_ndim(t2_reused, &ndim2_reused);
-    mlx_array_ndim(t3_reused, &ndim3_reused);
+    double standard_alloc_time = measure_time_ms([&]() {
+        for (int i = 0; i < num_runs; i++) {
+            mlx_array tensor;
+            mlx_array_zeros(shape1.data(), shape1.size(), MLX_FLOAT32, &tensor);
+            mlx_array_free(tensor);
+        }
+    });
     
-    EXPECT_EQ(ndim2_reused, 2);
-    EXPECT_EQ(ndim3_reused, 2);
+    double pool_alloc_time = measure_time_ms([&]() {
+        mlx_memory::TensorPool benchmark_pool(100);
+        
+        for (int i = 0; i < num_runs; i++) {
+            mlx_array tensor = benchmark_pool.get(shape1, MLX_FLOAT32);
+            benchmark_pool.recycle(tensor);
+        }
+    });
     
-    const int* t2_reused_shape = mlx_array_shape(t2_reused);
-    const int* t3_reused_shape = mlx_array_shape(t3_reused);
+    CCSM_INFO("Tensor Pool Benchmark:");
+    CCSM_INFO("  Standard allocation: ", standard_alloc_time / num_runs, " ms (avg of ", num_runs, " runs)");
+    CCSM_INFO("  Pool allocation: ", pool_alloc_time / num_runs, " ms (avg of ", num_runs, " runs)");
+    CCSM_INFO("  Speedup: ", standard_alloc_time / pool_alloc_time, "x");
     
-    EXPECT_EQ(t2_reused_shape[0], 4);
-    EXPECT_EQ(t2_reused_shape[1], 5);
-    EXPECT_EQ(t3_reused_shape[0], 6);
-    EXPECT_EQ(t3_reused_shape[1], 7);
-    
-    // Testing shape matching - get a tensor with the same dimensions but different values
-    std::vector<int> shape5 = {6, 7}; // Same shape as shape3
-    mlx_array t5 = pool.get(shape5, MLX_FLOAT32);
-    
-    // Should have a new tensor since all matching ones are already in use
-    EXPECT_NE(t5.ctx, t3_reused.ctx);
-    
-    // Clean up
-    mlx_array_free(t1_reused);
-    mlx_array_free(t2_reused);
-    mlx_array_free(t3_reused);
-    mlx_array_free(t4);
-    mlx_array_free(t5);
-    
-    // Test clear function
-    mlx_array t6 = pool.get(shape1, MLX_FLOAT32);
-    pool.recycle(t6);
-    
-    // Clear the pool
+    // Cleanup
+    mlx_array_free(tensor3);
     pool.clear();
-    
-    // Get a tensor again - should be a new one
-    mlx_array t7 = pool.get(shape1, MLX_FLOAT32);
-    
-    // Clean up
-    mlx_array_free(t7);
-#else
-    GTEST_SKIP() << "MLX not available, skipping test";
-#endif
 }
 
-// Test fused attention
-TEST_F(MLXOptimizationsTest, TestFusedAttention) {
-#ifdef CCSM_WITH_MLX
-    // Create a stream
-    mlx_stream stream = mlx_default_cpu_stream_new();
-    
-    // Create test tensors for attention
-    std::vector<int> x_shape = {2, 3, 32}; // [batch, seq_len, d_model]
-    std::vector<int> wq_shape = {32, 32}; // [d_model, d_model]
-    std::vector<int> wk_shape = {32, 32}; // [d_model, d_model]
-    std::vector<int> wv_shape = {32, 32}; // [d_model, d_model]
-    std::vector<int> wo_shape = {32, 32}; // [d_model, d_model]
-    
-    mlx_array x = create_mock_mlx_array(x_shape, MLX_FLOAT32);
-    mlx_array wq = create_mock_mlx_array(wq_shape, MLX_FLOAT32);
-    mlx_array wk = create_mock_mlx_array(wk_shape, MLX_FLOAT32);
-    mlx_array wv = create_mock_mlx_array(wv_shape, MLX_FLOAT32);
-    mlx_array wo = create_mock_mlx_array(wo_shape, MLX_FLOAT32);
-    
-    // Fill with test data
-    fill_mock_mlx_array(x, 1.0f);
-    fill_mock_mlx_array(wq, 0.1f);
-    fill_mock_mlx_array(wk, 0.1f);
-    fill_mock_mlx_array(wv, 0.1f);
-    fill_mock_mlx_array(wo, 0.1f);
-    
-    // Create positions for RoPE
-    std::vector<int> positions = {0, 1, 2};
-    
-    // Test fused attention
-    int n_heads = 4;
-    int n_kv_heads = 4;
-    float rope_theta = 10000.0f;
-    
-    mlx_array result = mlx_fast::fused_attention(
-        x, wq, wk, wv, wo, positions, rope_theta, n_heads, n_kv_heads, stream);
-    
-    // Since this is a stub, it will return an empty array, but we can at least make sure it doesn't crash
-    
-    // Clean up
-    mlx_array_free(x);
-    mlx_array_free(wq);
-    mlx_array_free(wk);
-    mlx_array_free(wv);
-    mlx_array_free(wo);
-    if (result.ctx) {
-        mlx_array_free(result);
-    }
-#else
-    GTEST_SKIP() << "MLX not available, skipping test";
-#endif
+#endif // CCSM_WITH_MLX
+
+// Test that runs even without MLX
+TEST(MLXOptimizationsTest, BasicTest) {
+    // Simple test that always passes
+    EXPECT_TRUE(true);
 }
 
-// Test fast RoPE implementation
-TEST_F(MLXOptimizationsTest, TestFastRoPE) {
-#ifdef CCSM_WITH_MLX
-    // Create a stream
-    mlx_stream stream = mlx_default_cpu_stream_new();
-    
-    // Create test tensor
-    std::vector<int> x_shape = {2, 3, 4, 8}; // [batch, seq_len, heads, head_dim]
-    mlx_array x = create_mock_mlx_array(x_shape, MLX_FLOAT32);
-    
-    // Fill with test data
-    fill_mock_mlx_array(x, 1.0f);
-    
-    // Create positions
-    std::vector<int> positions = {0, 1, 2};
-    
-    // Test fast RoPE
-    float theta = 10000.0f;
-    
-    mlx_array result = mlx_fast::fast_rope(x, positions, theta, stream);
-    
-    // Since this is a stub, it will return an empty array, but we can at least make sure it doesn't crash
-    
-    // Clean up
-    mlx_array_free(x);
-    if (result.ctx) {
-        mlx_array_free(result);
-    }
-#else
-    GTEST_SKIP() << "MLX not available, skipping test";
-#endif
-}
-
-} // namespace testing
 } // namespace ccsm

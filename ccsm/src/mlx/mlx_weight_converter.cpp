@@ -84,16 +84,19 @@ mlx_array convert_tensor_to_mlx_array(const Tensor& tensor, bool use_bfloat16) {
     }
     
     // Create MLX array from raw data
-    mlx_array result;
     if (tensor.data() == nullptr) {
         CCSM_INFO("Tensor data is null, creating empty array");
+        mlx_array result;
         mlx_array_zeros(mlx_shape.data(), mlx_shape.size(), mlx_type, &result);
         return result;
     }
     
     // Create array from data
-    mlx_array_from_data(tensor.data(), mlx_shape.data(), mlx_shape.size(), 
-                        MLXTensorImpl::to_mlx_dtype(tensor.dtype()), &result);
+    // Use mlx_array_new_data instead of mlx_array_from_data 
+    mlx_array result = mlx_array_new_data(tensor.data(), 
+                                        reinterpret_cast<const int*>(mlx_shape.data()), 
+                                        static_cast<int>(mlx_shape.size()), 
+                                        MLXTensorImpl::to_mlx_dtype(tensor.dtype()));
     
     // Convert to bfloat16 if needed
     if (use_bfloat16 && tensor.dtype() != DataType::BF16) {
@@ -227,8 +230,12 @@ bool save_mlx_weights_to_cache(
         file.write(reinterpret_cast<const char*>(&ndim), sizeof(ndim));
         
         // Write shape
+        const int* shape_ptr = mlx_array_shape(array);
+        // Convert from int* to int64_t* for consistent serialization
         std::vector<int64_t> shape(ndim);
-        mlx_array_shape(array, shape.data());
+        for (uint32_t i = 0; i < ndim; ++i) {
+            shape[i] = static_cast<int64_t>(shape_ptr[i]);
+        }
         file.write(reinterpret_cast<const char*>(shape.data()), ndim * sizeof(int64_t));
         
         // Write dtype
@@ -237,9 +244,37 @@ bool save_mlx_weights_to_cache(
         file.write(reinterpret_cast<const char*>(&dtype), sizeof(dtype));
         
         // Write data
-        void* data_ptr;
-        size_t data_size;
-        mlx_array_data(array, &data_ptr, &data_size);
+        size_t data_size = mlx_array_nbytes(array);
+        const void* data_ptr = nullptr;
+        
+        // Get the appropriate data pointer based on dtype
+        switch (dtype) {
+            case MLX_FLOAT32:
+                data_ptr = mlx_array_data_float32(array);
+                break;
+            case MLX_FLOAT16:
+                data_ptr = mlx_array_data_float16(array);
+                break;
+            case MLX_BFLOAT16:
+                data_ptr = mlx_array_data_bfloat16(array);
+                break;
+            case MLX_INT32:
+                data_ptr = mlx_array_data_int32(array);
+                break;
+            case MLX_INT16:
+                data_ptr = mlx_array_data_int16(array);
+                break;
+            case MLX_INT8:
+                data_ptr = mlx_array_data_int8(array);
+                break;
+            default:
+                throw std::runtime_error("Unsupported data type for serialization");
+        }
+        
+        if (!data_ptr) {
+            throw std::runtime_error("Failed to get array data pointer");
+        }
+        
         file.write(reinterpret_cast<const char*>(&data_size), sizeof(data_size));
         file.write(static_cast<const char*>(data_ptr), data_size);
     }
@@ -294,8 +329,17 @@ std::unordered_map<std::string, mlx_array> load_mlx_weights_from_cache(
         file.read(data.data(), data_size);
         
         // Create MLX array from data
-        mlx_array array;
-        mlx_array_from_data(data.data(), shape.data(), ndim, dtype, &array);
+        // Convert int64_t shape to int shape for mlx_array_new_data
+        std::vector<int> int_shape(ndim);
+        for (uint32_t j = 0; j < ndim; ++j) {
+            int_shape[j] = static_cast<int>(shape[j]);
+        }
+        
+        mlx_array array = mlx_array_new_data(
+            data.data(),
+            int_shape.data(), 
+            static_cast<int>(ndim), 
+            dtype);
         
         // Add to map
         weights[name] = array;

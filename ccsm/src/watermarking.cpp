@@ -91,7 +91,8 @@ void fft(std::vector<Complex>& x) {
     
     // Combine
     for (size_t k = 0; k < N/2; k++) {
-        Complex t = std::polar(1.0f, -2.0f * M_PI * k / N) * odd[k];
+        float angle = -2.0f * M_PI * k / static_cast<float>(N);
+        Complex t = Complex(std::cos(angle), std::sin(angle)) * odd[k];
         x[k] = even[k] + t;
         x[k + N/2] = even[k] - t;
     }

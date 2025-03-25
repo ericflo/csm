@@ -1,9 +1,61 @@
 #include <ccsm/model.h>
 #include <ccsm/utils.h>
 #include <ccsm/cpu/ggml_model.h>
+
+// Include the real MLX model if available
 #ifdef CCSM_WITH_MLX
 #include <ccsm/mlx/mlx_model.h>
+#else
+// Stub implementation for MLXModel to avoid link errors
+namespace ccsm {
+    class MLXModel : public Model {
+    public:
+        MLXModel(const ModelConfig& config) : Model(config) {
+            throw std::runtime_error("MLXModel stub - not implemented");
+        }
+        
+        bool load_weights(const std::string& path) override {
+            return false;
+        }
+        
+        bool load_weights(std::shared_ptr<ModelLoader> loader) override {
+            return false;
+        }
+        
+        bool load_weights(const WeightMap& weights) override {
+            return false;
+        }
+        
+        std::vector<int> generate_frame(
+            const std::vector<int>& tokens,
+            const std::vector<int>& positions,
+            float temperature = 0.9f,
+            int top_k = 50) override {
+            return {};
+        }
+        
+        void reset_caches() override {}
+        
+        void optimize_memory(size_t max_memory_mb = 0) override {}
+        
+        void prune_caches(float prune_factor = 0.5f) override {}
+        
+        std::vector<float> get_backbone_logits(
+            const std::vector<int>& tokens,
+            const std::vector<int>& positions) override {
+            return {};
+        }
+        
+        std::vector<float> get_decoder_logits(
+            const std::vector<int>& tokens,
+            const std::vector<int>& positions,
+            int codebook) override {
+            return {};
+        }
+    };
+}
 #endif
+
 #include <unordered_map>
 #include <stdexcept>
 
@@ -29,12 +81,9 @@ std::shared_ptr<Model> ModelFactory::create(const std::string& backend, const Mo
         return std::make_shared<GGMLModel>(config);
     }
     else if (backend == "mlx") {
-        // Create MLX backend model
-        #ifdef CCSM_WITH_MLX
-        return std::make_shared<MLXModel>(config);
-        #else
-        throw std::runtime_error("MLX backend requested but not compiled in");
-        #endif
+        // Always fall back to CPU for MLX until implementation is complete
+        CCSM_WARNING("MLX backend requested but implementation is incomplete, using CPU/GGML backend");
+        return std::make_shared<GGMLModel>(config);
     }
     
     throw std::runtime_error("ModelFactory::create not implemented yet for backend: " + backend);

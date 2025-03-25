@@ -156,21 +156,20 @@ size_t MLXTensorImpl::shape(int dim) const {
         throw std::out_of_range("Dimension index out of range");
     }
     
-    std::vector<int64_t> shape(ndim);
-    mlx_array_shape(array_, shape.data());
-    return static_cast<size_t>(shape[dim]);
+    const int* shape_ptr = mlx_array_shape(array_);
+    return static_cast<size_t>(shape_ptr[dim]);
 }
 
 std::vector<size_t> MLXTensorImpl::shape() const {
     uint32_t ndim;
     mlx_array_ndim(array_, &ndim);
     
-    std::vector<int64_t> mlx_shape(ndim);
-    mlx_array_shape(array_, mlx_shape.data());
+    // Get the shape of the array
+    const int* shape_ptr = mlx_array_shape(array_);
     
     std::vector<size_t> result(ndim);
     for (uint32_t i = 0; i < ndim; ++i) {
-        result[i] = static_cast<size_t>(mlx_shape[i]);
+        result[i] = static_cast<size_t>(shape_ptr[i]);
     }
     
     return result;
@@ -299,7 +298,7 @@ std::shared_ptr<TensorImpl> MLXTensorImpl::slice(int dim, size_t start, size_t e
 // MLXContext implementation
 MLXContext::MLXContext() {
     CCSM_DEBUG("Creating MLXContext");
-    mlx_stream_init(&stream_);
+    stream_ = mlx_default_cpu_stream_new();
 }
 
 MLXContext::~MLXContext() {
@@ -347,8 +346,10 @@ mlx_array MLXContext::get_mlx_array(const Tensor& tensor) {
     }
     
     // Create from raw data
-    mlx_array_from_data(tensor.data(), mlx_shape.data(), mlx_shape.size(), 
-                       mlx_type, &result);
+    result = mlx_array_new_data(tensor.data(), 
+                               reinterpret_cast<const int*>(mlx_shape.data()), 
+                               static_cast<int>(mlx_shape.size()), 
+                               mlx_type);
     
     return result;
 }
