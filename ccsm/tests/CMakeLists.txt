@@ -221,6 +221,7 @@ target_include_directories(test_watermarking PRIVATE ${CMAKE_SOURCE_DIR}/include
 if(WITH_MLX)
     file(GLOB MLX_TEST_SOURCES
         "${CMAKE_CURRENT_SOURCE_DIR}/unit/mlx_*.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/unit/mlx/*.cpp"
     )
     # Only create MLX tests if there are MLX test sources
     if(MLX_TEST_SOURCES)
@@ -298,6 +299,30 @@ add_executable(test_memory_optimization_edge_cases
 target_link_libraries(test_memory_optimization_edge_cases PRIVATE ccsm_core GTest::gtest)
 target_include_directories(test_memory_optimization_edge_cases PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# Add a separate target for MLX tensor operations tests
+add_executable(test_mlx_tensor_ops
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/mlx/test_mlx_tensor_ops.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+if(WITH_MLX)
+    target_link_libraries(test_mlx_tensor_ops PRIVATE ccsm_core ccsm_mlx GTest::gtest)
+else()
+    target_link_libraries(test_mlx_tensor_ops PRIVATE ccsm_core GTest::gtest)
+endif()
+target_include_directories(test_mlx_tensor_ops PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+# Add a separate target for MLX memory management tests
+add_executable(test_mlx_memory_management
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit/mlx/test_mlx_memory_management.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main_test.cpp
+)
+if(WITH_MLX)
+    target_link_libraries(test_mlx_memory_management PRIVATE ccsm_core ccsm_mlx GTest::gtest)
+else()
+    target_link_libraries(test_mlx_memory_management PRIVATE ccsm_core GTest::gtest)
+endif()
+target_include_directories(test_mlx_memory_management PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # Add the tests to CTest - specify full paths for test binaries
 add_test(NAME UnitTests COMMAND ${CMAKE_CURRENT_BINARY_DIR}/ccsm_unit_tests)
 add_test(NAME TokenizerTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_tokenizer)
@@ -319,6 +344,8 @@ add_test(NAME GeneratorStressTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_gener
 add_test(NAME WatermarkingTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_watermarking)
 add_test(NAME MLXWeightConverterTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_weight_converter)
 add_test(NAME MLXTensorTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_tensor)
+add_test(NAME MLXTensorOpsTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_tensor_ops)
+add_test(NAME MLXMemoryManagementTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_memory_management)
 add_test(NAME MLXTransformerTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_transformer)
 add_test(NAME MLXModelTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_model)
 add_test(NAME MLXOptimizationsTest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/test_mlx_optimizations)
@@ -540,9 +567,27 @@ if(WITH_COVERAGE)
         GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
     )
     
+    # Setup the MLX tensor operations test coverage target
+    setup_target_for_coverage(
+        NAME coverage_mlx_tensor_ops
+        EXECUTABLE test_mlx_tensor_ops
+        DEPENDENCIES test_mlx_tensor_ops
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
+    # Setup the MLX memory management test coverage target
+    setup_target_for_coverage(
+        NAME coverage_mlx_memory_management
+        EXECUTABLE test_mlx_memory_management
+        DEPENDENCIES test_mlx_memory_management
+        LCOV_ARGS --no-external
+        GENHTML_ARGS --prefix ${CMAKE_SOURCE_DIR}
+    )
+    
     # Combined coverage target
     add_custom_target(coverage
-        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_thread_pool_stress coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_generator_stress coverage_watermarking coverage_mlx_weight_converter coverage_mlx_tensor coverage_mlx_transformer coverage_mlx_model coverage_mlx_optimizations coverage_memory_optimization_edge_cases
+        DEPENDS coverage_unit coverage_tokenizer coverage_simd coverage_thread_pool coverage_thread_pool_advanced coverage_thread_pool_stress coverage_ggml_kv_cache_quantization coverage_generator coverage_ggml_model_quantization coverage_kv_cache_memory coverage_model_memory_optimization coverage_model_quantization_memory coverage_quantized_matrix_mul coverage_kv_cache_pruning coverage_generator_memory_optimization coverage_generator_stress coverage_watermarking coverage_mlx_weight_converter coverage_mlx_tensor coverage_mlx_tensor_ops coverage_mlx_memory_management coverage_mlx_transformer coverage_mlx_model coverage_mlx_optimizations coverage_memory_optimization_edge_cases
         COMMENT "Generating combined code coverage report"
     )
     
