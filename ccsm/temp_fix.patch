@@ -1,0 +1,1177 @@
+diff --git a/src/cpu/simd.cpp b/src/cpu/simd.cpp
+index abcdef123..012345678 100644
+--- a/src/cpu/simd.cpp
++++ b/src/cpu/simd.cpp
+@@ -6037,6 +6037,493 @@ void fused_matmul_relu_avx_f32(float* output, const float* a, const float* b, si
+ }
+ #endif
+ 
++#if defined(CCSM_HAVE_NEON)
++// NEON implementation of matrix multiplication with 8-bit quantized weights
++void matrix_mul_q8_0_neon_f32(float* result, const float* a, const int8_t* b, const float* b_scale, 
++                          size_t m, size_t k, size_t n) {
++    // Get scale value for dequantization
++    const float inv_scale = *b_scale;
++    const float32x4_t v_scale = vdupq_n_f32(inv_scale);
++    
++    // Initialize result matrix to zero
++    for (size_t i = 0; i < m * n; i++) {
++        result[i] = 0.0f;
++    }
++    
++    // Process rows of matrix A
++    for (size_t i = 0; i < m; i++) {
++        // Process columns of matrix B
++        for (size_t j = 0; j < n; j++) {
++            // Accumulator for dot product
++            float32x4_t v_sum = vdupq_n_f32(0.0f);
++            float sum = 0.0f;
++            
++            // Process k in chunks of 16 for better cache utilization
++            size_t l = 0;
++            for (; l + 16 <= k; l += 16) {
++                // Load 16 elements from row i of matrix A
++                float32x4_t a_0 = vld1q_f32(a + i * k + l);
++                float32x4_t a_1 = vld1q_f32(a + i * k + l + 4);
++                float32x4_t a_2 = vld1q_f32(a + i * k + l + 8);
++                float32x4_t a_3 = vld1q_f32(a + i * k + l + 12);
++                
++                // For matrix B, we need to extract individual elements from the column
++                int8_t b_vals[16];
++                for (size_t ll = 0; ll < 16; ll++) {
++                    b_vals[ll] = b[(l + ll) * n + j];
++                }
++                
++                // Load 16 extracted elements from column j of matrix B
++                int8x16_t b_s8 = vld1q_s8(b_vals);
++                
++                // Convert first 8 elements from int8 to int16
++                int16x8_t b_s16_0 = vmovl_s8(vget_low_s8(b_s8));
++                // Convert first 4 elements from int16 to int32
++                int32x4_t b_s32_0 = vmovl_s16(vget_low_s16(b_s16_0));
++                // Convert last 4 elements from int16 to int32
++                int32x4_t b_s32_1 = vmovl_s16(vget_high_s16(b_s16_0));
++                
++                // Convert last 8 elements from int8 to int16
++                int16x8_t b_s16_1 = vmovl_s8(vget_high_s8(b_s8));
++                // Convert first 4 elements from int16 to int32
++                int32x4_t b_s32_2 = vmovl_s16(vget_low_s16(b_s16_1));
++                // Convert last 4 elements from int16 to int32
++                int32x4_t b_s32_3 = vmovl_s16(vget_high_s16(b_s16_1));
++                
++                // Convert from int32 to float32
++                float32x4_t b_0 = vcvtq_f32_s32(b_s32_0);
++                float32x4_t b_1 = vcvtq_f32_s32(b_s32_1);
++                float32x4_t b_2 = vcvtq_f32_s32(b_s32_2);
++                float32x4_t b_3 = vcvtq_f32_s32(b_s32_3);
++                
++                // Apply scale to convert to original values
++                b_0 = vmulq_f32(b_0, v_scale);
++                b_1 = vmulq_f32(b_1, v_scale);
++                b_2 = vmulq_f32(b_2, v_scale);
++                b_3 = vmulq_f32(b_3, v_scale);
++                
++                // Multiply-accumulate
++                v_sum = vmlaq_f32(v_sum, a_0, b_0);
++                v_sum = vmlaq_f32(v_sum, a_1, b_1);
++                v_sum = vmlaq_f32(v_sum, a_2, b_2);
++                v_sum = vmlaq_f32(v_sum, a_3, b_3);
++            }
++            
++            // Process remaining elements in chunks of 4
++            for (; l + 4 <= k; l += 4) {
++                // Load 4 elements from row i of matrix A
++                float32x4_t a_0 = vld1q_f32(a + i * k + l);
++                
++                // For matrix B, we need to extract individual elements from the column
++                int8_t b_vals[4];
++                for (size_t ll = 0; ll < 4; ll++) {
++                    b_vals[ll] = b[(l + ll) * n + j];
++                }
++                
++                // Load 4 extracted elements from column j of matrix B
++                int8x8_t b_s8 = vld1_s8(b_vals);
++                // Convert from int8 to int16
++                int16x8_t b_s16 = vmovl_s8(b_s8);
++                // Convert from int16 to int32
++                int32x4_t b_s32 = vmovl_s16(vget_low_s16(b_s16));
++                // Convert from int32 to float32
++                float32x4_t b_0 = vcvtq_f32_s32(b_s32);
++                
++                // Apply scale
++                b_0 = vmulq_f32(b_0, v_scale);
++                
++                // Multiply-accumulate
++                v_sum = vmlaq_f32(v_sum, a_0, b_0);
++            }
++            
++            // Horizontal sum
++            float32x2_t v_sum_2 = vadd_f32(vget_low_f32(v_sum), vget_high_f32(v_sum));
++            v_sum_2 = vpadd_f32(v_sum_2, v_sum_2);
++            sum += vget_lane_f32(v_sum_2, 0);
++            
++            // Handle remaining elements
++            for (; l < k; l++) {
++                sum += a[i * k + l] * (b[l * n + j] * inv_scale);
++            }
++            
++            // Store result
++            result[i * n + j] = sum;
++        }
++    }
++}
++
++// NEON implementation of matrix multiplication with 4-bit quantized weights (Q4_0)
++void matrix_mul_q4_0_neon_f32(float* result, const float* a, const uint8_t* b, const float* b_scale, 
++                          size_t m, size_t k, size_t n) {
++    // Get scale value for dequantization
++    const float inv_scale = *b_scale;
++    const float32x4_t v_scale = vdupq_n_f32(inv_scale);
++    
++    // Initialize result matrix to zero
++    for (size_t i = 0; i < m * n; i++) {
++        result[i] = 0.0f;
++    }
++    
++    // Process each row of matrix A
++    for (size_t i = 0; i < m; i++) {
++        // Process each column of matrix B
++        for (size_t j = 0; j < n; j++) {
++            float sum = 0.0f;
++            float32x4_t v_sum = vdupq_n_f32(0.0f);
++            
++            // Process k in chunks of 8 for better cache utilization
++            size_t l = 0;
++            for (; l + 8 <= k; l += 8) {
++                // Load 8 elements from row i of matrix A
++                float32x4_t a_0 = vld1q_f32(a + i * k + l);
++                float32x4_t a_1 = vld1q_f32(a + i * k + l + 4);
++                
++                // Load 8 elements from column j of matrix B
++                // For Q4_0, 2 elements are packed into a single byte
++                // Since we're working with a column of B, the indices might not be consecutive
++                // We need to manually extract and dequantize each value
++                
++                float32x4_t b_0 = vdupq_n_f32(0.0f);
++                float32x4_t b_1 = vdupq_n_f32(0.0f);
++                
++                // Extract and dequantize 8 values from B
++                for (int idx = 0; idx < 4; idx++) {
++                    // Calculate index for accessing B
++                    size_t b_idx = (l + idx) * n + j;
++                    size_t byte_idx = b_idx / 2;
++                    bool is_upper = (b_idx % 2) != 0;
++                    
++                    // Extract 4-bit value
++                    int8_t q4_val;
++                    if (is_upper) {
++                        q4_val = static_cast<int8_t>((b[byte_idx] >> 4) & 0xF);
++                    } else {
++                        q4_val = static_cast<int8_t>(b[byte_idx] & 0xF);
++                    }
++                    
++                    // Sign extend if the high bit is set
++                    if (q4_val & 0x8) {
++                        q4_val |= 0xF0;
++                    }
++                    
++                    // Dequantize
++                    float b_val = static_cast<float>(q4_val) * inv_scale;
++                    b_0 = vsetq_lane_f32(b_val, b_0, idx);
++                }
++                
++                for (int idx = 0; idx < 4; idx++) {
++                    // Calculate index for accessing B
++                    size_t b_idx = (l + 4 + idx) * n + j;
++                    size_t byte_idx = b_idx / 2;
++                    bool is_upper = (b_idx % 2) != 0;
++                    
++                    // Extract 4-bit value
++                    int8_t q4_val;
++                    if (is_upper) {
++                        q4_val = static_cast<int8_t>((b[byte_idx] >> 4) & 0xF);
++                    } else {
++                        q4_val = static_cast<int8_t>(b[byte_idx] & 0xF);
++                    }
++                    
++                    // Sign extend if the high bit is set
++                    if (q4_val & 0x8) {
++                        q4_val |= 0xF0;
++                    }
++                    
++                    // Dequantize
++                    float b_val = static_cast<float>(q4_val) * inv_scale;
++                    b_1 = vsetq_lane_f32(b_val, b_1, idx);
++                }
++                
++                // Multiply-accumulate
++                v_sum = vmlaq_f32(v_sum, a_0, b_0);
++                v_sum = vmlaq_f32(v_sum, a_1, b_1);
++            }
++            
++            // Horizontal sum
++            float32x2_t v_sum_2 = vadd_f32(vget_low_f32(v_sum), vget_high_f32(v_sum));
++            v_sum_2 = vpadd_f32(v_sum_2, v_sum_2);
++            sum += vget_lane_f32(v_sum_2, 0);
++            
++            // Handle remaining elements
++            for (; l < k; l++) {
++                // Calculate index for accessing B
++                size_t b_idx = l * n + j;
++                size_t byte_idx = b_idx / 2;
++                bool is_upper = (b_idx % 2) != 0;
++                
++                // Extract 4-bit value
++                int8_t q4_val;
++                if (is_upper) {
++                    q4_val = static_cast<int8_t>((b[byte_idx] >> 4) & 0xF);
++                } else {
++                    q4_val = static_cast<int8_t>(b[byte_idx] & 0xF);
++                }
++                
++                // Sign extend if the high bit is set
++                if (q4_val & 0x8) {
++                    q4_val |= 0xF0;
++                }
++                
++                // Dequantize
++                float b_val = static_cast<float>(q4_val) * inv_scale;
++                sum += a[i * k + l] * b_val;
++            }
++            
++            // Store result
++            result[i * n + j] = sum;
++        }
++    }
++}
++
++// NEON implementation of matrix multiplication with 4-bit quantized weights (Q4_1)
++void matrix_mul_q4_1_neon_f32(float* result, const float* a, const uint8_t* b, const float* b_scale, 
++                          const float* b_bias, size_t m, size_t k, size_t n) {
++    // Get scale and bias values for dequantization
++    const float inv_scale = *b_scale;
++    const float bias = *b_bias;
++    const float32x4_t v_scale = vdupq_n_f32(inv_scale);
++    const float32x4_t v_bias = vdupq_n_f32(bias);
++    
++    // Initialize result matrix to zero
++    for (size_t i = 0; i < m * n; i++) {
++        result[i] = 0.0f;
++    }
++    
++    // Process each row of matrix A
++    for (size_t i = 0; i < m; i++) {
++        // Process each column of matrix B
++        for (size_t j = 0; j < n; j++) {
++            float sum = 0.0f;
++            float32x4_t v_sum = vdupq_n_f32(0.0f);
++            
++            // Process k in chunks of 8 for better cache utilization
++            size_t l = 0;
++            for (; l + 8 <= k; l += 8) {
++                // Load 8 elements from row i of matrix A
++                float32x4_t a_0 = vld1q_f32(a + i * k + l);
++                float32x4_t a_1 = vld1q_f32(a + i * k + l + 4);
++                
++                // Load 8 elements from column j of matrix B
++                // For Q4_1, 2 elements are packed into a single byte
++                // Since we're working with a column of B, the indices might not be consecutive
++                // We need to manually extract and dequantize each value
++                
++                float32x4_t b_0 = vdupq_n_f32(0.0f);
++                float32x4_t b_1 = vdupq_n_f32(0.0f);
++                
++                // Extract and dequantize 8 values from B
++                for (int idx = 0; idx < 4; idx++) {
++                    // Calculate index for accessing B
++                    size_t b_idx = (l + idx) * n + j;
++                    size_t byte_idx = b_idx / 2;
++                    bool is_upper = (b_idx % 2) != 0;
++                    
++                    // Extract 4-bit value (unsigned for Q4_1)
++                    uint8_t q4_val;
++                    if (is_upper) {
++                        q4_val = (b[byte_idx] >> 4) & 0xF;
++                    } else {
++                        q4_val = b[byte_idx] & 0xF;
++                    }
++                    
++                    // Dequantize with scale and bias
++                    float b_val = static_cast<float>(q4_val) * inv_scale + bias;
++                    b_0 = vsetq_lane_f32(b_val, b_0, idx);
++                }
++                
++                for (int idx = 0; idx < 4; idx++) {
++                    // Calculate index for accessing B
++                    size_t b_idx = (l + 4 + idx) * n + j;
++                    size_t byte_idx = b_idx / 2;
++                    bool is_upper = (b_idx % 2) != 0;
++                    
++                    // Extract 4-bit value (unsigned for Q4_1)
++                    uint8_t q4_val;
++                    if (is_upper) {
++                        q4_val = (b[byte_idx] >> 4) & 0xF;
++                    } else {
++                        q4_val = b[byte_idx] & 0xF;
++                    }
++                    
++                    // Dequantize with scale and bias
++                    float b_val = static_cast<float>(q4_val) * inv_scale + bias;
++                    b_1 = vsetq_lane_f32(b_val, b_1, idx);
++                }
++                
++                // Multiply-accumulate
++                v_sum = vmlaq_f32(v_sum, a_0, b_0);
++                v_sum = vmlaq_f32(v_sum, a_1, b_1);
++            }
++            
++            // Horizontal sum
++            float32x2_t v_sum_2 = vadd_f32(vget_low_f32(v_sum), vget_high_f32(v_sum));
++            v_sum_2 = vpadd_f32(v_sum_2, v_sum_2);
++            sum += vget_lane_f32(v_sum_2, 0);
++            
++            // Handle remaining elements
++            for (; l < k; l++) {
++                // Calculate index for accessing B
++                size_t b_idx = l * n + j;
++                size_t byte_idx = b_idx / 2;
++                bool is_upper = (b_idx % 2) != 0;
++                
++                // Extract 4-bit value (unsigned for Q4_1)
++                uint8_t q4_val;
++                if (is_upper) {
++                    q4_val = (b[byte_idx] >> 4) & 0xF;
++                } else {
++                    q4_val = b[byte_idx] & 0xF;
++                }
++                
++                // Dequantize with scale and bias
++                float b_val = static_cast<float>(q4_val) * inv_scale + bias;
++                sum += a[i * k + l] * b_val;
++            }
++            
++            // Store result
++            result[i * n + j] = sum;
++        }
++    }
++}
++
++// NEON implementation of vector_add operation
++void vector_add_neon_f32(float* result, const float* a, const float* b, size_t n) {
++    size_t i = 0;
++    // Process 4 elements at a time
++    for (; i + 4 <= n; i += 4) {
++        float32x4_t va = vld1q_f32(a + i);
++        float32x4_t vb = vld1q_f32(b + i);
++        float32x4_t vr = vaddq_f32(va, vb);
++        vst1q_f32(result + i, vr);
++    }
++    // Handle remaining elements
++    for (; i < n; i++) {
++        result[i] = a[i] + b[i];
++    }
++}
++
++// NEON implementation of vector_mul operation
++void vector_mul_neon_f32(float* result, const float* a, const float* b, size_t n) {
++    size_t i = 0;
++    // Process 4 elements at a time
++    for (; i + 4 <= n; i += 4) {
++        float32x4_t va = vld1q_f32(a + i);
++        float32x4_t vb = vld1q_f32(b + i);
++        float32x4_t vr = vmulq_f32(va, vb);
++        vst1q_f32(result + i, vr);
++    }
++    // Handle remaining elements
++    for (; i < n; i++) {
++        result[i] = a[i] * b[i];
++    }
++}
++
++// NEON implementation of vector_fma operation (fused multiply-add)
++void vector_fma_neon_f32(float* result, const float* a, const float* b, const float* c, size_t n) {
++    size_t i = 0;
++    // Process 4 elements at a time
++    for (; i + 4 <= n; i += 4) {
++        float32x4_t va = vld1q_f32(a + i);
++        float32x4_t vb = vld1q_f32(b + i);
++        float32x4_t vc = vld1q_f32(c + i);
++        float32x4_t vr = vmlaq_f32(vc, va, vb); // a * b + c
++        vst1q_f32(result + i, vr);
++    }
++    // Handle remaining elements
++    for (; i < n; i++) {
++        result[i] = a[i] * b[i] + c[i];
++    }
++}
++
++// NEON implementation of vector_dot operation (dot product)
++float vector_dot_neon_f32(const float* a, const float* b, size_t n) {
++    float32x4_t vsum = vdupq_n_f32(0.0f);
++    size_t i = 0;
++    
++    // Process 4 elements at a time
++    for (; i + 4 <= n; i += 4) {
++        float32x4_t va = vld1q_f32(a + i);
++        float32x4_t vb = vld1q_f32(b + i);
++        vsum = vmlaq_f32(vsum, va, vb);
++    }
++    
++    // Horizontal sum
++    float32x2_t vsum2 = vadd_f32(vget_low_f32(vsum), vget_high_f32(vsum));
++    vsum2 = vpadd_f32(vsum2, vsum2);
++    float result = vget_lane_f32(vsum2, 0);
++    
++    // Handle remaining elements
++    for (; i < n; i++) {
++        result += a[i] * b[i];
++    }
++    
++    return result;
++}
++
++// NEON implementation of fused matrix multiplication with ReLU
++void fused_matmul_relu_neon_f32(float* output, const float* a, const float* b, size_t m, size_t k, size_t n) {
++    // ZeroPoint for ReLU activation
++    const float32x4_t vzero = vdupq_n_f32(0.0f);
++    
++    // Process each row of the output matrix
++    for (size_t i = 0; i < m; i++) {
++        // Process columns of the output matrix
++        for (size_t j = 0; j < n; j += 4) {
++            size_t remaining = std::min(size_t(4), n - j);
++            
++            // Handle edge case: less than 4 columns remain
++            if (remaining < 4) {
++                // Fallback to scalar implementation for the last few columns
++                for (size_t jj = j; jj < j + remaining; jj++) {
++                    float sum = 0.0f;
++                    for (size_t l = 0; l < k; l++) {
++                        sum += a[i * k + l] * b[l * n + jj];
++                    }
++                    // Apply ReLU activation
++                    output[i * n + jj] = sum > 0.0f ? sum : 0.0f;
++                }
++                continue;
++            }
++            
++            // Initialize accumulator for this output block
++            float32x4_t vsum = vdupq_n_f32(0.0f);
++            
++            // Compute matrix multiplication for this block
++            for (size_t l = 0; l < k; l++) {
++                // Load one element from row i of A and broadcast
++                float32x4_t va = vdupq_n_f32(a[i * k + l]);
++                
++                // Load 4 elements from row l of B
++                float32x4_t vb = vld1q_f32(b + l * n + j);
++                
++                // Multiply and accumulate
++                vsum = vmlaq_f32(vsum, va, vb);
++            }
++            
++            // Apply ReLU activation: max(0, x)
++            vsum = vmaxq_f32(vsum, vzero);
++            
++            // Store result
++            vst1q_f32(output + i * n + j, vsum);
++        }
++    }
++}
++
++// NEON implementation of fused matrix multiplication with SiLU
++void fused_matmul_silu_neon_f32(float* output, const float* a, const float* b, size_t m, size_t k, size_t n) {
++    // Some constants for sigmoid approximation
++    const float32x4_t vone = vdupq_n_f32(1.0f);
++    const float32x4_t vhalf = vdupq_n_f32(0.5f);
++    
++    // Process each row of the output matrix
++    for (size_t i = 0; i < m; i++) {
++        // Process columns of the output matrix
++        for (size_t j = 0; j < n; j += 4) {
++            size_t remaining = std::min(size_t(4), n - j);
++            
++            // Handle edge case: less than 4 columns remain
++            if (remaining < 4) {
++                // Fallback to scalar implementation for the last few columns
++                for (size_t jj = j; jj < j + remaining; jj++) {
++                    float sum = 0.0f;
++                    for (size_t l = 0; l < k; l++) {
++                        sum += a[i * k + l] * b[l * n + jj];
++                    }
++                    // Apply SiLU activation: x * sigmoid(x)
++                    float sigmoid_val = 1.0f / (1.0f + std::exp(-sum));
++                    output[i * n + jj] = sum * sigmoid_val;
++                }
++                continue;
++            }
++            
++            // Initialize accumulator for this output block
++            float32x4_t vsum = vdupq_n_f32(0.0f);
++            
++            // Compute matrix multiplication for this block
++            for (size_t l = 0; l < k; l++) {
++                // Load one element from row i of A and broadcast
++                float32x4_t va = vdupq_n_f32(a[i * k + l]);
++                
++                // Load 4 elements from row l of B
++                float32x4_t vb = vld1q_f32(b + l * n + j);
++                
++                // Multiply and accumulate
++                vsum = vmlaq_f32(vsum, va, vb);
++            }
++            
++            // Apply SiLU activation: x * sigmoid(x)
++            // For sigmoid, we use the tanh-based approximation: 0.5 * (tanh(x/2) + 1)
++            // since NEON doesn't have a direct sigmoid function
++            float32x4_t x_half = vmulq_f32(vsum, vhalf);
++            float32x4_t x2 = vmulq_f32(x_half, x_half);
++            
++            // Rational approximation for tanh(x/2)
++            float32x4_t vconst27 = vdupq_n_f32(27.0f);
++            float32x4_t vconst9 = vdupq_n_f32(9.0f);
++            
++            float32x4_t num = vmulq_f32(x_half, vaddq_f32(vconst27, x2));
++            float32x4_t den = vaddq_f32(vconst27, vmulq_f32(vconst9, x2));
++            float32x4_t tanh_x_half = vdivq_f32(num, den);
++            
++            // Compute sigmoid: 0.5 * (tanh(x/2) + 1)
++            float32x4_t sigmoid = vmulq_f32(vhalf, vaddq_f32(tanh_x_half, vone));
++            
++            // Apply SiLU: x * sigmoid(x)
++            float32x4_t silu = vmulq_f32(vsum, sigmoid);
++            
++            // Store result
++            vst1q_f32(output + i * n + j, silu);
++        }
++    }
++}
++
++// NEON implementation of fused matrix multiplication with 8-bit quantized weights and ReLU
++void fused_matmul_relu_q8_0_neon_f32(float* output, const float* a, const int8_t* b, const float* b_scale, 
++                                 size_t m, size_t k, size_t n) {
++    // Get scale value for dequantization
++    const float inv_scale = *b_scale;
++    const float32x4_t v_scale = vdupq_n_f32(inv_scale);
++    const float32x4_t vzero = vdupq_n_f32(0.0f);
++    
++    // Process each row of matrix A
++    for (size_t i = 0; i < m; i++) {
++        // Process each column of matrix B
++        for (size_t j = 0; j < n; j++) {
++            // Accumulator for dot product
++            float32x4_t v_sum = vdupq_n_f32(0.0f);
++            float sum = 0.0f;
++            
++            // Process k in chunks of 16 for better cache utilization
++            size_t l = 0;
++            for (; l + 16 <= k; l += 16) {
++                // Load 16 elements from row i of matrix A
++                float32x4_t a_0 = vld1q_f32(a + i * k + l);
++                float32x4_t a_1 = vld1q_f32(a + i * k + l + 4);
++                float32x4_t a_2 = vld1q_f32(a + i * k + l + 8);
++                float32x4_t a_3 = vld1q_f32(a + i * k + l + 12);
++                
++                // For matrix B, we need to extract individual elements from the column
++                int8_t b_vals[16];
++                for (size_t ll = 0; ll < 16; ll++) {
++                    b_vals[ll] = b[(l + ll) * n + j];
++                }
++                
++                // Load 16 extracted elements from column j of matrix B
++                int8x16_t b_s8 = vld1q_s8(b_vals);
++                
++                // Convert first 8 elements from int8 to int16
++                int16x8_t b_s16_0 = vmovl_s8(vget_low_s8(b_s8));
++                // Convert first 4 elements from int16 to int32
++                int32x4_t b_s32_0 = vmovl_s16(vget_low_s16(b_s16_0));
++                // Convert last 4 elements from int16 to int32
++                int32x4_t b_s32_1 = vmovl_s16(vget_high_s16(b_s16_0));
++                
++                // Convert last 8 elements from int8 to int16
++                int16x8_t b_s16_1 = vmovl_s8(vget_high_s8(b_s8));
++                // Convert first 4 elements from int16 to int32
++                int32x4_t b_s32_2 = vmovl_s16(vget_low_s16(b_s16_1));
++                // Convert last 4 elements from int16 to int32
++                int32x4_t b_s32_3 = vmovl_s16(vget_high_s16(b_s16_1));
++                
++                // Convert from int32 to float32
++                float32x4_t b_0 = vcvtq_f32_s32(b_s32_0);
++                float32x4_t b_1 = vcvtq_f32_s32(b_s32_1);
++                float32x4_t b_2 = vcvtq_f32_s32(b_s32_2);
++                float32x4_t b_3 = vcvtq_f32_s32(b_s32_3);
++                
++                // Apply scale to convert to original values
++                b_0 = vmulq_f32(b_0, v_scale);
++                b_1 = vmulq_f32(b_1, v_scale);
++                b_2 = vmulq_f32(b_2, v_scale);
++                b_3 = vmulq_f32(b_3, v_scale);
++                
++                // Multiply-accumulate
++                v_sum = vmlaq_f32(v_sum, a_0, b_0);
++                v_sum = vmlaq_f32(v_sum, a_1, b_1);
++                v_sum = vmlaq_f32(v_sum, a_2, b_2);
++                v_sum = vmlaq_f32(v_sum, a_3, b_3);
++            }
++            
++            // Process remaining elements in chunks of 4
++            for (; l + 4 <= k; l += 4) {
++                // Load 4 elements from row i of matrix A
++                float32x4_t a_0 = vld1q_f32(a + i * k + l);
++                
++                // For matrix B, we need to extract individual elements from the column
++                int8_t b_vals[4];
++                for (size_t ll = 0; ll < 4; ll++) {
++                    b_vals[ll] = b[(l + ll) * n + j];
++                }
++                
++                // Load 4 extracted elements from column j of matrix B
++                int8x8_t b_s8 = vld1_s8(b_vals);
++                // Convert from int8 to int16
++                int16x8_t b_s16 = vmovl_s8(b_s8);
++                // Convert from int16 to int32
++                int32x4_t b_s32 = vmovl_s16(vget_low_s16(b_s16));
++                // Convert from int32 to float32
++                float32x4_t b_0 = vcvtq_f32_s32(b_s32);
++                
++                // Apply scale
++                b_0 = vmulq_f32(b_0, v_scale);
++                
++                // Multiply-accumulate
++                v_sum = vmlaq_f32(v_sum, a_0, b_0);
++            }
++            
++            // Horizontal sum
++            float32x2_t v_sum_2 = vadd_f32(vget_low_f32(v_sum), vget_high_f32(v_sum));
++            v_sum_2 = vpadd_f32(v_sum_2, v_sum_2);
++            sum += vget_lane_f32(v_sum_2, 0);
++            
++            // Handle remaining elements
++            for (; l < k; l++) {
++                sum += a[i * k + l] * (b[l * n + j] * inv_scale);
++            }
++            
++            // Apply ReLU activation
++            output[i * n + j] = sum > 0.0f ? sum : 0.0f;
++        }
++    }
++}
++
++// NEON implementation of fused matrix multiplication with 8-bit quantized weights and SiLU
++void fused_matmul_silu_q8_0_neon_f32(float* output, const float* a, const int8_t* b, const float* b_scale, 
++                                  size_t m, size_t k, size_t n) {
++    // Get scale value for dequantization
++    const float inv_scale = *b_scale;
++    const float32x4_t v_scale = vdupq_n_f32(inv_scale);
++    
++    // Process each row of matrix A
++    for (size_t i = 0; i < m; i++) {
++        // Process each column of matrix B
++        for (size_t j = 0; j < n; j++) {
++            // Accumulator for dot product
++            float32x4_t v_sum = vdupq_n_f32(0.0f);
++            float sum = 0.0f;
++            
++            // Process k in chunks of 16 for better cache utilization
++            size_t l = 0;
++            for (; l + 16 <= k; l += 16) {
++                // Load 16 elements from row i of matrix A
++                float32x4_t a_0 = vld1q_f32(a + i * k + l);
++                float32x4_t a_1 = vld1q_f32(a + i * k + l + 4);
++                float32x4_t a_2 = vld1q_f32(a + i * k + l + 8);
++                float32x4_t a_3 = vld1q_f32(a + i * k + l + 12);
++                
++                // For matrix B, we need to extract individual elements from the column
++                int8_t b_vals[16];
++                for (size_t ll = 0; ll < 16; ll++) {
++                    b_vals[ll] = b[(l + ll) * n + j];
++                }
++                
++                // Load 16 extracted elements from column j of matrix B
++                int8x16_t b_s8 = vld1q_s8(b_vals);
++                
++                // Convert first 8 elements from int8 to int16
++                int16x8_t b_s16_0 = vmovl_s8(vget_low_s8(b_s8));
++                // Convert first 4 elements from int16 to int32
++                int32x4_t b_s32_0 = vmovl_s16(vget_low_s16(b_s16_0));
++                // Convert last 4 elements from int16 to int32
++                int32x4_t b_s32_1 = vmovl_s16(vget_high_s16(b_s16_0));
++                
++                // Convert last 8 elements from int8 to int16
++                int16x8_t b_s16_1 = vmovl_s8(vget_high_s8(b_s8));
++                // Convert first 4 elements from int16 to int32
++                int32x4_t b_s32_2 = vmovl_s16(vget_low_s16(b_s16_1));
++                // Convert last 4 elements from int16 to int32
++                int32x4_t b_s32_3 = vmovl_s16(vget_high_s16(b_s16_1));
++                
++                // Convert from int32 to float32
++                float32x4_t b_0 = vcvtq_f32_s32(b_s32_0);
++                float32x4_t b_1 = vcvtq_f32_s32(b_s32_1);
++                float32x4_t b_2 = vcvtq_f32_s32(b_s32_2);
++                float32x4_t b_3 = vcvtq_f32_s32(b_s32_3);
++                
++                // Apply scale to convert to original values
++                b_0 = vmulq_f32(b_0, v_scale);
++                b_1 = vmulq_f32(b_1, v_scale);
++                b_2 = vmulq_f32(b_2, v_scale);
++                b_3 = vmulq_f32(b_3, v_scale);
++                
++                // Multiply-accumulate
++                v_sum = vmlaq_f32(v_sum, a_0, b_0);
++                v_sum = vmlaq_f32(v_sum, a_1, b_1);
++                v_sum = vmlaq_f32(v_sum, a_2, b_2);
++                v_sum = vmlaq_f32(v_sum, a_3, b_3);
++            }
++            
++            // Process remaining elements in chunks of 4
++            for (; l + 4 <= k; l += 4) {
++                // Load 4 elements from row i of matrix A
++                float32x4_t a_0 = vld1q_f32(a + i * k + l);
++                
++                // For matrix B, we need to extract individual elements from the column
++                int8_t b_vals[4];
++                for (size_t ll = 0; ll < 4; ll++) {
++                    b_vals[ll] = b[(l + ll) * n + j];
++                }
++                
++                // Load 4 extracted elements from column j of matrix B
++                int8x8_t b_s8 = vld1_s8(b_vals);
++                // Convert from int8 to int16
++                int16x8_t b_s16 = vmovl_s8(b_s8);
++                // Convert from int16 to int32
++                int32x4_t b_s32 = vmovl_s16(vget_low_s16(b_s16));
++                // Convert from int32 to float32
++                float32x4_t b_0 = vcvtq_f32_s32(b_s32);
++                
++                // Apply scale
++                b_0 = vmulq_f32(b_0, v_scale);
++                
++                // Multiply-accumulate
++                v_sum = vmlaq_f32(v_sum, a_0, b_0);
++            }
++            
++            // Horizontal sum
++            float32x2_t v_sum_2 = vadd_f32(vget_low_f32(v_sum), vget_high_f32(v_sum));
++            v_sum_2 = vpadd_f32(v_sum_2, v_sum_2);
++            sum += vget_lane_f32(v_sum_2, 0);
++            
++            // Handle remaining elements
++            for (; l < k; l++) {
++                sum += a[i * k + l] * (b[l * n + j] * inv_scale);
++            }
++            
++            // Apply SiLU activation: x * sigmoid(x)
++            float sigmoid_val = 1.0f / (1.0f + std::exp(-sum));
++            output[i * n + j] = sum * sigmoid_val;
++        }
++    }
++}
++
++// NEON implementation of fused matrix multiplication with 4-bit quantized weights (Q4_0) and ReLU
++void fused_matmul_relu_q4_0_neon_f32(float* output, const float* a, const uint8_t* b, const float* b_scale, 
++                                 size_t m, size_t k, size_t n) {
++    // Get scale value for dequantization
++    const float inv_scale = *b_scale;
++    const float32x4_t v_scale = vdupq_n_f32(inv_scale);
++    const float32x4_t vzero = vdupq_n_f32(0.0f);
++    
++    // Process each row of matrix A
++    for (size_t i = 0; i < m; i++) {
++        // Process each column of matrix B
++        for (size_t j = 0; j < n; j++) {
++            float sum = 0.0f;
++            float32x4_t v_sum = vdupq_n_f32(0.0f);
++            
++            // Process k in chunks of 8 for better cache utilization
++            size_t l = 0;
++            for (; l + 8 <= k; l += 8) {
++                // Load 8 elements from row i of matrix A
++                float32x4_t a_0 = vld1q_f32(a + i * k + l);
++                float32x4_t a_1 = vld1q_f32(a + i * k + l + 4);
++                
++                // Load 8 elements from column j of matrix B
++                // For Q4_0, 2 elements are packed into a single byte
++                float32x4_t b_0 = vdupq_n_f32(0.0f);
++                float32x4_t b_1 = vdupq_n_f32(0.0f);
++                
++                // Extract and dequantize first 4 values from B
++                for (int idx = 0; idx < 4; idx++) {
++                    size_t b_idx = (l + idx) * n + j;
++                    size_t byte_idx = b_idx / 2;
++                    bool is_upper = (b_idx % 2) != 0;
++                    
++                    int8_t q4_val;
++                    if (is_upper) {
++                        q4_val = static_cast<int8_t>((b[byte_idx] >> 4) & 0xF);
++                    } else {
++                        q4_val = static_cast<int8_t>(b[byte_idx] & 0xF);
++                    }
++                    
++                    if (q4_val & 0x8) {
++                        q4_val |= 0xF0;
++                    }
++                    
++                    float b_val = static_cast<float>(q4_val) * inv_scale;
++                    b_0 = vsetq_lane_f32(b_val, b_0, idx);
++                }
++                
++                // Extract and dequantize last 4 values from B
++                for (int idx = 0; idx < 4; idx++) {
++                    size_t b_idx = (l + 4 + idx) * n + j;
++                    size_t byte_idx = b_idx / 2;
++                    bool is_upper = (b_idx % 2) != 0;
++                    
++                    int8_t q4_val;
++                    if (is_upper) {
++                        q4_val = static_cast<int8_t>((b[byte_idx] >> 4) & 0xF);
++                    } else {
++                        q4_val = static_cast<int8_t>(b[byte_idx] & 0xF);
++                    }
++                    
++                    if (q4_val & 0x8) {
++                        q4_val |= 0xF0;
++                    }
++                    
++                    float b_val = static_cast<float>(q4_val) * inv_scale;
++                    b_1 = vsetq_lane_f32(b_val, b_1, idx);
++                }
++                
++                // Multiply-accumulate
++                v_sum = vmlaq_f32(v_sum, a_0, b_0);
++                v_sum = vmlaq_f32(v_sum, a_1, b_1);
++            }
++            
++            // Horizontal sum
++            float32x2_t v_sum_2 = vadd_f32(vget_low_f32(v_sum), vget_high_f32(v_sum));
++            v_sum_2 = vpadd_f32(v_sum_2, v_sum_2);
++            sum += vget_lane_f32(v_sum_2, 0);
++            
++            // Handle remaining elements
++            for (; l < k; l++) {
++                size_t b_idx = l * n + j;
++                size_t byte_idx = b_idx / 2;
++                bool is_upper = (b_idx % 2) != 0;
++                
++                int8_t q4_val;
++                if (is_upper) {
++                    q4_val = static_cast<int8_t>((b[byte_idx] >> 4) & 0xF);
++                } else {
++                    q4_val = static_cast<int8_t>(b[byte_idx] & 0xF);
++                }
++                
++                if (q4_val & 0x8) {
++                    q4_val |= 0xF0;
++                }
++                
++                float b_val = static_cast<float>(q4_val) * inv_scale;
++                sum += a[i * k + l] * b_val;
++            }
++            
++            // Apply ReLU activation
++            output[i * n + j] = sum > 0.0f ? sum : 0.0f;
++        }
++    }
++}
++
++// NEON implementation of fused matrix multiplication with 4-bit quantized weights (Q4_0) and SiLU
++void fused_matmul_silu_q4_0_neon_f32(float* output, const float* a, const uint8_t* b, const float* b_scale, 
++                                  size_t m, size_t k, size_t n) {
++    // Get scale value for dequantization
++    const float inv_scale = *b_scale;
++    const float32x4_t v_scale = vdupq_n_f32(inv_scale);
++    
++    // Process each row of matrix A
++    for (size_t i = 0; i < m; i++) {
++        // Process each column of matrix B
++        for (size_t j = 0; j < n; j++) {
++            float sum = 0.0f;
++            float32x4_t v_sum = vdupq_n_f32(0.0f);
++            
++            // Process k in chunks of 8 for better cache utilization
++            size_t l = 0;
++            for (; l + 8 <= k; l += 8) {
++                // Load 8 elements from row i of matrix A
++                float32x4_t a_0 = vld1q_f32(a + i * k + l);
++                float32x4_t a_1 = vld1q_f32(a + i * k + l + 4);
++                
++                // Load 8 elements from column j of matrix B
++                // For Q4_0, 2 elements are packed into a single byte
++                float32x4_t b_0 = vdupq_n_f32(0.0f);
++                float32x4_t b_1 = vdupq_n_f32(0.0f);
++                
++                // Extract and dequantize first 4 values from B
++                for (int idx = 0; idx < 4; idx++) {
++                    size_t b_idx = (l + idx) * n + j;
++                    size_t byte_idx = b_idx / 2;
++                    bool is_upper = (b_idx % 2) != 0;
++                    
++                    int8_t q4_val;
++                    if (is_upper) {
++                        q4_val = static_cast<int8_t>((b[byte_idx] >> 4) & 0xF);
++                    } else {
++                        q4_val = static_cast<int8_t>(b[byte_idx] & 0xF);
++                    }
++                    
++                    if (q4_val & 0x8) {
++                        q4_val |= 0xF0;
++                    }
++                    
++                    float b_val = static_cast<float>(q4_val) * inv_scale;
++                    b_0 = vsetq_lane_f32(b_val, b_0, idx);
++                }
++                
++                // Extract and dequantize last 4 values from B
++                for (int idx = 0; idx < 4; idx++) {
++                    size_t b_idx = (l + 4 + idx) * n + j;
++                    size_t byte_idx = b_idx / 2;
++                    bool is_upper = (b_idx % 2) != 0;
++                    
++                    int8_t q4_val;
++                    if (is_upper) {
++                        q4_val = static_cast<int8_t>((b[byte_idx] >> 4) & 0xF);
++                    } else {
++                        q4_val = static_cast<int8_t>(b[byte_idx] & 0xF);
++                    }
++                    
++                    if (q4_val & 0x8) {
++                        q4_val |= 0xF0;
++                    }
++                    
++                    float b_val = static_cast<float>(q4_val) * inv_scale;
++                    b_1 = vsetq_lane_f32(b_val, b_1, idx);
++                }
++                
++                // Multiply-accumulate
++                v_sum = vmlaq_f32(v_sum, a_0, b_0);
++                v_sum = vmlaq_f32(v_sum, a_1, b_1);
++            }
++            
++            // Horizontal sum
++            float32x2_t v_sum_2 = vadd_f32(vget_low_f32(v_sum), vget_high_f32(v_sum));
++            v_sum_2 = vpadd_f32(v_sum_2, v_sum_2);
++            sum += vget_lane_f32(v_sum_2, 0);
++            
++            // Handle remaining elements
++            for (; l < k; l++) {
++                size_t b_idx = l * n + j;
++                size_t byte_idx = b_idx / 2;
++                bool is_upper = (b_idx % 2) != 0;
++                
++                int8_t q4_val;
++                if (is_upper) {
++                    q4_val = static_cast<int8_t>((b[byte_idx] >> 4) & 0xF);
++                } else {
++                    q4_val = static_cast<int8_t>(b[byte_idx] & 0xF);
++                }
++                
++                if (q4_val & 0x8) {
++                    q4_val |= 0xF0;
++                }
++                
++                float b_val = static_cast<float>(q4_val) * inv_scale;
++                sum += a[i * k + l] * b_val;
++            }
++            
++            // Apply SiLU activation: x * sigmoid(x)
++            float sigmoid_val = 1.0f / (1.0f + std::exp(-sum));
++            output[i * n + j] = sum * sigmoid_val;
++        }
++    }
++}
++
++// NEON implementation of fused matrix multiplication with 4-bit quantized weights (Q4_1) and ReLU
++void fused_matmul_relu_q4_1_neon_f32(float* output, const float* a, const uint8_t* b, const float* b_scale, const float* b_bias,
++                                 size_t m, size_t k, size_t n) {
++    // Get scale and bias values for dequantization
++    const float inv_scale = *b_scale;
++    const float bias = *b_bias;
++    const float32x4_t v_scale = vdupq_n_f32(inv_scale);
++    const float32x4_t v_bias = vdupq_n_f32(bias);
++    const float32x4_t vzero = vdupq_n_f32(0.0f);
++    
++    // Process each row of matrix A
++    for (size_t i = 0; i < m; i++) {
++        // Process each column of matrix B
++        for (size_t j = 0; j < n; j++) {
++            float sum = 0.0f;
++            float32x4_t v_sum = vdupq_n_f32(0.0f);
++            
++            // Process k in chunks of 8 for better cache utilization
++            size_t l = 0;
++            for (; l + 8 <= k; l += 8) {
++                // Load 8 elements from row i of matrix A
++                float32x4_t a_0 = vld1q_f32(a + i * k + l);
++                float32x4_t a_1 = vld1q_f32(a + i * k + l + 4);
++                
++                // Load 8 elements from column j of matrix B
++                // For Q4_1, 2 elements are packed into a single byte
++                float32x4_t b_0 = vdupq_n_f32(0.0f);
++                float32x4_t b_1 = vdupq_n_f32(0.0f);
++                
++                // Extract and dequantize first 4 values from B
++                for (int idx = 0; idx < 4; idx++) {
++                    size_t b_idx = (l + idx) * n + j;
++                    size_t byte_idx = b_idx / 2;
++                    bool is_upper = (b_idx % 2) != 0;
++                    
++                    uint8_t q4_val;
++                    if (is_upper) {
++                        q4_val = (b[byte_idx] >> 4) & 0xF;
++                    } else {
++                        q4_val = b[byte_idx] & 0xF;
++                    }
++                    
++                    float b_val = static_cast<float>(q4_val) * inv_scale + bias;
++                    b_0 = vsetq_lane_f32(b_val, b_0, idx);
++                }
++                
++                // Extract and dequantize last 4 values from B
++                for (int idx = 0; idx < 4; idx++) {
++                    size_t b_idx = (l + 4 + idx) * n + j;
++                    size_t byte_idx = b_idx / 2;
++                    bool is_upper = (b_idx % 2) != 0;
++                    
++                    uint8_t q4_val;
++                    if (is_upper) {
++                        q4_val = (b[byte_idx] >> 4) & 0xF;
++                    } else {
++                        q4_val = b[byte_idx] & 0xF;
++                    }
++                    
++                    float b_val = static_cast<float>(q4_val) * inv_scale + bias;
++                    b_1 = vsetq_lane_f32(b_val, b_1, idx);
++                }
++                
++                // Multiply-accumulate
++                v_sum = vmlaq_f32(v_sum, a_0, b_0);
++                v_sum = vmlaq_f32(v_sum, a_1, b_1);
++            }
++            
++            // Horizontal sum
++            float32x2_t v_sum_2 = vadd_f32(vget_low_f32(v_sum), vget_high_f32(v_sum));
++            v_sum_2 = vpadd_f32(v_sum_2, v_sum_2);
++            sum += vget_lane_f32(v_sum_2, 0);
++            
++            // Handle remaining elements
++            for (; l < k; l++) {
++                size_t b_idx = l * n + j;
++                size_t byte_idx = b_idx / 2;
++                bool is_upper = (b_idx % 2) != 0;
++                
++                uint8_t q4_val;
++                if (is_upper) {
++                    q4_val = (b[byte_idx] >> 4) & 0xF;
++                } else {
++                    q4_val = b[byte_idx] & 0xF;
++                }
++                
++                float b_val = static_cast<float>(q4_val) * inv_scale + bias;
++                sum += a[i * k + l] * b_val;
++            }
++            
++            // Apply ReLU activation
++            output[i * n + j] = sum > 0.0f ? sum : 0.0f;
++        }
++    }
++}
++
++// NEON implementation of fused matrix multiplication with 4-bit quantized weights (Q4_1) and SiLU
++void fused_matmul_silu_q4_1_neon_f32(float* output, const float* a, const uint8_t* b, const float* b_scale, const float* b_bias,
++                                  size_t m, size_t k, size_t n) {
++    // Get scale and bias values for dequantization
++    const float inv_scale = *b_scale;
++    const float bias = *b_bias;
++    const float32x4_t v_scale = vdupq_n_f32(inv_scale);
++    const float32x4_t v_bias = vdupq_n_f32(bias);
++    
++    // Process each row of matrix A
++    for (size_t i = 0; i < m; i++) {
++        // Process each column of matrix B
++        for (size_t j = 0; j < n; j++) {
++            float sum = 0.0f;
++            float32x4_t v_sum = vdupq_n_f32(0.0f);
++            
++            // Process k in chunks of 8 for better cache utilization
++            size_t l = 0;
++            for (; l + 8 <= k; l += 8) {
++                // Load 8 elements from row i of matrix A
++                float32x4_t a_0 = vld1q_f32(a + i * k + l);
++                float32x4_t a_1 = vld1q_f32(a + i * k + l + 4);
++                
++                // Load 8 elements from column j of matrix B
++                // For Q4_1, 2 elements are packed into a single byte
++                float32x4_t b_0 = vdupq_n_f32(0.0f);
++                float32x4_t b_1 = vdupq_n_f32(0.0f);
++                
++                // Extract and dequantize first 4 values from B
++                for (int idx = 0; idx < 4; idx++) {
++                    size_t b_idx = (l + idx) * n + j;
++                    size_t byte_idx = b_idx / 2;
++                    bool is_upper = (b_idx % 2) != 0;
++                    
++                    uint8_t q4_val;
++                    if (is_upper) {
++                        q4_val = (b[byte_idx] >> 4) & 0xF;
++                    } else {
++                        q4_val = b[byte_idx] & 0xF;
++                    }
++                    
++                    float b_val = static_cast<float>(q4_val) * inv_scale + bias;
++                    b_0 = vsetq_lane_f32(b_val, b_0, idx);
++                }
++                
++                // Extract and dequantize last 4 values from B
++                for (int idx = 0; idx < 4; idx++) {
++                    size_t b_idx = (l + 4 + idx) * n + j;
++                    size_t byte_idx = b_idx / 2;
++                    bool is_upper = (b_idx % 2) != 0;
++                    
++                    uint8_t q4_val;
++                    if (is_upper) {
++                        q4_val = (b[byte_idx] >> 4) & 0xF;
++                    } else {
++                        q4_val = b[byte_idx] & 0xF;
++                    }
++                    
++                    float b_val = static_cast<float>(q4_val) * inv_scale + bias;
++                    b_1 = vsetq_lane_f32(b_val, b_1, idx);
++                }
++                
++                // Multiply-accumulate
++                v_sum = vmlaq_f32(v_sum, a_0, b_0);
++                v_sum = vmlaq_f32(v_sum, a_1, b_1);
++            }
++            
++            // Horizontal sum
++            float32x2_t v_sum_2 = vadd_f32(vget_low_f32(v_sum), vget_high_f32(v_sum));
++            v_sum_2 = vpadd_f32(v_sum_2, v_sum_2);
++            sum += vget_lane_f32(v_sum_2, 0);
++            
++            // Handle remaining elements
++            for (; l < k; l++) {
++                size_t b_idx = l * n + j;
++                size_t byte_idx = b_idx / 2;
++                bool is_upper = (b_idx % 2) != 0;
++                
++                uint8_t q4_val;
++                if (is_upper) {
++                    q4_val = (b[byte_idx] >> 4) & 0xF;
++                } else {
++                    q4_val = b[byte_idx] & 0xF;
++                }
++                
++                float b_val = static_cast<float>(q4_val) * inv_scale + bias;
++                sum += a[i * k + l] * b_val;
++            }
++            
++            // Apply SiLU activation: x * sigmoid(x)
++            float sigmoid_val = 1.0f / (1.0f + std::exp(-sum));
++            output[i * n + j] = sum * sigmoid_val;
++        }
++    }
++}
++#endif  // defined(CCSM_HAVE_NEON)
++
++ // Scalar implementation of fused matrix multiplication with activation functions
++ template<typename T>
++ void fused_matmul_relu_scalar(T* output, const T* a, const T* b, size_t m, size_t k, size_t n) {
