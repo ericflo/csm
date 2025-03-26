@@ -7,12 +7,16 @@
 #include <ccsm/generator.h>
 #include <ccsm/cli_args.h>
 #include <ccsm/utils.h>
+#include <ccsm/config.h>
 
 using namespace ccsm;
 
 int main(int argc, char** argv) {
     try {
         std::cout << "CCSM Generator (CPU) v" << CCSM_VERSION << std::endl;
+        
+        // Initialize configuration
+        auto& config_manager = ConfigManager::instance();
         
         // Parse command-line arguments
         CLIArgs args = parse_args(argc, argv);
@@ -28,8 +32,40 @@ int main(int argc, char** argv) {
             return 0;
         }
         
-        // Set debug mode if requested
-        if (args.debug) {
+        // Load configuration from file if specified
+        if (args.backend_params.count("load-config") && !args.backend_params["load-config"].empty()) {
+            std::string config_dir = args.backend_params["load-config"];
+            if (std::filesystem::is_directory(config_dir)) {
+                // Load from directory (model.json, generation.json, system.json)
+                if (config_manager.load_from_directory(config_dir)) {
+                    CCSM_INFO("Loaded configuration from directory: ", config_dir);
+                } else {
+                    CCSM_WARN("Failed to load configuration from directory: ", config_dir);
+                }
+            } else if (std::filesystem::exists(config_dir)) {
+                // Load from single JSON file
+                std::ifstream file(config_dir);
+                if (file.is_open()) {
+                    std::string json_content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+                    file.close();
+                    
+                    if (config_manager.load_from_json_string(json_content)) {
+                        CCSM_INFO("Loaded configuration from file: ", config_dir);
+                    } else {
+                        CCSM_WARN("Failed to parse configuration file: ", config_dir);
+                    }
+                }
+            } else {
+                CCSM_WARN("Configuration file or directory not found: ", config_dir);
+            }
+        }
+        
+        // Load configurations from command line arguments (these override file settings)
+        config_manager.load_from_args(argc, argv);
+        
+        // Update logging level based on debug setting
+        auto& system_config = config_manager.system_config();
+        if (system_config.get_debug() || args.debug) {
             Logger::instance().set_level(LogLevel::DEBUG);
             CCSM_DEBUG("Debug mode enabled");
         }
@@ -40,23 +76,37 @@ int main(int argc, char** argv) {
             return 1;
         }
         
+        // Save configurations if requested
+        if (args.backend_params.count("save-config") && !args.backend_params["save-config"].empty()) {
+            std::string config_dir = args.backend_params["save-config"];
+            if (config_manager.save_to_directory(config_dir)) {
+                CCSM_INFO("Saved configuration to directory: ", config_dir);
+            } else {
+                CCSM_ERROR("Failed to save configuration to directory: ", config_dir);
+            }
+        }
+        
         // Initialize timer
         Timer timer;
         
         // Create generator
-        CCSM_INFO("Loading model from ", args.model_path);
+        auto& model_config = config_manager.model_config();
+        auto& generation_config = config_manager.generation_config();
+        
+        std::string model_path = args.model_path.empty() ? model_config.get_model_path() : args.model_path;
+        
+        CCSM_INFO("Loading model from ", model_path);
         std::shared_ptr<Generator> generator;
         
         try {
             // Use the factory function to create generator
-            if (args.model_path.empty()) {
+            if (model_path.empty()) {
                 // Use default model
                 generator = load_csm_1b();
             } else {
-                // TODO: Implement custom model loading
-                // For now, we'll just use the factory function
-                generator = load_csm_1b();
-                CCSM_WARNING("Custom model paths not fully implemented yet, using default model");
+                // Use model loading mechanism with configuration
+                generator = ModelLoaderFactory::load_model(model_path, model_config);
+                CCSM_INFO("Loaded model from ", model_path);
             }
             
             CCSM_INFO("Model loaded in ", timer.elapsed_ms(), " ms");
@@ -67,12 +117,30 @@ int main(int argc, char** argv) {
         
         // Prepare generation options
         GenerationOptions options;
-        options.temperature = args.temperature;
-        options.top_k = args.top_k;
-        options.max_audio_length_ms = args.max_audio_length_ms;
-        options.seed = args.seed;
-        options.enable_watermark = args.enable_watermark;
-        options.debug = args.debug;
+        
+        // Use configuration values but override with CLI args if specified
+        options.temperature = args.temperature > 0 ? args.temperature : generation_config.get_temperature();
+        options.top_k = args.top_k > 0 ? args.top_k : generation_config.get_top_k();
+        options.top_p = args.top_p > 0 ? args.top_p : generation_config.get_top_p();
+        options.repetition_penalty = args.repetition_penalty >= 1.0f ? 
+                                  args.repetition_penalty : 
+                                  generation_config.get_repetition_penalty();
+        options.max_audio_length_ms = args.max_audio_length_ms > 0 ? 
+                                     args.max_audio_length_ms : 
+                                     generation_config.get_max_audio_length_ms();
+        options.seed = args.seed >= 0 ? args.seed : generation_config.get_seed();
+        options.enable_watermark = args.enable_watermark; // CLI flag takes precedence
+        options.debug = args.debug || system_config.get_debug();
+        
+        // Log generation settings
+        CCSM_DEBUG("Generation settings:");
+        CCSM_DEBUG("  Temperature: ", options.temperature);
+        CCSM_DEBUG("  Top-k: ", options.top_k);
+        CCSM_DEBUG("  Top-p: ", options.top_p);
+        CCSM_DEBUG("  Max audio length: ", options.max_audio_length_ms, " ms");
+        CCSM_DEBUG("  Seed: ", options.seed);
+        CCSM_DEBUG("  Watermark: ", options.enable_watermark ? "enabled" : "disabled");
+        CCSM_DEBUG("  Repetition penalty: ", options.repetition_penalty);
         
         // Create progress bar
         int total_steps = args.max_audio_length_ms / 80; // 80ms per frame

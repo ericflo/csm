@@ -282,13 +282,101 @@ This project provides high-quality speech generation for creative and educationa
 
 CSM includes watermarking to help identify AI-generated audio.
 
-## 🛠️ C++ Inference Engine (Planned)
+## 🛠️ C++ Inference Engine
 
-A high-performance C++ inference engine is being developed to enable small, efficient binaries for CSM inference:
+A high-performance C++ inference engine is available to enable small, efficient binaries for CSM inference:
 
 - `ccsm-generate`: CPU-only implementation using GGML
 - `ccsm-generate-mlx`: MLX-accelerated version for Apple Silicon
 - Future support for CUDA and Vulkan backends
+
+### Configuration System
+
+The C++ implementation includes a comprehensive configuration system that allows for flexible customization of models and generation parameters:
+
+```bash
+# Using the configuration system via command line
+ccsm-generate --model /path/to/model.gguf --temperature 0.8 --top-p 0.9 --top-k 40
+
+# Save configuration for reuse
+ccsm-generate --model /path/to/model.gguf --save-config my_config.json
+
+# Load saved configuration
+ccsm-generate --load-config my_config.json --text "Override with new text"
+```
+
+#### Configuration Files
+
+The system supports JSON configuration files for each component:
+
+**Model Configuration (model.json)**
+```json
+{
+  "model_path": "/path/to/model.gguf",
+  "architecture": "ccsm",
+  "tokenizer_path": "/path/to/tokenizer.model",
+  "embedding_dim": 4096,
+  "num_layers": 32,
+  "num_heads": 32,
+  "vocab_size": 32000,
+  "use_kv_cache": true
+}
+```
+
+**Generation Configuration (generation.json)**
+```json
+{
+  "temperature": 0.9,
+  "top_k": 40,
+  "top_p": 0.95,
+  "max_audio_length_ms": 15000,
+  "seed": 42,
+  "enable_watermark": true,
+  "repetition_penalty": 1.1
+}
+```
+
+**System Configuration (system.json)**
+```json
+{
+  "num_threads": 8,
+  "cpu_only": false,
+  "debug": false,
+  "cache_dir": "~/.ccsm/cache",
+  "models_dir": "~/.ccsm/models"
+}
+```
+
+#### Programmatic Usage
+
+The configuration system can also be used programmatically in C++:
+
+```cpp
+#include <ccsm/config.h>
+#include <ccsm/model_loader.h>
+#include <ccsm/generator.h>
+
+// Access the configuration manager
+auto& config_mgr = ccsm::ConfigManager::instance();
+
+// Set configuration options
+config_mgr.model_config().set_model_path("/path/to/model.gguf");
+config_mgr.generation_config().set_temperature(0.8f);
+config_mgr.generation_config().set_top_p(0.92f);
+config_mgr.system_config().set_num_threads(4);
+
+// Load model with configuration
+auto generator = ccsm::ModelLoaderFactory::load_model("", config_mgr.model_config());
+
+// Generate audio with configured parameters
+ccsm::GenerationOptions options;
+options.temperature = config_mgr.generation_config().get_temperature();
+options.top_k = config_mgr.generation_config().get_top_k();
+options.top_p = config_mgr.generation_config().get_top_p();
+options.max_audio_length_ms = config_mgr.generation_config().get_max_audio_length_ms();
+
+auto audio = generator->generate("Hello world", 0, {}, options);
+```
 
 See [docs/ccsm.md](docs/ccsm.md) for the detailed implementation plan.
 

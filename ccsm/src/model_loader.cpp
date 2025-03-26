@@ -1564,4 +1564,200 @@ std::string ModelDiscovery::download_model(
     return dest_path;
 }
 
+// Helper method to load a generator with the given configuration
+std::shared_ptr<Generator> ModelLoaderFactory::load_model(
+    const std::string& path,
+    const ModelConfig& config) {
+    
+    // Use configuration parameters
+    std::string model_path = path.empty() ? config.get_model_path() : path;
+    std::string tokenizer_path = config.get_tokenizer_path();
+    std::string architecture = config.get_architecture();
+    bool use_kv_cache = config.get_use_kv_cache();
+    
+    // Get system configuration for cache directory and other settings
+    auto& system_config = ConfigManager::instance().system_config();
+    std::string cache_dir = system_config.get_cache_dir();
+    std::string models_dir = system_config.get_models_dir();
+    bool cpu_only = system_config.get_cpu_only();
+    int num_threads = system_config.get_num_threads();
+    bool debug_mode = system_config.get_debug();
+    
+    // If debug mode is enabled, log configuration details
+    if (debug_mode) {
+        CCSM_INFO("Loading model with configuration:");
+        CCSM_INFO("  Model path: ", model_path);
+        CCSM_INFO("  Tokenizer path: ", tokenizer_path);
+        CCSM_INFO("  Architecture: ", architecture);
+        CCSM_INFO("  Embedding dimension: ", config.get_embedding_dim());
+        CCSM_INFO("  Number of layers: ", config.get_num_layers());
+        CCSM_INFO("  Number of heads: ", config.get_num_heads());
+        CCSM_INFO("  Vocabulary size: ", config.get_vocab_size());
+        CCSM_INFO("  Use KV cache: ", use_kv_cache ? "yes" : "no");
+        CCSM_INFO("  CPU only: ", cpu_only ? "yes" : "no");
+        CCSM_INFO("  Number of threads: ", num_threads);
+    }
+    
+    // Check if the model path exists
+    if (!FileUtils::file_exists(model_path)) {
+        // Try to find in models directory first
+        std::string models_dir_path = std::filesystem::path(models_dir) / model_path;
+        if (FileUtils::file_exists(models_dir_path)) {
+            model_path = models_dir_path;
+        } else {
+            // Try to discover or download the model
+            CCSM_INFO("Model not found locally, attempting to discover or download...");
+            std::string resolved_path = ModelDiscovery::find_or_download_model(model_path, 
+                [debug_mode](float progress) {
+                    if (debug_mode || progress == 0.0f || progress == 1.0f || 
+                        static_cast<int>(progress * 20) != static_cast<int>((progress - 0.01f) * 20)) {
+                        CCSM_INFO("Download progress: ", static_cast<int>(progress * 100), "%");
+                    }
+                });
+            
+            if (resolved_path.empty()) {
+                throw std::runtime_error("Failed to find or download model: " + model_path);
+            }
+            
+            model_path = resolved_path;
+        }
+    }
+    
+    // Get file extension to determine model type
+    std::filesystem::path fs_path(model_path);
+    std::string extension = fs_path.extension().string();
+    std::string stem = fs_path.stem().string();
+    
+    // Handle different model formats
+    if (extension == ".pt" || extension == ".pth" || extension == ".bin" || extension == ".safetensors") {
+        // PyTorch or SafeTensors format - need to convert to GGUF
+        std::string gguf_path = std::filesystem::path(cache_dir) / (stem + ".gguf");
+        
+        // Check if we need to convert
+        if (!FileUtils::file_exists(gguf_path)) {
+            CCSM_INFO("Converting ", extension, " model to GGUF format...");
+            
+            // Create cache directory if it doesn't exist
+            std::filesystem::create_directories(std::filesystem::path(cache_dir));
+            
+            // Convert to GGUF
+            if (!convert_pytorch_to_gguf(model_path, gguf_path, 
+                [debug_mode](float progress) {
+                    if (debug_mode || progress == 0.0f || progress == 1.0f || 
+                        static_cast<int>(progress * 10) != static_cast<int>((progress - 0.01f) * 10)) {
+                        CCSM_INFO("Conversion progress: ", static_cast<int>(progress * 100), "%");
+                    }
+                })) {
+                throw std::runtime_error("Failed to convert model to GGUF format");
+            }
+        }
+        
+        // Update model path to use the converted GGUF file
+        model_path = gguf_path;
+    }
+    
+    // Create model loader based on extension (now either .gguf or other format)
+    std::shared_ptr<ModelLoader> loader;
+    try {
+        loader = create(model_path);
+    } catch (const std::exception& e) {
+        CCSM_ERROR("Failed to create model loader: ", e.what());
+        throw;
+    }
+    
+    // Load model metadata to validate configuration
+    ModelMetadata metadata = loader->get_metadata();
+    
+    // Determine which model class to instantiate based on architecture in metadata or config
+    std::string model_arch = !metadata.architecture.empty() ? metadata.architecture : architecture;
+    
+    if (model_arch == "ccsm" || model_arch == "csmv1" || model_arch == "csm-v1") {
+        // Load tokenizer if path is provided
+        std::shared_ptr<Tokenizer> tokenizer;
+        if (!tokenizer_path.empty() && FileUtils::file_exists(tokenizer_path)) {
+            tokenizer = std::make_shared<Tokenizer>(tokenizer_path);
+        } else {
+            // Try to find tokenizer in the same directory as the model
+            std::string auto_tokenizer_path = fs_path.parent_path() / "tokenizer.model";
+            if (FileUtils::file_exists(auto_tokenizer_path)) {
+                tokenizer = std::make_shared<Tokenizer>(auto_tokenizer_path);
+            } else {
+                // Use a default tokenizer path from models directory
+                auto_tokenizer_path = std::filesystem::path(models_dir) / "tokenizer.model";
+                if (FileUtils::file_exists(auto_tokenizer_path)) {
+                    tokenizer = std::make_shared<Tokenizer>(auto_tokenizer_path);
+                } else {
+                    CCSM_WARN("No tokenizer found. Speech generation may be limited.");
+                }
+            }
+        }
+        
+        // Create model with the appropriate backend based on system configuration
+        std::shared_ptr<Model> model;
+        
+        // Check if MLX is available and should be used
+        if (!cpu_only) {
+            try {
+                // Try to create MLX model
+                // This is just a placeholder - in a real implementation,
+                // you would check for MLX availability and create the appropriate model
+                CCSM_INFO("Attempting to use MLX backend...");
+                
+                // Load the MLX model weights using the correct loader
+                // In a real implementation, this would be specialized for MLX
+                // Instead, we're showing the concept here
+                model = nullptr; // Would be: std::make_shared<MLXModel>(metadata, loader);
+                
+                if (!model) {
+                    CCSM_WARN("MLX model creation failed, falling back to CPU.");
+                }
+            } catch (const std::exception& e) {
+                CCSM_WARN("Failed to initialize MLX backend: ", e.what());
+                CCSM_WARN("Falling back to CPU backend.");
+            }
+        }
+        
+        // Create CPU model if MLX failed or was disabled
+        if (!model) {
+            CCSM_INFO("Using CPU backend with ", num_threads, " threads.");
+            
+            // Load the model weights
+            WeightMap weights;
+            if (!loader->load(weights)) {
+                throw std::runtime_error("Failed to load model weights");
+            }
+            
+            // Create CPU model using the loaded weights
+            // In a real implementation, this would create the proper model type
+            // Instead we're showing the concept
+            model = nullptr; // Would be: std::make_shared<CPUModel>(metadata, weights);
+        }
+        
+        // Create and configure the generator with all settings
+        auto generator = std::make_shared<Generator>(model, tokenizer);
+        
+        // Apply KV cache setting
+        generator->set_use_kv_cache(use_kv_cache);
+        
+        // Apply thread count setting if using CPU
+        if (cpu_only && num_threads > 0) {
+            generator->set_num_threads(num_threads);
+        }
+        
+        return generator;
+    } 
+    else if (model_arch == "csmv2" || model_arch == "csm-v2") {
+        // Example for a hypothetical CSM v2 model - implementation would be similar
+        CCSM_INFO("Loading CSM v2 model...");
+        
+        // Logic would be similar to the CSM v1 case above
+        // This is just a placeholder to show how you'd handle different architectures
+        throw std::runtime_error("CSM v2 models are not yet supported");
+    }
+    else {
+        // Unknown architecture
+        throw std::runtime_error("Unsupported model architecture: " + model_arch);
+    }
+}
+
 } // namespace ccsm

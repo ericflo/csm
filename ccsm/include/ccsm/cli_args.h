@@ -16,6 +16,8 @@ struct CLIArgs {
     int speaker_id = 0;                      // Speaker ID (0-9)
     float temperature = 0.9f;                // Sampling temperature
     int top_k = 50;                          // Top-k sampling parameter
+    float top_p = 1.0f;                      // Top-p (nucleus) sampling parameter
+    float repetition_penalty = 1.0f;         // Repetition penalty
     int seed = -1;                           // Random seed (-1 for random)
     
     // Audio parameters

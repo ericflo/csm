@@ -99,6 +99,11 @@ public:
         const std::string& src_path,
         const std::string& dst_path,
         std::function<void(float)> progress_callback = nullptr);
+        
+    // Load model with configuration
+    static std::shared_ptr<Generator> load_model(
+        const std::string& path,
+        const ModelConfig& config);
 };
 
 // Model discovery and download

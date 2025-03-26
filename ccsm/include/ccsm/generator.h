@@ -62,6 +62,8 @@ struct GenerationOptions {
     // Sampling parameters
     float temperature = 0.9f;
     int top_k = 50;
+    float top_p = 1.0f;  // Added for nucleus sampling
+    float repetition_penalty = 1.0f;  // Added for repetition control
     
     // Generation constraints
     int max_audio_length_ms = 10000;
@@ -77,9 +79,11 @@ struct GenerationOptions {
     
     // Constructor
     GenerationOptions() {
-        // Initialize sampling with the same temperature and top_k
+        // Initialize sampling with the same parameters
         sampling.temperature = temperature;
         sampling.top_k = top_k;
+        sampling.top_p = top_p;
+        sampling.repetition_penalty = repetition_penalty;
     }
     
     // Method to update sampling options from main options
@@ -87,6 +91,8 @@ struct GenerationOptions {
     void update_sampling() {
         sampling.temperature = temperature;
         sampling.top_k = top_k;
+        sampling.top_p = top_p;
+        sampling.repetition_penalty = repetition_penalty;
     }
 };
 

@@ -1,5 +1,18 @@
 # Main source directory CMakeLists.txt
 
+# Find packages
+find_package(nlohmann_json QUIET)
+if(NOT nlohmann_json_FOUND)
+    message(STATUS "nlohmann_json not found via find_package, using remote include")
+    # Download JSON for Modern C++ from GitHub
+    include(FetchContent)
+    FetchContent_Declare(
+        json
+        URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
+    )
+    FetchContent_MakeAvailable(json)
+endif()
+
 # Core library - common components
 file(GLOB CORE_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
@@ -69,6 +82,14 @@ else()
     message(STATUS "Found GGML library: ${GGML_LIB}")
 endif()
 
+# Link json library
+if(TARGET nlohmann_json::nlohmann_json)
+    target_link_libraries(ccsm_core PRIVATE nlohmann_json::nlohmann_json)
+elseif(TARGET nlohmann_json)
+    target_link_libraries(ccsm_core PRIVATE nlohmann_json)
+endif()
+
+# Link sentencepiece
 target_link_libraries(ccsm_core PRIVATE sentencepiece)
 
 # MLX library (conditional)

@@ -17,6 +17,8 @@ void print_help() {
     std::cout << "  --speaker ID       Speaker ID (0-9, default: 0)\n";
     std::cout << "  --temperature VAL  Sampling temperature (default: 0.9)\n";
     std::cout << "  --topk VAL         Top-k sampling parameter (default: 50)\n";
+    std::cout << "  --topp VAL         Top-p nucleus sampling parameter (default: 1.0)\n";
+    std::cout << "  --rep-penalty VAL  Repetition penalty (default: 1.0, higher = less repetition)\n";
     std::cout << "  --seed VAL         Random seed (-1 for random, default: -1)\n";
     
     std::cout << "\nAudio parameters:\n";
@@ -36,10 +38,18 @@ void print_help() {
     std::cout << "  --help             Show this help message\n";
     std::cout << "  --version          Show version information\n";
     
+    std::cout << "\nConfiguration system:\n";
+    std::cout << "  --backend-load-config=PATH    Load configuration from file or directory\n";
+    std::cout << "  --backend-save-config=PATH    Save configuration to directory\n";
+    std::cout << "  --backend-cache-dir=PATH      Set cache directory path\n";
+    std::cout << "  --backend-models-dir=PATH     Set models directory path\n";
+    
     std::cout << "\nExamples:\n";
     std::cout << "  ccsm-generate --text \"Hello, world!\"\n";
     std::cout << "  ccsm-generate --text \"This is a test.\" --speaker 3 --temperature 1.2\n";
     std::cout << "  ccsm-generate --text \"Follow-up response\" --context-text \"Initial query\" --context-speaker 0\n";
+    std::cout << "  ccsm-generate --model model.gguf --backend-save-config=my_configs\n";
+    std::cout << "  ccsm-generate --backend-load-config=my_configs --text \"Using saved config\"\n";
 }
 
 void print_version() {
@@ -149,6 +159,34 @@ CLIArgs parse_args(int argc, char** argv) {
                 return args;
             }
         }
+        else if (arg == "--topp") {
+            if (i + 1 < argc) {
+                args.top_p = std::stof(argv[++i]);
+                if (args.top_p <= 0.0f || args.top_p > 1.0f) {
+                    CCSM_ERROR("Top-p must be between 0.0 and 1.0");
+                    args.help = true;
+                    return args;
+                }
+            } else {
+                CCSM_ERROR("Missing value for --topp");
+                args.help = true;
+                return args;
+            }
+        }
+        else if (arg == "--rep-penalty") {
+            if (i + 1 < argc) {
+                args.repetition_penalty = std::stof(argv[++i]);
+                if (args.repetition_penalty < 1.0f) {
+                    CCSM_ERROR("Repetition penalty must be at least 1.0");
+                    args.help = true;
+                    return args;
+                }
+            } else {
+                CCSM_ERROR("Missing value for --rep-penalty");
+                args.help = true;
+                return args;
+            }
+        }
         else if (arg == "--seed") {
             if (i + 1 < argc) {
                 args.seed = std::stoi(argv[++i]);
@@ -243,6 +281,36 @@ CLIArgs parse_args(int argc, char** argv) {
             if (equals_pos != std::string::npos) {
                 std::string param_name = arg.substr(9, equals_pos - 9);
                 std::string param_value = arg.substr(equals_pos + 1);
+                
+                // Validate specific known backend parameters
+                if (param_name == "load-config") {
+                    // Check if the specified path exists
+                    if (!param_value.empty() && !std::filesystem::exists(param_value)) {
+                        CCSM_WARN("Configuration path does not exist: ", param_value);
+                        // Not a fatal error, will create the directory if saving
+                    }
+                } 
+                else if (param_name == "save-config") {
+                    // Check if the specified directory exists or can be created
+                    if (!param_value.empty()) {
+                        std::filesystem::path config_path(param_value);
+                        if (std::filesystem::exists(param_value) && !std::filesystem::is_directory(param_value)) {
+                            CCSM_ERROR("Config save path exists but is not a directory: ", param_value);
+                            args.help = true;
+                            return args;
+                        }
+                    }
+                }
+                else if (param_name == "cache-dir" || param_name == "models-dir") {
+                    // Just validate they're not empty
+                    if (param_value.empty()) {
+                        CCSM_ERROR("Directory path for ", param_name, " cannot be empty");
+                        args.help = true;
+                        return args;
+                    }
+                }
+                
+                // Store the parameter
                 args.backend_params[param_name] = param_value;
             } else {
                 CCSM_ERROR("Invalid backend parameter format: ", arg);
